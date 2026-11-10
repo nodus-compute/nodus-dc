@@ -4,7 +4,7 @@ import urllib.parse
 
 from .api import token_file
 from .errors import Error
-from .handback import SCOPES, REVOCATION_WAIT_SECONDS, private_file, api_key_metadata
+from .handback import SCOPES, REVOCATION_WAIT_SECONDS, private_file, api_key_metadata, exact_effective_scopes
 
 RECOVERY_SCOPES = SCOPES | {"auditevents:read"}
 MAX_RECOVERY_KEYS = 4
@@ -34,7 +34,7 @@ class Recovery:
             return False
         if (not isinstance(who, dict) or who.get("kind") != "APIKey" or who.get("serviceAccount")
                 or who.get("credentialUID") != actor["uid"] or who.get("org") != self.j["org_uid"]
-                or set(who.get("scopes", [])) != set(actor["scopes"]) or who.get("projects") not in ([], None)):
+                or not exact_effective_scopes(who.get("scopes"), actor["scopes"]) or who.get("projects") not in ([], None)):
             raise Error("recovery_identity", "recovery credential no longer matches its exact org, UID and scope binding", 409)
         return True
 
@@ -70,7 +70,7 @@ class Recovery:
         if status != 200:
             return
         if (status != 200 or not isinstance(who, dict) or who.get("kind") != "APIKey" or who.get("serviceAccount")
-                or who.get("org") != self.j["org_uid"] or set(who.get("scopes", [])) != RECOVERY_SCOPES
+                or who.get("org") != self.j["org_uid"] or not exact_effective_scopes(who.get("scopes"), RECOVERY_SCOPES)
                 or who.get("projects") not in ([], None)):
             raise Error("recovery_credential", "use a same-org dedicated recovery API key with exactly the documented scopes", 409)
         uid = self.h._uuid(who.get("credentialUID"))

@@ -6,8 +6,8 @@ import uuid
 from unittest.mock import patch
 
 from nodus_dc.errors import Error
-from nodus_dc.handback import SCOPES
-from nodus_dc.recovery import RECOVERY_SCOPES
+from nodus_dc.handback import SCOPES, private_file
+from nodus_dc.recovery import RECOVERY_SCOPES, Recovery
 from tests import test_handback
 
 
@@ -44,7 +44,7 @@ class RecoveryTests(unittest.TestCase):
             result = (401, {'reason': 'Unauthorized'})
         elif path == '/auth/whoami':
             result = (200, {'kind': 'APIKey', 'credentialUID': actor['uid'], 'org': self.f.org,
-                            'scopes': actor['scopes'], 'projects': []})
+                            'scopes': test_handback.whoami_scopes(actor['scopes']), 'projects': []})
         elif '/apikeys/' in path:
             name = urllib.parse.unquote(path.rsplit('/', 1)[1])
             target = next((item for item in self.keys.values() if item['name'] == name), None)
@@ -100,6 +100,44 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(self.run_return(recover=True)['native_access_ready'])
         self.assertIn('node_retirement_proof', self.f.h._load()['evidence'])
         self.assertEqual(1, sum(method == 'DELETE' and '/nodes/' in path for method, path, _ in self.calls))
+
+    def test_active_recovery_identity_requires_exact_effective_scopes(self):
+        recovery = Recovery(self.f.h)
+        recovery.j = {'settings': self.f.record, 'org_uid': self.f.org}
+        actor = {'file': private_file(self.f.token_path), 'uid': self.f.key_uid, 'scopes': sorted(SCOPES)}
+        self.assertTrue(recovery.identity(actor))
+        for scopes in test_handback.invalid_whoami_scopes(SCOPES):
+            with self.subTest(scopes=scopes):
+                self.mutate = lambda method, path, result: (200, {**result[1], 'scopes': scopes})
+                with self.assertRaises(Error) as exc:
+                    recovery.identity(actor)
+                self.assertEqual('recovery_identity', exc.exception.code)
+        self.assertEqual(sorted(SCOPES), actor['scopes'])
+        self.assertFalse(self.deleted_node)
+
+    def test_introduced_recovery_scopes_keep_durable_obligation_and_stored_grants(self):
+        self.pending_key()
+        extra = self.recovery_key()
+        actor = next(item for item in self.keys.values() if item['name'] == 'recovery-one')
+        for scopes in test_handback.invalid_whoami_scopes(RECOVERY_SCOPES):
+            with self.subTest(scopes=scopes):
+                self.mutate = lambda method, path, result: (200, {**result[1], 'scopes': scopes}) if path == '/auth/whoami' and result[0] == 200 else result
+                with self.assertRaises(Error) as exc:
+                    self.run_return(recover=True, **extra)
+                self.assertEqual('recovery_credential', exc.exception.code)
+                pending = self.f.h._load()['recovery_keys'][0]
+                self.assertEqual('identity_pending', pending['state'])
+                self.assertEqual(sorted(RECOVERY_SCOPES), pending['scopes'])
+                self.assertFalse(actor['revoked'])
+                self.assertEqual('quarantined', self.f.service.get(self.f.lease['id'])['state'])
+                self.assertEqual(0, self.f.agent.stops)
+        self.mutate = lambda method, path, result: (200, test_handback.api_key_object(actor['uid'], actor['name'], test_handback.whoami_scopes(RECOVERY_SCOPES))) if path.endswith('/apikeys/recovery-one') else result
+        with self.assertRaises(Error):
+            self.run_return(recover=True, **extra)
+        self.assertEqual('identity_pending', self.f.h._load()['recovery_keys'][0]['state'])
+        self.mutate = lambda method, path, result: result
+        self.assertTrue(self.run_return(recover=True, **extra)['native_access_ready'])
+        self.assertTrue(actor['revoked'])
 
     def test_pending_before_node_write_retries_exact_live_uid_and_fresh_rv(self):
         save = self.f.h._save

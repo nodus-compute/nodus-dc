@@ -28,6 +28,11 @@ The retirement check reads the normal APIKey object: identity from `metadata`,
 scopes and project restrictions from `spec`. It refuses flat or conflicting
 responses and never retains APIKey `status` or a returned token. Authentication
 identity (`/auth/whoami`) and audit receipts keep their own response formats.
+WhoAmI reports effective scopes, including the platform's implicit `models:read`
+and `offerings:read`. The runtime requires exactly the stored retirement grants
+plus those two reads, while the APIKey object's stored grants remain exact.
+Do not add the implicit reads when creating the dedicated key. The same rule
+applies to recovery keys; their stored grants additionally include `auditevents:read`.
 
 Add `--terminal-native-return` to the normal `connection connect` command from
 the first connection. Keep the same canonical token-file path, token, platform

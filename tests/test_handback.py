@@ -14,7 +14,7 @@ import uuid
 
 from nodus_dc.connection import Connection
 from nodus_dc.errors import Error
-from nodus_dc.handback import Handback, LinuxAgent, SCOPES, JOURNAL_KEY, observed_binding, request
+from nodus_dc.handback import Handback, LinuxAgent, SCOPES, JOURNAL_KEY, observed_binding, credential_binding, request
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend, Clock
@@ -41,6 +41,18 @@ def api_key_object(uid, name, scopes, projects=None):
             "metadata": {"uid": uid, "name": name, "labels": {"qualification": "synthetic"}},
             "spec": {"scopes": sorted(scopes), "projects": [] if projects is None else projects},
             "status": {"owner": "usr_synthetic", "prefix": "synthetic-display-prefix"}}
+
+
+def whoami_scopes(stored):
+    # Normal platform authz.Effective adds these two reads to every principal.
+    # APIKey GET spec.scopes still contains only the stored grants.
+    return sorted(set(stored) | {"models:read", "offerings:read"})
+
+
+def invalid_whoami_scopes(stored):
+    effective = whoami_scopes(stored)
+    return [None, "*", {}, [False], [[]], sorted(stored), effective[:-1],
+            [*effective, effective[0]], [*effective, "*"], [*effective, "jobs:write"]]
 
 
 def invalid_api_key_objects(value):
@@ -124,7 +136,7 @@ class HandbackTests(unittest.TestCase):
         self.calls.append((method, path, body))
         if path == "/auth/whoami":
             result = (401, {"reason": "Unauthorized"}) if self.key_deleted else (200,
-                {"kind": "APIKey", "credentialUID": self.key_uid, "org": self.org, "projects": [], "scopes": sorted(SCOPES)})
+                {"kind": "APIKey", "credentialUID": self.key_uid, "org": self.org, "projects": [], "scopes": whoami_scopes(SCOPES)})
         elif path.startswith("/apis/nodus.dev/v1/apikeys/"):
             if method == "GET":
                 result = (200, api_key_object(self.key_uid, "host-retirement", SCOPES))
@@ -176,6 +188,35 @@ class HandbackTests(unittest.TestCase):
             lambda: self.service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1300, request_key="overlap")):
             with self.assertRaises(Error):
                 action()
+
+    def test_connection_identity_requires_exact_effective_scopes(self):
+        transport = lambda *args: self.transport(*args)[1]
+        self.assertEqual(self.key_uid, credential_binding(self.record, transport)["credential_uid"])
+        for scopes in invalid_whoami_scopes(SCOPES):
+            with self.subTest(scopes=scopes):
+                self.mutate = lambda method, path, result: (200, {**result[1], "scopes": scopes})
+                with self.assertRaises(Error) as exc:
+                    credential_binding(self.record, transport)
+                self.assertEqual("retirement_credential", exc.exception.code)
+        self.assertFalse(self.node_deleted)
+        self.assertIsNone(self.h._load())
+
+    def test_handback_identity_requires_effective_but_key_metadata_stays_stored(self):
+        for scopes in invalid_whoami_scopes(SCOPES):
+            with self.subTest(scopes=scopes):
+                self.mutate = lambda method, path, result: (200, {**result[1], "scopes": scopes}) if path == "/auth/whoami" else result
+                with self.assertRaises(Error) as exc:
+                    self.run_handback()
+                self.assertEqual("retirement_credential", exc.exception.code)
+                self.assertFalse(self.node_deleted)
+                self.assertIsNone(self.h._load())
+        # Extra implicit reads in stored metadata are not accepted as issued grants.
+        self.mutate = lambda method, path, result: (200, api_key_object(self.key_uid, "host-retirement", whoami_scopes(SCOPES))) if "/apikeys/" in path else result
+        with self.assertRaises(Error):
+            self.run_handback()
+        self.assertFalse(self.node_deleted)
+        self.mutate = lambda method, path, result: result
+        self.assertTrue(self.run_handback()["native_access_ready"])
 
     def test_api_key_object_identity_rejects_flat_ambiguous_and_malformed_fields(self):
         for name, value in invalid_api_key_objects(api_key_object(self.key_uid, "host-retirement", SCOPES)):

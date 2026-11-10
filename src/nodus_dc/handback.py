@@ -31,6 +31,13 @@ SCOPES = frozenset({"pools:read", "nodes:read", "nodes:write", "apikeys:read", "
 JOURNAL_KEY = "terminal_native_handback"
 
 
+def exact_effective_scopes(value, stored):
+    """WhoAmI includes authz.Effective's implicit reads; APIKey metadata does not."""
+    return (isinstance(value, list) and all(isinstance(scope, str) for scope in value)
+            and len(value) == len(set(value))
+            and set(value) == set(stored) | {"models:read", "offerings:read"})
+
+
 def api_key_metadata(value):
     """Project a GET APIKey object without retaining status or accepting flat aliases."""
     if (not isinstance(value, dict) or set(value) != {"apiVersion", "kind", "metadata", "spec", "status"}
@@ -126,7 +133,7 @@ def credential_binding(settings, transport):
     before = observed_binding(settings)
     who = transport("GET", settings["platform_url"] + "/auth/whoami", token_file(settings["token_file"]), None)
     if (not isinstance(who, dict) or who.get("kind") != "APIKey" or who.get("serviceAccount")
-            or set(who.get("scopes", [])) != SCOPES or who.get("projects") not in ([], None)
+            or not exact_effective_scopes(who.get("scopes"), SCOPES) or who.get("projects") not in ([], None)
             or observed_binding(settings) != before):
         raise Error("retirement_credential", "terminal return requires a stable dedicated API key with the exact documented scopes", 409)
     return {**before, "credential_uid": Handback._uuid(who.get("credentialUID")), "org_uid": Handback._uuid(who.get("org"))}
@@ -236,7 +243,7 @@ class Handback:
                    "api_key_name": api_key_name, "settings": settings, "files": files}
         status, who = self._call(journal, "GET", "/auth/whoami")
         if (status != 200 or not isinstance(who, dict) or who.get("kind") != "APIKey" or who.get("serviceAccount")
-                or set(who.get("scopes", [])) != SCOPES or who.get("projects") not in ([], None)):
+                or not exact_effective_scopes(who.get("scopes"), SCOPES) or who.get("projects") not in ([], None)):
             raise Error("retirement_credential", "use the current dedicated API key with exactly the documented retirement scopes; User/SA credentials are unsupported", 409)
         journal["credential_uid"] = self._uuid(who.get("credentialUID"))
         journal["org_uid"] = self._uuid(who.get("org"))

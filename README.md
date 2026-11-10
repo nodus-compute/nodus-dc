@@ -26,7 +26,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev4-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev5-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
