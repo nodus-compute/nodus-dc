@@ -1,6 +1,6 @@
 # Source mapping and conformance limits
 
-These anchors refer to the public runtime source shipped at `a536957108a12d61bf6962fb7fe08bd6b7175375` and retained unchanged with this addition. [source-mapping.json](source-mapping.json) records exact public file hashes. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
+These anchors refer to the runtime in this distribution. [source-mapping.json](source-mapping.json) records its exact file hashes and the historical public reference. Retained model runs bind their original model sources, not every later runtime revision. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
 
 | Abstract responsibility | Public source anchors | Limits |
 |---|---|---|
@@ -10,3 +10,5 @@ These anchors refer to the public runtime source shipped at `a536957108a12d61bf6
 | Financial lineage and replay | [financial.py](financial.py) and [integrated.py](integrated.py) state the abstract contract | This standalone package is **not** the hosted financial ledger or payment processor. No local implementation conformance anchor is claimed for settlement, transfer or bank payout. These published models are reviewable requirements, not proof of any hosted deployment. |
 
 The runtime test files use real SQLite/private files with simulated external or hardware responses. The separate systemd qualification concerns representative workers. Those results have their own artifact identities and limits; they are not converted into model conformance here. All GPU, hosted retirement, native-access and payment requirements remain independently qualified or unqualified according to their own evidence.
+
+Partition recovery after reboot maps to the abstract verified-cleanup transition. `Service.recover` additionally excludes held allocations on the original physical parents, and `NvidiaDockerBackend.recover_partition` preserves the original lease identities while checking the boot fence and current parent identity/activity. The abstract models do not simulate NVIDIA XML, Docker requests, disappearing MIG UUIDs, or installation. The targeted backend, partition-recovery and installer tests exercise these implementation boundaries separately.

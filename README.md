@@ -26,7 +26,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev3-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev4-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
@@ -63,6 +63,11 @@ For a cooperating application group, start the daemon with `--enable-trusted-mps
 ## Recovery and upgrades
 
 Interrupted starts stay held because an earlier Docker request could still execute. `recover LEASE_ID --generation N` requires a new Linux boot ID, then removes exact owned containers and independently checks cleanup. It never accepts an operator's unsupported “clean” assertion. MIG recovery replays the durable desired plan after that execution fence. Driver/configuration drift or missing device identities keeps capacity quarantined. Preserve the SQLite database, its WAL and authority registry across upgrades; restoring an old database while work may exist is unsupported.
+
+For a quarantined hardware-partition lease whose MIG UUID disappears after a
+reboot, [partition recovery and explicit recovery upgrades](docs/recovery-upgrade.md)
+require an idle, independently verified original physical GPU. Original lease
+identities and fencing history remain unchanged; native handoffs are excluded.
 
 The reboot recovery path explicitly excludes native handoffs: a new boot does not establish credential revocation or trustworthy provisioning when a customer had host-root access. Do not clear the lease by editing its database or deleting state.
 

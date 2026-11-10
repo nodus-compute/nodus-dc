@@ -30,6 +30,11 @@ import json, sys
 try:
     from nodus_dc.store import Store
     Store(sys.argv[1])
+    if sys.argv[2] == 'recovery':
+        from nodus_dc import service
+        protocol = getattr(service, 'RECOVERY_UPGRADE_PROTOCOL', None)
+        if type(protocol) is not int or protocol != 1:
+            raise RuntimeError('candidate lacks recovery-upgrade protocol')
 except Exception as error:
     print(json.dumps({'supported': False, 'error_type': type(error).__name__, 'code': getattr(error, 'code', None)}))
     sys.exit(1)
@@ -37,7 +42,7 @@ print(json.dumps({'supported': True}))
 """
 
 
-def state_compatible(python, state, *, snapshot_timeout=10):
+def state_compatible(python, state, *, snapshot_timeout=10, require_recovery=False):
     """Open a consistent private copy with the actual candidate's Store code.
 
     The authoritative database is opened mode=ro, including its current WAL.
@@ -68,14 +73,15 @@ def state_compatible(python, state, *, snapshot_timeout=10):
         except sqlite3.Error:
             raise RuntimeError("current authority state could not be read for compatibility; activation refused") from None
         try:
-            result = subprocess.run([str(python), "-I", "-c", COMPATIBILITY_PROBE, str(snapshot)],
+            result = subprocess.run([str(python), "-I", "-c", COMPATIBILITY_PROBE, str(snapshot),
+                                     "recovery" if require_recovery else "normal"],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, timeout=30, check=False)
             supported = result.returncode == 0 and json.loads(result.stdout).get("supported") is True
         except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
             supported = False
         if not supported:
-            raise RuntimeError("candidate cannot open the current authority state; active installation and state were not changed")
+            raise RuntimeError("candidate cannot open the current authority state or provide the required recovery protocol; active installation and state were not changed")
 
 
 def validate_wheel(wheel):
@@ -113,6 +119,9 @@ def preflight_candidate(args, prefix, state):
     if args.action == "uninstall":
         return
     manifest = read_manifest(prefix, state)
+    recovery = getattr(args, "recovery_upgrade", False)
+    if recovery and (args.action != "install" or manifest is None):
+        raise RuntimeError("recovery upgrade requires install into an existing owned installation")
     if args.action == "activate":
         if manifest is None:
             raise RuntimeError("a new install requires an empty dedicated prefix")
@@ -124,7 +133,7 @@ def preflight_candidate(args, prefix, state):
         return
     release = digest(wheel)[:20]
     if manifest and release in manifest["releases"]:
-        state_compatible(release_python(prefix, manifest, release), state)
+        state_compatible(release_python(prefix, manifest, release), state, require_recovery=recovery)
         return
     with tempfile.TemporaryDirectory(prefix="nodus-wheel-compatibility-") as folder:
         probe = Path(folder) / "candidate"
@@ -133,24 +142,45 @@ def preflight_candidate(args, prefix, state):
         subprocess.run([str(python), "-I", "-m", "pip", "install", "--no-index", "--no-deps",
                         "--disable-pip-version-check", str(wheel)], check=True,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60)
-        state_compatible(python, state)
+        state_compatible(python, state, require_recovery=recovery)
 
 
-def lock_state(state):
+def lock_state(state, *, recovery_upgrade=False):
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     handles = []
-    for name in ("daemon.lock", "host.lock"):
-        handle = open(state / name, "a")
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("stop the daemon and active local commands before changing installation") from None
-        handles.append(handle)
-    database = state / "authority.sqlite3"
-    if database.exists():
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as db:
-            if db.execute("SELECT 1 FROM leases WHERE state != 'released' LIMIT 1").fetchone():
-                raise RuntimeError("held, draining or quarantined leases must be cleanly released first")
+    try:
+        for name in ("daemon.lock", "host.lock"):
+            handle = open(state / name, "a")
+            handles.append(handle)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError("stop the daemon and active local commands before changing installation") from None
+        database = state / "authority.sqlite3"
+        held = []
+        if database.exists():
+            with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as db:
+                db.row_factory = sqlite3.Row
+                held = list(db.execute("SELECT * FROM leases WHERE state != 'released'"))
+                if held and not recovery_upgrade:
+                    raise RuntimeError("held, draining or quarantined leases must be cleanly released first")
+                if recovery_upgrade:
+                    # Recovery installation cannot authorize native ownership or
+                    # external work. This is the actual runtime predicate, plus its
+                    # durable terminal-return journal, not a mode-only guess.
+                    terminal = db.execute("SELECT 1 FROM meta WHERE key='terminal_native_handback'").fetchone()
+                    for row in held:
+                        runtime = json.loads(row["runtime"]) if row["runtime"] else {}
+                        if (row["owner"] != "local" or row["state"] != "quarantined"
+                                or row["mode"] not in {"exclusive_gpu", "exclusive_host", "hardware_partition", "gpu_configuration", "trusted_mps"}
+                                or not isinstance(runtime, dict) or runtime.get("execution_kind") == "native_handoff" or terminal):
+                            raise RuntimeError("recovery upgrade permits only quarantined local non-native allocations")
+        if recovery_upgrade and not held:
+            raise RuntimeError("recovery upgrade requires a quarantined allocation; use ordinary install")
+    except BaseException:
+        for handle in handles:
+            handle.close()
+        raise
     return handles
 
 
@@ -238,7 +268,8 @@ def finish_activation(prefix, manifest, *, compatibility_checked=False):
     if release not in manifest["releases"] or not (prefix/"releases"/release).is_dir():
         raise RuntimeError("activation journal does not identify an installed release")
     if not compatibility_checked:
-        state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]))
+        state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]),
+                         require_recovery=pending.get("recovery_upgrade") is True)
     expected = str(Path("releases") / release)
     current = prefix / "current"
     if current.exists() or current.is_symlink():
@@ -258,13 +289,15 @@ def finish_activation(prefix, manifest, *, compatibility_checked=False):
     save_manifest(prefix, manifest)
 
 
-def activate(prefix, manifest, release):
+def activate(prefix, manifest, release, *, recovery_upgrade=False):
     # Installer locks are held: an earlier schema1 snapshot cannot authorize a
     # schema2 downgrade after an intervening connection opt-in.
-    state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]))
+    state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]),
+                     require_recovery=recovery_upgrade)
     manifest["pending"] = {"kind": "activate", "release": release,
                            "temporary": ".current-" + uuid.uuid4().hex,
-                           "previous_release": manifest.get("active_release")}
+                           "previous_release": manifest.get("active_release"),
+                           "recovery_upgrade": recovery_upgrade}
     save_manifest(prefix, manifest)
     finish_activation(prefix, manifest, compatibility_checked=True)
 
@@ -329,14 +362,26 @@ def main(argv=None):
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--wheel")
     parser.add_argument("--release")
+    parser.add_argument("--recovery-upgrade", action="store_true",
+                        help="install a compatible recovery-capable wheel while only quarantined local non-native leases remain; never releases them")
     args = parser.parse_args(argv)
+    if args.recovery_upgrade and args.action != "install":
+        raise RuntimeError("--recovery-upgrade is available only for install")
     if sys.version_info < (3, 11):
         raise RuntimeError("Python 3.11 or newer is required")
     prefix, state = Path(args.prefix).resolve(), Path(args.state_dir).resolve()
     if prefix in {Path("/"), Path.home(), Path("/usr"), Path("/opt"), state} or prefix in state.parents or state in prefix.parents:
         raise RuntimeError("use dedicated, disjoint installation and persistent state directories")
     preflight_candidate(args, prefix, state)
-    locks = lock_state(state)
+    locks = lock_state(state, recovery_upgrade=args.recovery_upgrade)
+    try:
+        return install_locked(args, prefix, state)
+    finally:
+        for handle in locks:
+            handle.close()
+
+
+def install_locked(args, prefix, state):
     # Recheck the requested target before pending-install recovery or any prefix
     # mutation. A CLI connection opt-in may have committed after the early read.
     preflight_candidate(args, prefix, state)
@@ -346,6 +391,11 @@ def main(argv=None):
         if args.action != "install":
             raise RuntimeError("a new install requires an empty dedicated prefix")
         manifest = initialize_prefix(prefix, state)
+    pending = manifest.get("pending") or {}
+    if args.recovery_upgrade and pending.get("kind") == "uninstall":
+        raise RuntimeError("recovery upgrade cannot resume an interrupted uninstall")
+    if args.recovery_upgrade and pending.get("kind") == "activate" and not pending.get("recovery_upgrade"):
+        raise RuntimeError("an earlier ordinary activation must be resolved after clean release")
     recover_pending(prefix, manifest)
     if args.action == "install":
         wheel = Path(args.wheel or "").resolve()
@@ -358,7 +408,8 @@ def main(argv=None):
                     preserve_release(prefix, manifest, release, "uninstalled")
                 else:
                     raise RuntimeError("untracked release directory exists; it will not be deleted")
-            manifest["pending"] = {"kind": "install", "release": release, "wheel_sha256": digest(wheel)}
+            manifest["pending"] = {"kind": "install", "release": release, "wheel_sha256": digest(wheel),
+                                   "recovery_upgrade": args.recovery_upgrade}
             save_manifest(prefix, manifest)
             venv.EnvBuilder(with_pip=True).create(destination)
             subprocess.run([str(destination / "bin/python"), "-I", "-m", "pip", "install", "--no-index", "--no-deps",
@@ -378,9 +429,10 @@ def main(argv=None):
         finish_uninstall(prefix, manifest)
         print(json.dumps({"uninstalled": True, "state_preserved": str(state), "untracked_files_preserved": str(prefix)}))
         return 0
-    activate(prefix, manifest, release)
+    activate(prefix, manifest, release, recovery_upgrade=args.recovery_upgrade)
     print(json.dumps({"installed": True, "release": release, "executable": str(prefix / "current/bin/nodus-dc"),
                       "state_dir": str(state), "service_started": False,
+                      "recovery_upgrade": args.recovery_upgrade,
                       "preserved_directories": manifest.get("preserved_directories", [])}))
     return 0
 
