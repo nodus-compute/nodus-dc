@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 
+from nodus_dc import __version__
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend, Clock
@@ -39,7 +40,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             release = json.loads(result.stdout)["release"]
             version = installed_version()
-            self.assertEqual(version, "0.1.0.dev1")
+            self.assertEqual(version, __version__)
             clock = Clock()
             service = Service(Store(state / "authority.sqlite3"), Backend(clock), clock=clock)
             lease = service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1100, request_key="install-test")
@@ -54,18 +55,18 @@ class DistributionTests(unittest.TestCase):
             for name in ("LICENSE", "PROVENANCE.json"):
                 shutil.copy2(ROOT / name, successor / name)
             init = successor / "src/nodus_dc/__init__.py"
-            init.write_text(init.read_text().replace("0.1.0.dev1", "0.1.0.dev2"))
+            init.write_text(init.read_text().replace(__version__, "0.1.0.dev999"))
             builder.ROOT = successor
-            builder.VERSION = "0.1.0.dev2"
-            builder.DIST = "nodus_datacenter-0.1.0.dev2.dist-info"
-            builder.METADATA = builder.METADATA.replace("0.1.0.dev1", "0.1.0.dev2")
+            builder.VERSION = "0.1.0.dev999"
+            builder.DIST = "nodus_datacenter-0.1.0.dev999.dist-info"
+            builder.METADATA = builder.METADATA.replace(__version__, "0.1.0.dev999")
             next_name = builder.build_wheel(base / "next")
             upgraded = subprocess.run([*command, "install", *common, "--wheel", str(base/"next"/next_name)], capture_output=True, text=True)
             self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
-            self.assertEqual(installed_version(), "0.1.0.dev2")
+            self.assertEqual(installed_version(), "0.1.0.dev999")
             activated = subprocess.run([*command, "activate", *common, "--release", release], capture_output=True, text=True)
             self.assertEqual(activated.returncode, 0, activated.stderr)
-            self.assertEqual(installed_version(), "0.1.0.dev1")
+            self.assertEqual(installed_version(), __version__)
             foreign = prefix / "releases" / release / "operator-data.txt"
             foreign.write_text("preserve this")
             removed = subprocess.run([*command, "uninstall", *common], capture_output=True, text=True)
