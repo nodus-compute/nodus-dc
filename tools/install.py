@@ -14,6 +14,8 @@ import tempfile
 import sqlite3
 import subprocess
 import sys
+import time
+import urllib.parse
 import uuid
 import venv
 import zipfile
@@ -21,6 +23,117 @@ import zipfile
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+COMPATIBILITY_PROBE = """
+import json, sys
+try:
+    from nodus_dc.store import Store
+    Store(sys.argv[1])
+except Exception as error:
+    print(json.dumps({'supported': False, 'error_type': type(error).__name__, 'code': getattr(error, 'code', None)}))
+    sys.exit(1)
+print(json.dumps({'supported': True}))
+"""
+
+
+def state_compatible(python, state, *, snapshot_timeout=10):
+    """Open a consistent private copy with the actual candidate's Store code.
+
+    The authoritative database is opened mode=ro, including its current WAL.
+    Old releases need no new CLI command or inferred compatibility metadata.
+    Any initialization/migration by candidate code affects only the disposable
+    copy. Repeat this check after acquiring the ordinary installer locks.
+    """
+    database = state / "authority.sqlite3"
+    if not database.exists():
+        return
+    with tempfile.TemporaryDirectory(prefix="nodus-state-compatibility-") as folder:
+        snapshot = Path(folder) / "authority.sqlite3"
+        deadline = time.monotonic() + snapshot_timeout
+        def bounded_backup(_status, _remaining, _total):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("current authority state snapshot timed out; activation refused")
+        try:
+            source = sqlite3.connect("file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro", uri=True, timeout=0.05)
+            try:
+                target = sqlite3.connect(snapshot)
+                try:
+                    source.execute("PRAGMA query_only=ON")
+                    source.backup(target, pages=128, progress=bounded_backup, sleep=0.05)
+                finally:
+                    target.close()
+            finally:
+                source.close()
+        except sqlite3.Error:
+            raise RuntimeError("current authority state could not be read for compatibility; activation refused") from None
+        try:
+            result = subprocess.run([str(python), "-I", "-c", COMPATIBILITY_PROBE, str(snapshot)],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, timeout=30, check=False)
+            supported = result.returncode == 0 and json.loads(result.stdout).get("supported") is True
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            supported = False
+        if not supported:
+            raise RuntimeError("candidate cannot open the current authority state; active installation and state were not changed")
+
+
+def validate_wheel(wheel):
+    if not wheel.is_file() or wheel.suffix != ".whl":
+        raise RuntimeError("supply the local wheel with --wheel")
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+        if len(metadata) != 1 or "Name: nodus-datacenter\n" not in archive.read(metadata[0]).decode():
+            raise RuntimeError("wheel is not the expected product")
+
+
+def read_manifest(prefix, state):
+    marker = prefix / "installation.json"
+    if not marker.exists():
+        return None
+    manifest = json.loads(marker.read_text())
+    if manifest.get("product") != "nodus-datacenter" or manifest.get("state_dir") != str(state):
+        raise RuntimeError("installation ownership or state directory does not match")
+    return manifest
+
+
+def release_python(prefix, manifest, release):
+    if release not in manifest["releases"]:
+        raise RuntimeError("requested release is not owned by this installation")
+    return owned_path(prefix, "releases/" + release + "/bin/python")
+
+
+def preflight_candidate(args, prefix, state):
+    """Reject incompatible targets before asking an operator to stop a daemon.
+
+    Existing release interpreters are probed directly. A new wheel is installed
+    offline into a private temporary venv, without altering the active prefix.
+    This early read is advisory until rechecked under installer locks.
+    """
+    if args.action == "uninstall":
+        return
+    manifest = read_manifest(prefix, state)
+    if args.action == "activate":
+        if manifest is None:
+            raise RuntimeError("a new install requires an empty dedicated prefix")
+        state_compatible(release_python(prefix, manifest, args.release), state)
+        return
+    wheel = Path(args.wheel or "").resolve()
+    validate_wheel(wheel)
+    if not (state / "authority.sqlite3").exists():
+        return
+    release = digest(wheel)[:20]
+    if manifest and release in manifest["releases"]:
+        state_compatible(release_python(prefix, manifest, release), state)
+        return
+    with tempfile.TemporaryDirectory(prefix="nodus-wheel-compatibility-") as folder:
+        probe = Path(folder) / "candidate"
+        venv.EnvBuilder(with_pip=True).create(probe)
+        python = probe / "bin/python"
+        subprocess.run([str(python), "-I", "-m", "pip", "install", "--no-index", "--no-deps",
+                        "--disable-pip-version-check", str(wheel)], check=True,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60)
+        state_compatible(python, state)
 
 
 def lock_state(state):
@@ -119,11 +232,13 @@ def preserve_release(prefix, manifest, release, reason):
     preserve_pending(prefix, manifest)
 
 
-def finish_activation(prefix, manifest):
+def finish_activation(prefix, manifest, *, compatibility_checked=False):
     pending = manifest["pending"]
     release = pending["release"]
     if release not in manifest["releases"] or not (prefix/"releases"/release).is_dir():
         raise RuntimeError("activation journal does not identify an installed release")
+    if not compatibility_checked:
+        state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]))
     expected = str(Path("releases") / release)
     current = prefix / "current"
     if current.exists() or current.is_symlink():
@@ -144,11 +259,14 @@ def finish_activation(prefix, manifest):
 
 
 def activate(prefix, manifest, release):
+    # Installer locks are held: an earlier schema1 snapshot cannot authorize a
+    # schema2 downgrade after an intervening connection opt-in.
+    state_compatible(release_python(prefix, manifest, release), Path(manifest["state_dir"]))
     manifest["pending"] = {"kind": "activate", "release": release,
                            "temporary": ".current-" + uuid.uuid4().hex,
                            "previous_release": manifest.get("active_release")}
     save_manifest(prefix, manifest)
-    finish_activation(prefix, manifest)
+    finish_activation(prefix, manifest, compatibility_checked=True)
 
 
 def finish_uninstall(prefix, manifest):
@@ -217,25 +335,21 @@ def main(argv=None):
     prefix, state = Path(args.prefix).resolve(), Path(args.state_dir).resolve()
     if prefix in {Path("/"), Path.home(), Path("/usr"), Path("/opt"), state} or prefix in state.parents or state in prefix.parents:
         raise RuntimeError("use dedicated, disjoint installation and persistent state directories")
+    preflight_candidate(args, prefix, state)
     locks = lock_state(state)
-    marker = prefix / "installation.json"
-    if marker.exists():
-        manifest = json.loads(marker.read_text())
-        if manifest.get("product") != "nodus-datacenter" or manifest.get("state_dir") != str(state):
-            raise RuntimeError("installation ownership or state directory does not match")
-    else:
+    # Recheck the requested target before pending-install recovery or any prefix
+    # mutation. A CLI connection opt-in may have committed after the early read.
+    preflight_candidate(args, prefix, state)
+    # Another installer may have completed between the early probe and locks.
+    manifest = read_manifest(prefix, state)
+    if manifest is None:
         if args.action != "install":
             raise RuntimeError("a new install requires an empty dedicated prefix")
         manifest = initialize_prefix(prefix, state)
     recover_pending(prefix, manifest)
     if args.action == "install":
         wheel = Path(args.wheel or "").resolve()
-        if not wheel.is_file() or wheel.suffix != ".whl":
-            raise RuntimeError("supply the local wheel with --wheel")
-        with zipfile.ZipFile(wheel) as archive:
-            metadata = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
-            if len(metadata) != 1 or "Name: nodus-datacenter\n" not in archive.read(metadata[0]).decode():
-                raise RuntimeError("wheel is not the expected product")
+        validate_wheel(wheel)
         release = digest(wheel)[:20]
         destination = prefix / "releases" / release
         if release not in manifest["releases"]:
@@ -274,6 +388,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(1)
