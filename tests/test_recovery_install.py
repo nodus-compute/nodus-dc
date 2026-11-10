@@ -91,6 +91,27 @@ class RecoveryInstallTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "available only for install"):
                 installer.main([action, "--prefix", str(self.root / "install"), "--state-dir", str(self.state), "--recovery-upgrade"])
 
+    def test_observation_schema_refuses_actual_dev5_rollback(self):
+        old_path = os.environ.get("NODUS_OBSERVATION_LEGACY_WHEEL")
+        if not old_path:
+            self.skipTest("provide immutable published dev5 wheel offline for observation rollback verification")
+        old = Path(old_path).resolve()
+        self.assertEqual(hashlib.sha256(old.read_bytes()).hexdigest(), "229ce1e6f30fda28b778bd4c740a8c066c359aa7e558b1aa682186b3907fdaf2")
+        import venv
+        environment = self.root / "dev5"
+        venv.EnvBuilder(with_pip=True).create(environment)
+        python = environment / "bin/python"
+        subprocess.run([str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(old)],
+                       check=True, capture_output=True)
+        installer.state_compatible(python, self.state)
+        self.service.record_connection_attempt(participation="disabled", fresh_record=True)
+        self.service.record_connection_attempt()  # Legacy reconnect cannot downgrade schema3.
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "candidate cannot open"):
+            installer.state_compatible(python, self.state)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(Store(self.service.store.path).path, self.service.store.path)
+
     def test_actual_offline_wheel_protocol_and_interrupted_activation(self):
         old_path = os.environ.get("NODUS_RECOVERY_LEGACY_WHEEL")
         if not old_path:

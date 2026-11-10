@@ -42,10 +42,11 @@ def parser():
             q.add_argument("--bridge-token-file", required=True)
         if action == "connect":
             q.add_argument("--terminal-native-return", action="store_true", help="track a fresh dedicated API key for irreversible native return")
-            q.add_argument("--available-until", type=float, required=True)
+            q.add_argument("--participation", choices=["enabled", "disabled"], default="enabled")
+            q.add_argument("--available-until", type=float)
             q.add_argument("--accept-terms-digest")
             q.add_argument("--required-compensation", choices=["CashUSD", "Credits"], default="CashUSD")
-            allowed = q.add_mutually_exclusive_group(required=True)
+            allowed = q.add_mutually_exclusive_group()
             allowed.add_argument("--allow-qualified-jobs", action="store_true")
             allowed.add_argument("--allow-image", action="append", help="permit only these exact digest-pinned job images")
     reserve = sub.add_parser("reserve")
@@ -149,9 +150,11 @@ def main(argv=None):
                 parameters = {field: getattr(args, field) for field in
                               ("platform_url", "namespace", "pool", "node", "token_file", "node_identity_file")}
             if args.connection_action == "connect":
-                parameters.update(available_until=args.available_until, accept_terms_digest=args.accept_terms_digest,
+                if args.participation == "enabled" and not bridge_token:
+                    raise Error("bridge_disabled", "enabled participation requires --bridge-token-file", 403)
+                parameters.update(participation=args.participation, available_until=args.available_until, accept_terms_digest=args.accept_terms_digest,
                                   required_compensation=args.required_compensation, terminal_native_return=args.terminal_native_return,
-                                  allowed_images=None if args.allow_qualified_jobs else args.allow_image)
+                                  allowed_images=None if args.allow_qualified_jobs else (args.allow_image or ()))
             result = getattr(connection, args.connection_action)(**parameters)
         else:
             daemon_file = open(state / "daemon.lock", "a")

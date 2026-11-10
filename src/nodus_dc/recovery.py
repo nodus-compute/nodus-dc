@@ -4,7 +4,7 @@ import urllib.parse
 
 from .api import token_file
 from .errors import Error
-from .handback import SCOPES, REVOCATION_WAIT_SECONDS, private_file, api_key_metadata, exact_effective_scopes
+from .handback import node_retirement_proof, SCOPES, REVOCATION_WAIT_SECONDS, private_file, api_key_metadata, exact_effective_scopes
 
 RECOVERY_SCOPES = SCOPES | {"auditevents:read"}
 MAX_RECOVERY_KEYS = 4
@@ -101,13 +101,7 @@ class Recovery:
     def node(self, actor):
         status, proof = self.call(actor, "GET", self.j["node_path"] + "/retirement?uid=" + urllib.parse.quote(self.j["node_uid"], safe=""))
         if status == 200:
-            if (not isinstance(proof, dict) or proof.get("apiVersion") != "nodus.dev/v1" or proof.get("kind") != "NodeRetirement"
-                    or proof.get("retired") is not True or proof.get("node") != self.j["settings"]["node"]
-                    or proof.get("uid") != self.j["node_uid"] or proof.get("organizationUID") != self.j["org_uid"]
-                    or type(proof.get("credentialGeneration")) is not int or proof["credentialGeneration"] <= 0
-                    or not self.timestamp(proof.get("nodeIdentityRevokedTime"))):
-                raise Error("node_retirement_unverified", "retirement proof does not match the frozen Node identity", 409)
-            self.save("node_retired", node_retirement_proof=proof)
+            self.save("node_retired", node_retirement_proof=node_retirement_proof(self.j, status, proof))
             return
         if status != 409:
             raise Error("node_retirement_unverified", "no affirmative retained Node retirement proof; keep host quarantined", 409)
@@ -126,7 +120,12 @@ class Recovery:
                 or detail.get("uid") != self.j["node_uid"] or detail.get("name") != self.j["settings"]["node"]
                 or detail.get("kind") != "nodes" or detail.get("group") != "nodus.dev"):
             raise Error("node_retirement_unverified", "conditional Node retirement acknowledgement is uncertain", 409)
-        self.save("node_retired", node_delete=ack)
+        if self.j.get("retirement_basis") == "never_enabled":
+            self.save("node_delete_pending", node_delete=ack)
+            status, proof = self.call(actor, "GET", self.j["node_path"] + "/retirement?uid=" + urllib.parse.quote(self.j["node_uid"], safe=""))
+            self.save("node_retired", node_retirement_proof=node_retirement_proof(self.j, status, proof))
+        else:
+            self.save("node_retired", node_delete=ack)
 
     @staticmethod
     def timestamp(value):

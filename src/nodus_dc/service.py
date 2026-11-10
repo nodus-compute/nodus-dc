@@ -114,13 +114,24 @@ class Service:
     def _native_handoff(lease):
         return (lease.get("runtime") or {}).get("execution_kind") == "native_handoff"
 
-    def record_connection_attempt(self, credential_binding=None):
+    def record_connection_attempt(self, credential_binding=None, *, participation=None, fresh_record=False):
         """Persist before any remote Accept/connect; serialize against native handoff."""
         with self.authority(), self.store.transaction(self.clock()) as db:
             for row in db.execute("SELECT * FROM leases WHERE state!='released'"):
                 if self._native_handoff(Store.decode(row)):
                     raise Error("native_handoff_active", "native handoff requires an out-of-band return fence before platform participation", 409)
             prior = db.execute("SELECT value FROM meta WHERE key='native_credential_history'").fetchone()
+            if participation == "disabled":
+                recorded = db.execute("SELECT value FROM meta WHERE key='participation_history'").fetchone()
+                if not recorded:
+                    pristine = (fresh_record and not prior
+                        and not db.execute("SELECT 1 FROM meta WHERE key='connected_mode_seen'").fetchone()
+                        and not db.execute("SELECT 1 FROM bridge_policy").fetchone()
+                        and not db.execute("SELECT 1 FROM platform_claims").fetchone()
+                        and not db.execute("SELECT 1 FROM leases WHERE owner='external'").fetchone())
+                    db.execute("INSERT INTO meta VALUES('participation_history',?)",
+                               ("never_enabled" if pristine else "unknown",))
+                db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
             seen = db.execute("SELECT 1 FROM meta WHERE key='connected_mode_seen'").fetchone()
             history = json.loads(prior[0]) if prior else {
                 "eligible": credential_binding is not None and not seen, "binding": credential_binding,
@@ -130,7 +141,7 @@ class Service:
             db.execute("INSERT OR REPLACE INTO meta VALUES('native_credential_history',?)", (canonical(history),))
             # Old binaries refuse this authority state rather than silently omit
             # credential-history checks after a package rollback.
-            db.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+            db.execute("UPDATE meta SET value='2' WHERE key='schema_version' AND value='1'")
             db.execute("INSERT OR REPLACE INTO meta VALUES('connected_mode_seen','1')")
 
     @staticmethod
@@ -521,6 +532,11 @@ class Service:
                 for row in db.execute("SELECT * FROM leases WHERE state!='released'"):
                     if self._native_handoff(Store.decode(row)):
                         raise Error("native_handoff_active", "native handoff needs an out-of-band return fence before participation", 409)
+            if enabled:
+                # The same commit records exposure before publishing any enabled policy.
+                # Disabled/current state can never prove absence of past participation.
+                db.execute("INSERT OR REPLACE INTO meta VALUES('participation_history','ever_enabled')")
+                db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
             old = db.execute("SELECT * FROM bridge_policy WHERE singleton=1").fetchone()
             values = (int(enabled), policy_revision, consent_reference, authorization_id, expires_at)
             if old and policy_revision <= old["policy_revision"]:

@@ -8,9 +8,10 @@ Source distributions include this directory; runtime wheels deliberately omit ve
 cd verification/models
 python3 run_models.py --mutations --output results/core-my-run
 python3 run_native_recovery.py --output results/native-my-run
+python3 run_native_observation.py --output results/observation-my-run
 ```
 
-Use a new output directory for every run; both commands refuse existing destinations. No network, account, service, GPU or third-party Python package is used. Python3.11+ is supported. Each runner returns nonzero if a baseline fails or is incomplete, or if a deliberate mutation fails to expose its intended property violation. `--max-states 1` demonstrates honest incomplete reporting; it must return nonzero. The state limit is an operational guard, not a pruning rule that permits a pass.
+Use a new output directory for every run; all commands refuse existing destinations. No network, account, service, GPU or third-party Python package is used. Python3.11+ is supported. Each runner returns nonzero if a baseline fails or is incomplete, or if a deliberate mutation fails to expose its intended property violation. `--max-states 1` demonstrates honest incomplete reporting; it must return nonzero. The state limit is an operational guard, not a pruning rule that permits a pass.
 
 ## Reference results
 
@@ -26,6 +27,8 @@ The committed [core summary](reference-results/core-v1/summary.json) and [native
 | Total, five separate graphs | Not one combined system proof | 57,042 | 365,011 |
 
 All40 intentional guard mutations produced their expected violations:23 across the four core models and17 in terminal return/recovery. These are sensitivity checks of the model, not findings that the released runtime contains those faults. The native model imports the shared terminal-return transitions from `native_handback.py`; it adds recovery obligations without treating an absent remote object as revocation proof.
+
+The additive [schema3 observation model](native-observation.md) retains a separate [reference run](reference-results/native-observation-v1/summary.json): four origin graphs, 83,156 states and 458,410 transitions, with 20 additional intended counterexamples. The earlier five graphs and their 40 witnesses are unchanged. The observation runner binds exact model sources; each referenced receipt retains its full witness. The new extension is not a combined system proof or implementation refinement. Its no-consent abstraction is a conservative subset of the runtime's historical revoked-consent case.
 
 ## Method and trust assumptions
 

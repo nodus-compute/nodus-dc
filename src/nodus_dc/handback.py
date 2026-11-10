@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from .api import token_file
@@ -62,6 +63,23 @@ def api_key_metadata(value):
         return None
     return {"uid": metadata["uid"], "name": metadata["name"], "scopes": scopes, "projects": projects,
             "serviceAccountName": spec.get("serviceAccountName", "")}
+
+
+def node_retirement_proof(journal, status, proof):
+    """Affirmative same-org tombstone proof, never absence or DELETE acknowledgement."""
+    try:
+        timestamp = datetime.fromisoformat(proof.get("nodeIdentityRevokedTime", "").replace("Z", "+00:00"))
+        valid_time = timestamp.tzinfo is not None
+    except (AttributeError, ValueError, TypeError):
+        valid_time = False
+    if (status != 200 or not isinstance(proof, dict) or proof.get("apiVersion") != "nodus.dev/v1"
+            or proof.get("kind") != "NodeRetirement" or proof.get("retired") is not True
+            or proof.get("node") != journal["settings"]["node"] or proof.get("uid") != journal["node_uid"]
+            or proof.get("organizationUID") != journal["org_uid"]
+            or type(proof.get("credentialGeneration")) is not int or proof["credentialGeneration"] <= 0 or not valid_time):
+        raise Error("node_retirement_unverified", "no affirmative retirement proof for the frozen Node identity; keep host quarantined", 409)
+    return {name: proof[name] for name in ("apiVersion", "kind", "retired", "node", "uid", "organizationUID",
+                                         "credentialGeneration", "nodeIdentityRevokedTime")}
 
 
 def _unique_object(pairs):
@@ -251,6 +269,9 @@ class Handback:
         self._verify_key(journal)
         with service.store.connection() as db:
             row = db.execute("SELECT value FROM meta WHERE key='native_credential_history'").fetchone()
+            participation = db.execute("SELECT value FROM meta WHERE key='participation_history'").fetchone()
+            prior_external = (db.execute("SELECT 1 FROM platform_claims").fetchone()
+                              or db.execute("SELECT 1 FROM leases WHERE owner='external'").fetchone())
         history = json.loads(row[0]) if row else None
         current_binding = {**observed_binding(settings), "credential_uid": journal["credential_uid"], "org_uid": journal["org_uid"]}
         if not history or history.get("eligible") is not True or history.get("binding") != current_binding:
@@ -261,11 +282,21 @@ class Handback:
         status, sharing = self._call(journal, "GET", path)
         consent = sharing.get("consent") if isinstance(sharing, dict) else None
         if (status != 200 or not isinstance(sharing, dict) or sharing.get("accepting") is not False
-                or record["node"] not in sharing.get("nodes", []) or not isinstance(consent, dict)
-                or consent.get("id") != record["consent_id"] or consent.get("termsDigest") != record["terms_digest"]
-                or not consent.get("revokedTime") or type(sharing.get("generation")) is not int):
-            raise Error("remote_revocation_required", "revoke this exact host's accepted consent in the console and complete reclaim first", 409)
-        journal["consent"] = {"id": consent["id"], "terms_digest": consent["termsDigest"], "generation": sharing["generation"], "revoked_time": consent["revokedTime"]}
+                or record["node"] not in sharing.get("nodes", []) or type(sharing.get("generation")) is not int):
+            raise Error("remote_revocation_required", "this exact enrolled host must not be accepting capacity work", 409)
+        never_enabled = (participation is not None and participation[0] == "never_enabled"
+                         and not prior_external and record.get("participation") == "disabled")
+        if never_enabled:
+            if consent is not None and (not isinstance(consent, dict) or not consent.get("revokedTime")):
+                raise Error("remote_revocation_required", "existing accepted consent must be revoked before terminal return", 409)
+            journal["retirement_basis"] = "never_enabled"
+            journal["participation_history"] = "never_enabled"
+        else:
+            if (not isinstance(consent, dict) or not record.get("consent_id") or not record.get("terms_digest")
+                    or consent.get("id") != record["consent_id"] or consent.get("termsDigest") != record["terms_digest"]
+                    or not consent.get("revokedTime")):
+                raise Error("remote_revocation_required", "revoke this exact host's accepted consent in the console and complete reclaim first", 409)
+            journal["consent"] = {"id": consent["id"], "terms_digest": consent["termsDigest"], "generation": sharing["generation"], "revoked_time": consent["revokedTime"]}
         # Inventory can take time. Read the CAS resourceVersion after it, as close
         # as possible to the durable DELETE intent.
         self._verify_clean(lease)
@@ -338,7 +369,13 @@ class Handback:
                         or details.get("uid") != journal["node_uid"] or details.get("name") != journal["settings"]["node"]
                         or details.get("kind") != "nodes" or details.get("group") != "nodus.dev"):
                     raise Error("node_retirement_unverified", "exact Node retirement acknowledgement missing; host remains quarantined", 409)
-                journal = self._save(journal, "node_retired", node_delete=ack)
+                if journal.get("retirement_basis") == "never_enabled":
+                    journal = self._save(journal, "node_delete_pending", node_delete=ack)
+                    status, proof = self._call(journal, "GET", journal["node_path"] + "/retirement?uid="
+                                               + urllib.parse.quote(journal["node_uid"], safe=""))
+                    journal = self._save(journal, "node_retired", node_retirement_proof=node_retirement_proof(journal, status, proof))
+                else:
+                    journal = self._save(journal, "node_retired", node_delete=ack)
             if journal["stage"] == "node_retired":
                 self._verify_key(journal)
                 journal = self._save(journal, "key_delete_pending")

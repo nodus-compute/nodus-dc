@@ -1,9 +1,17 @@
 """Hardware adapter command/parse tests; no simulated result qualifies hardware."""
 import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
-from nodus_dc.backend import LABEL, NvidiaDockerBackend
+from nodus_dc.backend import LABEL, NvidiaDockerBackend, run
 from nodus_dc.errors import Error
 from nodus_dc.model import Resource, Snapshot, canonical
 from nodus_dc.partitioning import configure_mig
@@ -369,6 +377,88 @@ class BackendTests(unittest.TestCase):
         stops = [c[-1] for c in commands.calls if c[:2] == ["docker", "stop"]]
         self.assertEqual(stops, [*runtime["client_ids"], runtime["controller_id"]])
         self.assertIsNone(commands.volume)
+
+    @unittest.skipUnless(shutil.which("timeout"), "readiness subprocess fixture needs GNU timeout")
+    def test_mps_readiness_requires_socket_and_live_bounded_query(self):
+        # Real filesystem types, shell predicate, UNIX socket I/O and timeout;
+        # the small control client is a protocol fixture, not NVIDIA hardware.
+        for endpoint in ("live_empty", "live_pid", "fifo", "regular", "missing", "stale", "hung"):
+            with self.subTest(endpoint=endpoint), tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "control"
+                executable = Path(root) / "client"
+                executable.write_text("#!/usr/bin/env python3\nimport socket,sys\n"
+                    "assert sys.stdin.read() == 'get_server_list\\n'\n"
+                    "s=socket.socket(socket.AF_UNIX)\n"
+                    f"s.connect({str(path)!r})\n"
+                    "sys.stdout.write(s.recv(256).decode())\n")
+                executable.chmod(0o700)
+                listener = None
+                thread = None
+                stop = threading.Event()
+                if endpoint in {"live_empty", "live_pid", "stale", "hung"}:
+                    listener = socket.socket(socket.AF_UNIX)
+                    listener.bind(str(path))
+                    if endpoint == "stale":
+                        listener.close()
+                    else:
+                        listener.listen(1)
+                        listener.settimeout(2)
+                        def serve():
+                            try:
+                                connection, _ = listener.accept()
+                                with connection:
+                                    if endpoint == "hung":
+                                        stop.wait(3)
+                                    elif endpoint == "live_pid":
+                                        connection.sendall(b"123\n")
+                            except (OSError, TimeoutError):
+                                pass
+                        thread = threading.Thread(target=serve)
+                        thread.start()
+                elif endpoint == "fifo":
+                    os.mkfifo(path)
+                elif endpoint == "regular":
+                    path.touch()
+
+                class LocalProbe(PoolCommands):
+                    def __call__(self, args, **kw):
+                        if args[:2] == ["docker", "exec"]:
+                            self.calls.append(args)
+                            local = [part.replace("/mps/control", str(path)).replace(
+                                "/usr/bin/nvidia-cuda-mps-control", str(executable)) for part in args[3:]]
+                            return run(local, **kw)
+                        return super().__call__(args, **kw)
+
+                commands = LocalProbe()
+                self.backend.command = commands
+                self.backend.enable_trusted_mps = True
+                lease = self.lease("trusted_mps")
+                client = {"workload": {"image": IMAGE, "command": ["model"]},
+                          "active_thread_percent": 50, "memory_mib": 30000}
+                lease["workload"] = {"trust_domain": "team-a", "controller_image": IMAGE,
+                                     "clients": [client, dict(client)]}
+                started = time.monotonic()
+                try:
+                    # Exercise one real probe without spending the production
+                    # retry window on each intentionally unavailable endpoint.
+                    with patch("nodus_dc.sharing.range", return_value=range(1), create=True), patch("time.sleep"):
+                        if endpoint.startswith("live_"):
+                            runtime = self.backend.start(lease)
+                            self.assertEqual(len(runtime["client_ids"]), 2)
+                        else:
+                            with self.assertRaises(Error) as error:
+                                self.backend.start(lease)
+                            self.assertEqual(error.exception.code, "mps_not_ready")
+                            self.assertEqual(len(commands.containers), 1)  # Controller only; kept for recovery.
+                            self.assertIsNotNone(commands.volume)
+                    self.assertLess(time.monotonic() - started, 1.8 if endpoint == "hung" else 3)
+                finally:
+                    stop.set()
+                    if listener is not None:
+                        listener.close()
+                    if thread is not None:
+                        thread.join(3)
+                        self.assertFalse(thread.is_alive())
 
     def test_mig_configuration_never_targets_other_gpu_or_uses_reset(self):
         gpu = Resource("GPU-aaaa", "gpu", "host-a", "GPU-aaaa", modes=("gpu_configuration",), healthy=True,
