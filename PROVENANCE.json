@@ -1,0 +1,13 @@
+{
+  "product": "nodus-datacenter",
+  "version": "0.1.0.dev1",
+  "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
+  "new_code_license": "Apache-2.0",
+  "qualification": "UNQUALIFIED development prerelease. CPU/control-plane verification does not qualify GPU hardware, native provisioning, production connected execution or cash settlement.",
+  "runtime_python_dependencies": [],
+  "upstream_interfaces": [
+    "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",
+    "https://docs.nvidia.com/deploy/mps/appendix-environment-variables.html",
+    "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html"
+  ]
+}

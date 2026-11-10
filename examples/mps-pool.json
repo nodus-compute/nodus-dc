@@ -1,0 +1,8 @@
+{
+  "trust_domain": "cooperating-team-a",
+  "controller_image": "YOUR_MPS_IMAGE@sha256:REPLACE_WITH_EXACT_64_CHARACTER_DIGEST",
+  "clients": [
+    {"active_thread_percent": 50, "memory_mib": 30000, "workload": {"image": "YOUR_PRELOADED_IMAGE@sha256:REPLACE_WITH_EXACT_64_CHARACTER_DIGEST", "command": ["python3", "/app/worker.py"]}},
+    {"active_thread_percent": 50, "memory_mib": 30000, "workload": {"image": "YOUR_PRELOADED_IMAGE@sha256:REPLACE_WITH_EXACT_64_CHARACTER_DIGEST", "command": ["python3", "/app/worker.py"]}}
+  ]
+}

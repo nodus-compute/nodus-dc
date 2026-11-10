@@ -1,0 +1,8 @@
+{
+  "image": "YOUR_PRELOADED_IMAGE@sha256:REPLACE_WITH_EXACT_64_CHARACTER_DIGEST",
+  "entrypoint": "/usr/bin/python3",
+  "command": ["-m", "your_local_model_server"],
+  "network": "none",
+  "mounts": [{"source": "/srv/models/your-model", "target": "/model"}],
+  "shm_bytes": 1073741824
+}

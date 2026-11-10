@@ -1,0 +1,16 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "nodus-datacenter"
+version = "0.1.0.dev1"
+description = "Local GPU allocation and explicit capacity lending for Nodus operators"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [{name = "Nodus"}]
+dependencies = []
+
+[project.scripts]
+nodus-dc = "nodus_dc.cli:main"
