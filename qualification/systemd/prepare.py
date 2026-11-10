@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build only the frozen public candidate and compare exact reviewed artifacts."""
+"""Download pinned published artifacts and compare an independent source rebuild."""
 import argparse
 import hashlib
 import importlib.util
@@ -37,6 +37,26 @@ def legacy_inputs(output, bindings, local_assets=None):
     return observed
 
 
+def published_inputs(output, bindings):
+    release = bindings["published_release"]
+    if set(release["sizes"]) != set(bindings["artifacts"]):
+        raise RuntimeError("published asset names differ from artifact bindings")
+    observed = {}
+    for name, expected in bindings["artifacts"].items():
+        size = release["sizes"][name]
+        if type(size) is not int or not 0 < size <= 4 << 20:
+            raise RuntimeError("invalid published asset size bound")
+        path = output / name
+        url = release["url"] + name
+        fetch(url, path, size)
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if len(raw) != size or digest != expected:
+            raise RuntimeError("downloaded published artifact differs from pinned bytes: " + name)
+        observed[name] = {"url": url, "bytes": len(raw), "sha256": digest}
+    return {"tag": release["tag"], "source_commit": bindings["source_commit"], "assets": observed}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--candidate", type=Path, required=True)
@@ -53,11 +73,14 @@ def main():
     spec = importlib.util.spec_from_file_location("frozen_nodus_build", args.candidate / "build_backend.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.build_wheel(str(args.output))
-    module.build_sdist(str(args.output))
+    rebuilt = args.output / "rebuilt"
+    rebuilt.mkdir()
+    module.build_wheel(str(rebuilt))
+    module.build_sdist(str(rebuilt))
     for name, expected in bindings["artifacts"].items():
-        if hashlib.sha256((args.output / name).read_bytes()).hexdigest() != expected:
+        if hashlib.sha256((rebuilt / name).read_bytes()).hexdigest() != expected:
             raise SystemExit("built artifact differs from reviewed bytes: " + name)
+    published = published_inputs(args.output, bindings)
     with zipfile.ZipFile(args.output / bindings["wheel"]) as wheel:
         for source, expected in bindings["module_sha256"].items():
             if hashlib.sha256(wheel.read(source)).hexdigest() != expected:
@@ -65,6 +88,7 @@ def main():
     legacy = legacy_inputs(args.output, bindings, args.legacy_assets)
     result = {"legacy_inputs_sha256": legacy, "candidate_installer_sha256": bindings["candidate_installer_sha256"],
               "source_commit": revision, "artifacts": bindings["artifacts"], "built_equal_reviewed": True,
+              "published_downloads": published,
               "systemd_executed": False, "gpu_qualified": False}
     (args.output / "artifact-rebuild.json").write_text(json.dumps(result, indent=2) + "\n")
 
