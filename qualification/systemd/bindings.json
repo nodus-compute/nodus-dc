@@ -1,20 +1,20 @@
 {
   "status": "Pinned manual qualification inputs. Source and CPU protocol reviewed; actual systemd/hosted/GPU qualification requires retained execution evidence.",
-  "source_commit": "4328234b90e6b19147ea919b45aa60aae5771bc3",
-  "version": "0.1.0.dev2",
-  "wheel": "nodus_datacenter-0.1.0.dev2-py3-none-any.whl",
+  "source_commit": "fdfa300dd2856ac29c1464fb608eb8bfa4882e0d",
+  "version": "0.1.0.dev3",
+  "wheel": "nodus_datacenter-0.1.0.dev3-py3-none-any.whl",
   "artifacts": {
-    "nodus_datacenter-0.1.0.dev2-py3-none-any.whl": "b86380486c36949533d49ea66e95366aa2f0a879c23c3035eb8f6264da87859d",
-    "nodus_datacenter-0.1.0.dev2.tar.gz": "fa4bfcd1ac2e819633d197943095320c9ba9bc5002e1cb580613e3e4dd2096fd"
+    "nodus_datacenter-0.1.0.dev3-py3-none-any.whl": "0237fca79edb80250c7ca17f5a9fd90cb4cba92d9b89f4d92dd0b79b73ae7ec2",
+    "nodus_datacenter-0.1.0.dev3.tar.gz": "448461ca08ce145152b92f90a3a7dea8fe67ef4c6a9d4b4ad5d9760c355a57c9"
   },
-  "handback_sha256": "c6ef8be354d304b8934010e43f6759b0f0762493f05f6afde75a76da44f4f7fd",
+  "handback_sha256": "e123861d25f91b73ba18615e0488a49ae7a1b4194692ef82fb926b922738a133",
   "module_sha256": {
-    "nodus_dc/handback.py": "c6ef8be354d304b8934010e43f6759b0f0762493f05f6afde75a76da44f4f7fd",
+    "nodus_dc/handback.py": "e123861d25f91b73ba18615e0488a49ae7a1b4194692ef82fb926b922738a133",
     "nodus_dc/connection.py": "c13f5ea18523eff5dac63dc0b55d02b7a4f3f7c00ebd2df0d2b81d9c83225ebc",
     "nodus_dc/service.py": "9437450001016a3979d1e1326599accbb6ca0d05096c8b27738777c94c607d31",
     "nodus_dc/store.py": "441ceec182a7db53aeb894ac038b75bfd11e7f694adbe03b0b59c4e989674198",
     "nodus_dc/cli.py": "c32ee874ccf30b8f2026a99a905150b46af93259a73d0a78c20b30d85d47fb56",
-    "nodus_dc/recovery.py": "19c263fd1a736327c767032adb54c5825bcd44c99d7c7102a3ecdc93722be5ce"
+    "nodus_dc/recovery.py": "9540d06167e510d71e74c20d40b1f3cb4ee850ee96d66d6c39bf72f582077ac6"
   },
   "published_nodusd": {
     "source_commit": "ca1e8ce6774b39b62515c0a5402ea1c84e44fb04",
@@ -36,5 +36,13 @@
     "sdist_sha256": "391ff4a03be4ee67e9131217fe97c9371d81187aba18e37ce0755cab7b7d2531",
     "installer_sha256": "7f34f8f482b45baa14af0fdc3886601265c9dc9fbc18884d36857b245f82599e",
     "release_url": "https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev1/"
+  },
+  "published_release": {
+    "tag": "v0.1.0-dev3",
+    "url": "https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev3/",
+    "sizes": {
+      "nodus_datacenter-0.1.0.dev3-py3-none-any.whl": 64953,
+      "nodus_datacenter-0.1.0.dev3.tar.gz": 154506
+    }
   }
 }

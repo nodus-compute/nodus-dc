@@ -19,10 +19,10 @@ jobs:
       - name: Check out exact independently reviewed package source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 4328234b90e6b19147ea919b45aa60aae5771bc3
+          ref: fdfa300dd2856ac29c1464fb608eb8bfa4882e0d
           path: candidate
           persist-credentials: false
-      - name: Rebuild and bind both reviewed package artifacts
+      - name: Download the published artifacts and verify their source rebuild
         run: python3 qualification/systemd/prepare.py --candidate candidate --output evidence/prepared
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
@@ -47,7 +47,7 @@ jobs:
           sudo python3 "$root/install.py" install --prefix "$root/install" --state-dir "$root/state" \
             --wheel "$root/nodus_datacenter-0.1.0.dev1-py3-none-any.whl" > evidence/install-legacy.json
           sudo python3 "$root/install.py" install --prefix "$root/install" --state-dir "$root/state" \
-            --wheel "$PWD/evidence/prepared/nodus_datacenter-0.1.0.dev2-py3-none-any.whl" > evidence/install.json
+            --wheel "$PWD/evidence/prepared/nodus_datacenter-0.1.0.dev3-py3-none-any.whl" > evidence/install.json
           sudo "$root/install/current/bin/nodus-dc" --version > evidence/nodus-dc-version.txt
           sudo "$root/install/current/bin/nodus-dc" native-return --help > evidence/native-return-help.txt
       - name: Actual systemd lifecycle with representative worker and installed LinuxAgent

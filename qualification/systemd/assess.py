@@ -116,6 +116,20 @@ def service_evidence(root, cases, cleanup):
     stopped_snapshot(cleanup["observation"], rows, removed=True)
 
 
+def published_evidence(root, artifact, bindings):
+    """Require downloaded release provenance and identical rebuilt artifact bytes."""
+    release = bindings["published_release"]
+    assert artifact["published_downloads"] == {
+        "tag": release["tag"], "source_commit": bindings["source_commit"],
+        "assets": {name: {"url": release["url"] + name, "bytes": release["sizes"][name], "sha256": sha}
+                   for name, sha in bindings["artifacts"].items()}}
+    for name, expected in bindings["artifacts"].items():
+        downloaded = root / "prepared" / name
+        assert downloaded.stat().st_size == release["sizes"][name]
+        assert hashlib.sha256(downloaded.read_bytes()).hexdigest() == expected
+        assert hashlib.sha256((root / "prepared/rebuilt" / name).read_bytes()).hexdigest() == expected
+
+
 def assess(root):
     result = {"passed_scoped_systemd_and_artifact_checks": False,
               "native_customer_return_qualified": False, "gpu_qualified": False,
@@ -134,8 +148,7 @@ def assess(root):
         assert systemd["installed_module_sha256"] == bindings["module_sha256"]
         assert artifact["source_commit"] == bindings["source_commit"]
         assert artifact["artifacts"] == bindings["artifacts"]
-        for name, expected in bindings["artifacts"].items():
-            assert hashlib.sha256((root / "prepared" / name).read_bytes()).hexdigest() == expected
+        published_evidence(root, artifact, bindings)
         assert agent["binary"]["sha256"] == bindings["published_nodusd"]["sha256"]
         cases = systemd["cases"]
         assert len(cases) == len(EXPECTED) and {c["name"] for c in cases} == EXPECTED
@@ -158,7 +171,7 @@ def assess(root):
         assert agent["signature_verified"] is True and agent["protocol_executable_verified"] is True
         assert len(agent["negative_checks"]) == 2 and all(x["returncode"] != 0 for x in agent["negative_checks"])
         assert not any(systemd.get(k) is True for k in ("gpu_qualified", "platform_retirement_qualified", "actual_nodusd_daemon_qualified", "native_customer_return_qualified"))
-        assert (root / "nodus-dc-version.txt").read_text().strip() == "0.1.0.dev2"
+        assert (root / "nodus-dc-version.txt").read_text().strip() == bindings["version"]
         assert "--api-key-name" in (root / "native-return-help.txt").read_text()
         assert (root / "systemd/commands.jsonl").stat().st_size > 0
         result["passed_scoped_systemd_and_artifact_checks"] = True
