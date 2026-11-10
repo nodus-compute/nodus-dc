@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import platform
 import re
@@ -42,6 +43,31 @@ def run(argv, *, timeout=30):
 def memory_bytes(text):
     match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(MiB|GiB)\s*", text or "")
     return int(float(match[1]) * (2**20 if match[2] == "MiB" else 2**30)) if match else 0
+
+
+def physical_query(raw, capabilities):
+    """Join a fresh physical index/UUID query, never XML order or minor number."""
+    indices, compute = {}, {}
+    try:
+        for row in csv.reader(io.StringIO(raw)):
+            if not row:
+                continue
+            row = [value.strip() for value in row]
+            if len(row) != (4 if capabilities else 3):
+                raise ValueError("unexpected physical query columns")
+            index, uuid, mig_mode = row[:3]
+            if (not re.fullmatch(r"0|[1-9][0-9]*", index)
+                    or not re.fullmatch(r"GPU-[A-Za-z0-9-]+", uuid)
+                    or index in indices or uuid in indices.values() or mig_mode != "Disabled"):
+                raise ValueError("ambiguous physical identity or MIG mode changed")
+            indices[index] = uuid
+            if capabilities and re.fullmatch(r"[0-9]+\.[0-9]+", row[3]):
+                value = float(row[3])
+                if math.isfinite(value):
+                    compute[uuid] = value
+    except (csv.Error, ValueError) as exc:
+        raise Error("invalid_inventory", str(exc), 503) from None
+    return indices, compute
 
 
 def mig_process_scopes(gpu, children):
@@ -118,9 +144,26 @@ class NvidiaDockerBackend:
         try:
             xml = ET.fromstring(self.command(["nvidia-smi", "-q", "-x"], timeout=20))
             driver = xml.findtext("driver_version", "")
-            listing = self.command(["nvidia-smi", "-L"], timeout=15)
+            gpus = xml.findall("gpu")
+            physical_only = bool(gpus) and all(
+                gpu.findtext("mig_mode/current_mig") == "Disabled"
+                and (gpu.find("mig_devices") is None or (
+                    len(gpu.find("mig_devices")) == 0
+                    and (gpu.findtext("mig_devices") or "").strip() in {"", "None"}))
+                for gpu in gpus)
+            listing = ""
             compute = {}
-            if self.enable_trusted_mps:
+            if physical_only:
+                # Preserve two fresh observations and explicit physical indices.
+                # MIG instances/unknown modes still need the complete -L join.
+                fields = "index,uuid,mig.mode.current" + (",compute_cap" if self.enable_trusted_mps else "")
+                raw = self.command(["nvidia-smi", "--query-gpu=" + fields, "--format=csv,noheader"], timeout=15)
+                gpu_indices, compute = physical_query(raw, self.enable_trusted_mps)
+                if self.enable_trusted_mps and len(compute) != len(gpu_indices):
+                    warnings.append("MPS compute capability unavailable; trusted sharing disabled")
+            else:
+                listing = self.command(["nvidia-smi", "-L"], timeout=15)
+            if self.enable_trusted_mps and not physical_only:
                 try:
                     for line in self.command(["nvidia-smi", "--query-gpu=uuid,compute_cap", "--format=csv,noheader"], timeout=15).splitlines():
                         identity, capability = [part.strip() for part in line.split(",")]

@@ -1,9 +1,9 @@
 {
   "product": "nodus-datacenter",
-  "version": "0.1.0.dev6",
+  "version": "0.1.0.dev7",
   "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
   "new_code_license": "Apache-2.0",
-  "qualification": "UNQUALIFIED development prerelease. Adds connected observation without capacity acceptance, durable participation-history fencing and terminal native return after affirmative Node retirement for never-enabled hosts. Corrects MPS control-socket readiness with a bounded read-only control query. CPU and bounded-model evidence do not establish hardware, hosted retirement, native access, payment, or serving qualification. Hardware results must bind the exact released artifact and environment. Native-to-lending reprovisioning remains unsupported.",
+  "qualification": "UNQUALIFIED development prerelease. Coalesces fresh physical GPU queries only with explicit MIG-disabled cross-checks and separates periodic lease maintenance from optional inventory refresh. Authority decisions and cleanup retain fresh hardware proofs. Status inventory retains its original observed_at timestamp. Earlier dev6 serving throughput/control-overhead failures remain unresolved until exact-artifact requalification; a read-only inventory scan does not establish serving performance. CPU tests and unchanged bounded models do not establish full hardware, Kubernetes, hosted retirement, native access or processor qualification. Native-to-lending reprovisioning remains unsupported.",
   "runtime_python_dependencies": [],
   "upstream_interfaces": [
     "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",
@@ -11,6 +11,6 @@
     "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html",
     "https://docs.nvidia.com/deploy/nvidia-smi/"
   ],
-  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev5",
+  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev6",
   "serving_client_sha256": "cb7633aa62d5f4813ce466490748916b61d440d7e248df4be0a25b98bf6523de"
 }
