@@ -1,15 +1,16 @@
 {
   "product": "nodus-datacenter",
-  "version": "0.1.0.dev2",
+  "version": "0.1.0.dev4",
   "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
   "new_code_license": "Apache-2.0",
-  "qualification": "UNQUALIFIED development prerelease. Terminal native return and bounded uncertainty recovery have CPU protocol/model evidence only; actual hosted retirement, Linux service shutdown, GPU cleanup and native access are unqualified. Incompatible schema2 downgrades are refused; native-to-lending reprovisioning remains unsupported.",
+  "qualification": "UNQUALIFIED development prerelease. Adds per-instance MIG occupancy and explicit quarantined local recovery upgrades. CPU and bounded-model evidence do not establish hardware, hosted retirement, native access, payment, or serving qualification. Hardware results must bind the exact released artifact and environment. Native-to-lending reprovisioning remains unsupported.",
   "runtime_python_dependencies": [],
   "upstream_interfaces": [
     "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",
     "https://docs.nvidia.com/deploy/mps/appendix-environment-variables.html",
-    "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html"
+    "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html",
+    "https://docs.nvidia.com/deploy/nvidia-smi/"
   ],
-  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/commit/5aa03c3b6961d3c4bf7e11698113c94cc57a3d9a",
+  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev3",
   "serving_client_sha256": "cb7633aa62d5f4813ce466490748916b61d440d7e248df4be0a25b98bf6523de"
 }

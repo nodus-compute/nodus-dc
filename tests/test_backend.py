@@ -17,6 +17,16 @@ XML = """<nvidia_smi_log><driver_version>580.test</driver_version><gpu>
 <gpu_recovery_action>None</gpu_recovery_action><processes></processes>
 </gpu></nvidia_smi_log>"""
 
+# Shape captured from a real H100/580.105.08; identifiers are synthetic.
+MIG_DEVICES = """<mig_devices>
+<mig_device><index>0</index><gpu_instance_id>1</gpu_instance_id><compute_instance_id>0</compute_instance_id>
+<fb_memory_usage><total>40448 MiB</total><used>376 MiB</used></fb_memory_usage></mig_device>
+<mig_device><index>1</index><gpu_instance_id>2</gpu_instance_id><compute_instance_id>0</compute_instance_id>
+<fb_memory_usage><total>40448 MiB</total><used>44 MiB</used></fb_memory_usage></mig_device>
+</mig_devices>"""
+MIG_PROCESS = """<process_info><gpu_instance_id>1</gpu_instance_id><compute_instance_id>0</compute_instance_id>
+<pid>4174</pid><type>C</type><process_name>/probe/cuda_probe</process_name></process_info>"""
+
 
 class Commands:
     def __init__(self):
@@ -117,8 +127,9 @@ class BackendTests(unittest.TestCase):
         self.assertTrue(all(not r.modes for r in self.backend.inventory().resources))
 
     def test_unobservable_processes_and_docker_fail_closed(self):
-        self.cmd.xml = XML.replace("<processes></processes>", "<processes>N/A</processes>")
-        self.assertFalse(self.backend.inventory().resources[1].healthy)
+        for content in ("N/A", "Not Supported", "Unknown", "<unknown_process/>"):
+            self.cmd.xml = XML.replace("<processes></processes>", "<processes>" + content + "</processes>")
+            self.assertFalse(self.backend.inventory().resources[1].healthy)
         self.cmd.xml = XML
         self.cmd.fail_docker = True
         self.assertTrue(self.backend.inventory().resources[1].busy)
@@ -138,6 +149,168 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(snapshot.resources[2].modes, ("hardware_partition",))
         self.assertEqual(snapshot.resources[2].memory_bytes, 0)
         self.assertFalse(self.backend.host_ready_for_external())
+
+    def mig_fixture(self, *, process=True):
+        self.cmd.xml = XML.replace("Disabled", "Enabled").replace("</gpu>", MIG_DEVICES + "</gpu>")
+        if process:
+            self.cmd.xml = self.cmd.xml.replace("<processes></processes>", "<processes>" + MIG_PROCESS + "</processes>")
+        self.cmd.listing += "\n  MIG 3g.40gb Device 0: (UUID: MIG-first)\n  MIG 3g.40gb Device 1: (UUID: MIG-second)"
+
+    def assign(self, device):
+        self.cmd.containers = [{"Id": "foreign-first", "HostConfig": {"DeviceRequests": [{"Driver": "nvidia",
+            "Capabilities": [["gpu"]], "DeviceIDs": [device] if device else []}]}}]
+
+    def test_mig_process_and_container_do_not_block_distinct_gpu_instance(self):
+        self.mig_fixture()
+        self.assign("MIG-first")
+        rows = {r.id: r for r in self.backend.inventory().resources}
+        self.assertTrue(rows["GPU-aaaa"].busy)
+        self.assertTrue(rows["MIG-first"].busy)
+        self.assertFalse(rows["MIG-second"].busy)
+        self.assertEqual(rows["MIG-first"].details["process_ids"], ["4174"])
+        self.assertEqual(rows["MIG-second"].details["gpu_instance_id"], 2)
+        self.assertEqual(rows["MIG-second"].details["memory_capacity_bytes"], 40448 * 2**20)
+        lease = self.lease("hardware_partition")
+        lease["resources"] = ["MIG-second"]
+        self.backend.start(lease)
+        create = next(c for c in self.cmd.calls if c[:2] == ["docker", "create"])
+        self.assertEqual(create[create.index("--gpus") + 1], '\"device=MIG-second\"')
+
+    def test_idle_assigned_partition_still_excludes_itself_and_parent(self):
+        self.mig_fixture(process=False)
+        self.assign("MIG-first")
+        rows = {r.id: r for r in self.backend.inventory().resources}
+        self.assertTrue(rows["GPU-aaaa"].busy)
+        self.assertTrue(rows["MIG-first"].busy)
+        self.assertFalse(rows["MIG-second"].busy)
+
+    def test_mig_unknown_process_or_ambiguous_mapping_retains_parent_scope(self):
+        self.mig_fixture()
+        original = self.cmd.xml
+        mutations = [
+            ("<gpu_instance_id>1</gpu_instance_id><compute_instance_id>0</compute_instance_id>\n<pid>",
+             "<gpu_instance_id>N/A</gpu_instance_id><compute_instance_id>0</compute_instance_id>\n<pid>"),
+            ("<index>1</index>", "<index>0</index>"),
+            ("<gpu_instance_id>2</gpu_instance_id>", "<gpu_instance_id>1</gpu_instance_id>"),
+            ("<index>1</index>", "<index>9</index>"),
+        ]
+        for before, after in mutations:
+            with self.subTest(after=after):
+                self.cmd.xml = original.replace(before, after)
+                rows = {r.id: r for r in self.backend.inventory().resources}
+                self.assertTrue(rows["MIG-second"].busy)
+                self.assertEqual(rows["MIG-second"].details["process_inventory_scope"], "conservative_parent_gpu")
+
+    def test_shared_gpu_instance_container_cannot_open_an_idle_sibling(self):
+        self.mig_fixture(process=False)
+        self.cmd.xml = self.cmd.xml.replace(
+            "<gpu_instance_id>2</gpu_instance_id><compute_instance_id>0</compute_instance_id>",
+            "<gpu_instance_id>1</gpu_instance_id><compute_instance_id>1</compute_instance_id>")
+        self.assign("MIG-first")
+        self.assertTrue(next(r for r in self.backend.inventory().resources if r.id == "MIG-second").busy)
+
+    def test_whole_gpu_and_unknown_assignments_block_all_mig_children(self):
+        self.mig_fixture(process=False)
+        for device in ("GPU-aaaa", "0", "MIG-unknown", None):
+            with self.subTest(device=device):
+                self.assign(device)
+                self.assertTrue(all(r.busy for r in self.backend.inventory().resources))
+
+    def test_numeric_docker_gpu_uses_driver_index_not_xml_order(self):
+        self.cmd.listing = "GPU 7: Fixture GPU (UUID: GPU-aaaa)"
+        self.assign("7")
+        self.assertTrue(self.backend.inventory().resources[1].busy)
+
+    def test_missing_or_unrecognized_listing_cannot_report_clean_geometry(self):
+        self.mig_fixture(process=False)
+        original = self.cmd.listing
+        for listing in ("", original.splitlines()[0], original.replace("Device 1:", "Unknown 1:"),
+                        "\n".join(original.splitlines()[:-1])):
+            with self.subTest(listing=listing):
+                self.cmd.listing = listing
+                snapshot = self.backend.inventory()
+                self.assertTrue(snapshot.warnings)
+                self.assertFalse(snapshot.resources[0].healthy)
+                self.assertTrue(all(not r.healthy for r in snapshot.resources if r.kind == "gpu"))
+
+    def test_legacy_nvidia_runtime_blocks_idle_gpu_even_without_device_requests(self):
+        self.mig_fixture(process=False)
+        self.cmd.containers = [{"Id": "legacy", "HostConfig": {"Runtime": "nvidia", "DeviceRequests": []},
+                                "Config": {"Env": ["NVIDIA_VISIBLE_DEVICES=MIG-first"]}}]
+        self.assertTrue(all(r.busy for r in self.backend.inventory().resources))
+        self.assign("MIG-first")
+        self.cmd.containers[0]["HostConfig"]["Runtime"] = "nvidia"
+        self.assertFalse(next(r for r in self.backend.inventory().resources if r.id == "MIG-second").busy)
+
+    def partition_recovery_fixture(self):
+        self.backend.boot_id = lambda: "old-boot"
+        self.mig_fixture(process=False)
+        self.cmd.xml = self.cmd.xml.replace("</gpu>", "<pci><pci_bus_id>0000:01:00.0</pci_bus_id></pci></gpu>")
+        lease = self.lease("hardware_partition")
+        lease.update(owner="local", resources=["MIG-second"])
+        self.backend.boot_id = lambda: "new-boot"
+        # Hopper's pre-reboot MIG UUIDs no longer exist.
+        self.cmd.xml = XML.replace("</gpu>", "<pci><pci_bus_id>0000:01:00.0</pci_bus_id></pci></gpu>")
+        self.cmd.listing = "GPU 0: Fixture GPU (UUID: GPU-aaaa)"
+        return lease
+
+    def test_reboot_recovery_retires_missing_partition_without_rewriting_baseline(self):
+        lease = self.partition_recovery_fixture()
+        original = canonical(lease)
+        proof = self.backend.recover_partition(lease, "old-boot", "new-boot")
+        self.assertTrue(proof.clean)
+        self.assertEqual(proof.resource_ids, ("MIG-second",))
+        self.assertEqual(proof.evidence["retired_partition_leases"], ["MIG-second"])
+        self.assertEqual(canonical(lease), original)
+        self.assertFalse(any(c[0] == "nvidia-smi" and "-mig" in c for c in self.cmd.calls))
+
+    def test_partition_recovery_requires_actual_distinct_boot_and_original_host(self):
+        lease = self.partition_recovery_fixture()
+        for previous, current in (("new-boot", "new-boot"), ("old-boot", "pretend-boot"), ("wrong-old", "new-boot")):
+            with self.subTest(previous=previous, current=current), self.assertRaises(Error):
+                self.backend.recover_partition(lease, previous, current)
+        lease["baseline"] = [r for r in lease["baseline"] if r["kind"] != "host"]
+        with self.assertRaises(Error):
+            self.backend.recover_partition(lease, "old-boot", "new-boot")
+
+    def test_partition_recovery_refuses_changed_or_busy_physical_gpu(self):
+        lease = self.partition_recovery_fixture()
+        xml = self.cmd.xml
+        for before, after in (("580.test", "581.changed"), ("0000:01:00.0", "0000:02:00.0"),
+                              ("81920 MiB", "40960 MiB"), ("<processes></processes>", "<processes>N/A</processes>"),
+                              ("<processes></processes>", "<processes>" + MIG_PROCESS + "</processes>")):
+            with self.subTest(after=after):
+                self.cmd.xml = xml.replace(before, after)
+                self.assertFalse(self.backend.recover_partition(lease, "old-boot", "new-boot").clean)
+        self.cmd.xml = xml
+        self.assign("GPU-aaaa")
+        self.assertFalse(self.backend.recover_partition(lease, "old-boot", "new-boot").clean)
+        self.assertFalse(any(c[:2] == ["docker", "rm"] for c in self.cmd.calls))
+
+    def test_unknown_mig_mode_or_empty_geometry_shape_cannot_authorize_recovery(self):
+        lease = self.partition_recovery_fixture()
+        original = self.cmd.xml
+        for mode, content in (("Unknown", "None"), ("Enabled", "Unknown"),
+                              ("Enabled", "<unexpected_device/>"), ("N/A", "None")):
+            with self.subTest(mode=mode, content=content):
+                self.cmd.xml = original.replace("Disabled", mode).replace("</gpu>", "<mig_devices>" + content + "</mig_devices></gpu>")
+                self.assertFalse(self.backend.recover_partition(lease, "old-boot", "new-boot").clean)
+        # Exact driver spellings for empty geometry are supported.
+        for mode in ("Enabled", "Disabled"):
+            self.cmd.xml = original.replace("Disabled", mode).replace("</gpu>", "<mig_devices>None</mig_devices></gpu>")
+            self.assertTrue(self.backend.recover_partition(lease, "old-boot", "new-boot").clean)
+
+    def test_partition_recovery_removes_only_exact_generation_owned_container(self):
+        lease = self.partition_recovery_fixture()
+        self.cmd.containers = [{"Id": "owned", "Config": {"Labels": {LABEL+".lease": lease["id"],
+            LABEL+".generation": "1", LABEL+".resources": canonical(lease["resources"])}}, "State": {"Running": False}}]
+        self.assertTrue(self.backend.recover_partition(lease, "old-boot", "new-boot").clean)
+        self.assertIn(["docker", "rm", "owned"], self.cmd.calls)
+        self.cmd.containers = [{"Id": "forged", "Config": {"Labels": {LABEL+".lease": lease["id"],
+            LABEL+".generation": "2", LABEL+".resources": canonical(lease["resources"])}}}]
+        with self.assertRaises(Error):
+            self.backend.recover_partition(lease, "old-boot", "new-boot")
+        self.assertNotIn(["docker", "rm", "forged"], self.cmd.calls)
 
     def test_launch_honors_entrypoint_and_exact_gpu_without_shell_or_pull(self):
         lease = self.lease()

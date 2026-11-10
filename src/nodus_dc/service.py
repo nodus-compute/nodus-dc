@@ -15,6 +15,10 @@ from .model import (API_VERSION, HOLDING, LOCAL_MODES, CleanupProof, Snapshot,
                     canonical, digest, finite_time, key, overlap)
 from .store import Store
 
+# Explicit installer capability: this implementation can retire a disappeared
+# MIG identity only after an actual boot fence and physical-parent cleanup proof.
+RECOVERY_UPGRADE_PROTOCOL = 1
+
 
 class Service:
     def __init__(self, store: Store, backend, *, clock=time.time, bridge_enabled=False):
@@ -348,7 +352,7 @@ class Service:
             with self.store.transaction(self.clock()) as db:
                 lease = Store.lease(db, lease_id)
                 self._fence(lease, generation)
-                if lease["owner"] != "local" or lease["state"] not in {"starting", "quarantined", "draining"}:
+                if lease["owner"] != "local":
                     raise Error("recovery_not_applicable", "only uncertain local leases can be recovered")
                 if self._native_handoff(lease):
                     raise Error("native_return_unsupported", "a boot change cannot prove native credential revocation; out-of-band reprovisioning is required", 409)
@@ -357,7 +361,44 @@ class Service:
                 new_boot = self.backend.boot_id()
                 if not old_boot or not new_boot or old_boot == new_boot:
                     raise Error("execution_fence_required", "uncertain commands require a verified host reboot before recovery")
-                self._operation(db, lease, generation, "recover", request_key, {"boot_id": new_boot})
+                replay = self._operation(db, lease, generation, "recover", request_key, {"boot_id": new_boot})
+                if replay and lease["state"] == "released":
+                    return lease
+                recovering_partition = (lease["mode"] == "hardware_partition" and lease["state"] == "verifying"
+                                        and (lease.get("runtime") or {}).get("retired_partition_recovery") is True)
+                if lease["state"] not in {"starting", "quarantined", "draining"} and not recovering_partition:
+                    raise Error("recovery_not_applicable", "only uncertain local leases can be recovered")
+                if lease["mode"] == "hardware_partition":
+                    baseline = {r["id"]: r for r in lease["baseline"]}
+                    partitions = [baseline.get(r) for r in lease["resources"]]
+                    if (not partitions or any(r is None or r["kind"] != "partition"
+                                              or baseline.get(r["parent"], {}).get("kind") != "gpu"
+                                              for r in partitions)):
+                        raise Error("recovery_parent_unknown", "original physical parent identities are missing", 503)
+                    physical = {r["parent"] for r in partitions}
+                    parents = {r["id"]: r["parent"] for r in db.execute("SELECT id,parent FROM resources")}
+                    for row in db.execute("SELECT * FROM leases WHERE state!='released' AND id!=?", (lease_id,)):
+                        other = Store.decode(row)
+                        baseline_parents = {r["id"] for r in other["baseline"] if r["kind"] == "gpu"}
+                        if (physical & baseline_parents
+                                or overlap(physical, set(other["resources"]), parents)):
+                            raise Error("recovery_parent_busy", "release every other allocation on the original physical GPU before partition recovery")
+            if lease["mode"] == "hardware_partition":
+                # A disappeared MIG UUID is not clean evidence by itself. The
+                # original identity stays in the lease and cleanup proof; a new
+                # boot plus exact idle physical-parent evidence retires it.
+                with self.store.transaction(self.clock()) as db:
+                    lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="verifying",
+                                         runtime={"lease_id": lease_id, "generation": generation,
+                                                  "recovery_boot_id": new_boot, "retired_partition_recovery": True})
+                    Store.event(db, self.clock(), lease, "partition_recovery_execution_fenced",
+                                {"previous_boot_id": old_boot, "boot_id": new_boot})
+                try:
+                    proof = self.backend.recover_partition(lease, old_boot, new_boot)
+                except Exception as exc:
+                    proof = CleanupProof(False, self.clock(), lease_id, generation, tuple(lease["resources"]),
+                                         {"error": str(exc), "scope": "partition recovery failed; capacity held"})
+                return self._apply_cleanup(lease, proof)
             if lease["mode"] == "gpu_configuration":
                 # Reapply the journaled desired plan after fencing old commands.
                 plan = (lease["workload"] or {}).get("mig_plan")

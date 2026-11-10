@@ -44,6 +44,52 @@ def memory_bytes(text):
     return int(float(match[1]) * (2**20 if match[2] == "MiB" else 2**30)) if match else 0
 
 
+def mig_process_scopes(gpu, children):
+    """Join driver MIG indices to UUIDs and GI/CI process identities.
+
+    Never infer partition occupancy from its marketing profile or PID order.
+    An incomplete/ambiguous join returns no fine-grained evidence: callers
+    retain the conservative physical-GPU process scope. Multiple compute
+    instances sharing one GPU instance are outside this whole-instance mode.
+    """
+    def index(node, name):
+        value = node.findtext(name, "")
+        if not re.fullmatch(r"\d+", value):
+            raise ValueError("unknown MIG identity")
+        return int(value)
+
+    try:
+        rows = gpu.findall("mig_devices/mig_device")
+        if not children or len(rows) != len(children):
+            return None
+        by_index, by_pair, gpu_instances = {}, {}, set()
+        for row in rows:
+            number = index(row, "index")
+            pair = (index(row, "gpu_instance_id"), index(row, "compute_instance_id"))
+            if number in by_index or pair in by_pair or pair[0] in gpu_instances:
+                return None
+            info = {"gpu_instance_id": pair[0], "compute_instance_id": pair[1],
+                    "process_ids": [],
+                    "memory_capacity_bytes": memory_bytes(row.findtext("fb_memory_usage/total")),
+                    "memory_used_bytes": memory_bytes(row.findtext("fb_memory_usage/used"))}
+            by_index[number] = info
+            by_pair[pair] = info
+            gpu_instances.add(pair[0])
+        numbers = [number for _, _, number in children]
+        uuids = [uuid for uuid, _, _ in children]
+        if (len(set(numbers)) != len(numbers) or len(set(uuids)) != len(uuids)
+                or set(numbers) != set(by_index)):
+            return None
+        for process in gpu.findall("processes/process_info"):
+            pair = (index(process, "gpu_instance_id"), index(process, "compute_instance_id"))
+            if pair not in by_pair:
+                return None
+            by_pair[pair]["process_ids"].append(process.findtext("pid", "unknown"))
+        return {uuid: by_index[number] for uuid, _, number in children}
+    except ValueError:
+        return None
+
+
 class NvidiaDockerBackend:
     def __init__(self, *, command=run, clock=time.time, host_id=None, allocation_authority="observe", enable_trusted_mps=False):
         self.command = command
@@ -67,6 +113,7 @@ class NvidiaDockerBackend:
     def inventory(self):
         warnings = []
         devices = []
+        gpu_indices = {}
         driver = ""
         try:
             xml = ET.fromstring(self.command(["nvidia-smi", "-q", "-x"], timeout=20))
@@ -83,23 +130,46 @@ class NvidiaDockerBackend:
             children = {}
             parent = None
             for line in listing.splitlines():
-                match = re.search(r"^GPU \d+:.*\(UUID: (GPU-[^)]+)\)", line)
+                match = re.search(r"^GPU (\d+):.*\(UUID: (GPU-[^)]+)\)", line)
                 if match:
-                    parent = match[1]
+                    parent = match[2]
+                    if match[1] in gpu_indices or parent in gpu_indices.values():
+                        raise Error("invalid_inventory", "duplicate physical GPU listing identity", 503)
+                    gpu_indices[match[1]] = parent
                 else:
-                    match = re.search(r"MIG (\S+).*\(UUID: (MIG-[^)]+)\)", line)
+                    match = re.search(r"MIG (\S+)\s+Device\s+(\d+):\s*\(UUID: (MIG-[^)]+)\)", line)
                     if match and parent:
-                        children.setdefault(parent, []).append((match[2], match[1]))
+                        children.setdefault(parent, []).append((match[3], match[1], int(match[2])))
+                    elif line.strip():
+                        raise Error("invalid_inventory", "unrecognized GPU/MIG listing; geometry is unknown", 503)
+            xml_uuids = [gpu.findtext("uuid", "") for gpu in xml.findall("gpu")]
+            if len(set(xml_uuids)) != len(xml_uuids) or set(xml_uuids) != set(gpu_indices.values()):
+                raise Error("invalid_inventory", "physical GPU XML/listing identities disagree", 503)
             for gpu in xml.findall("gpu"):
                 gpu_uuid = gpu.findtext("uuid", "")
                 if not gpu_uuid.startswith("GPU-"):
                     raise Error("invalid_inventory", "GPU UUID is missing", 503)
                 mig_mode = gpu.findtext("mig_mode/current_mig", "N/A")
                 processes = gpu.find("processes")
-                processes_known = processes is not None and (processes.text or "").strip() not in {"N/A", "Not Supported"}
+                processes_known = (processes is not None and not (processes.text or "").strip()
+                                   and all(p.tag == "process_info" and not (p.tail or "").strip() for p in processes))
                 pids = [p.findtext("pid", "unknown") for p in gpu.findall("processes/process_info")]
                 healthy = processes_known and gpu.findtext("gpu_recovery_action", "None") in {"None", "N/A", ""}
                 busy = bool(pids) or not processes_known
+                child_rows = children.get(gpu_uuid, [])
+                scopes = mig_process_scopes(gpu, child_rows) if processes_known else None
+                mig_devices = gpu.find("mig_devices")
+                mig_xml_known = (mig_devices is not None
+                                 and (mig_devices.text or "").strip() in ({"", "None"} if len(mig_devices) == 0 else {""})
+                                 and all(d.tag == "mig_device" and not (d.tail or "").strip() for d in mig_devices))
+                geometry_known = (mig_mode in {"Disabled", "N/A"} and not child_rows
+                                  and (mig_devices is None or (mig_xml_known and len(mig_devices) == 0))) or (
+                    mig_mode == "Enabled" and mig_xml_known and
+                    (scopes is not None or (not child_rows and len(mig_devices) == 0)))
+                if not geometry_known:
+                    healthy = False
+                    busy = True
+                    warnings.append(f"{gpu_uuid}: MIG identity/process mapping unavailable or ambiguous")
                 modes = []
                 if mig_mode != "Enabled":
                     modes.append("exclusive_gpu")
@@ -117,13 +187,17 @@ class NvidiaDockerBackend:
                                      "memory_used_bytes": memory_bytes(gpu.findtext("fb_memory_usage/used")),
                                      "sharing_isolation": "trusted_cooperative_only"})
                 devices.append(resource)
-                for child, profile in children.get(gpu_uuid, []):
+                for child, profile, _ in child_rows:
                     # Whole hardware instances are allocated. Do not invent a
                     # fractional byte capacity from the profile's marketing name.
+                    detail = {"profile": profile, "memory_capacity_source": "driver_enforced_whole_instance",
+                              "process_inventory_scope": "conservative_parent_gpu"}
+                    child_busy = busy
+                    if scopes is not None:
+                        detail.update(scopes[child], process_inventory_scope="gpu_compute_instance")
+                        child_busy = bool(scopes[child]["process_ids"])
                     devices.append(Resource(child, "partition", gpu_uuid, child, profile, 0,
-                                            ("hardware_partition",), healthy, busy,
-                                            {"profile": profile, "memory_capacity_source": "driver_enforced_whole_instance",
-                                             "process_inventory_scope": "conservative_parent_gpu"}))
+                                            ("hardware_partition",), healthy, child_busy, detail))
         except (Error, OSError, ET.ParseError) as exc:
             warnings.append(str(exc))
             devices = []
@@ -134,6 +208,15 @@ class NvidiaDockerBackend:
             assigned = set()
             unknown_assignment = False
             for container in containers:
+                host_config = container.get("HostConfig", {})
+                # Legacy NVIDIA runtime/environment activation can expose GPUs
+                # without a DeviceRequest (including while no CUDA PID exists).
+                # Its visibility contract is not a qualified allocation backend.
+                if host_config.get("Runtime") == "nvidia" and not any(
+                        any("gpu" in group for group in request.get("Capabilities") or [])
+                        and request.get("Driver") in {"", "nvidia"}
+                        for request in host_config.get("DeviceRequests") or []):
+                    unknown_assignment = True
                 for request in container.get("HostConfig", {}).get("DeviceRequests") or []:
                     if request.get("Driver") not in {"", "nvidia"}:
                         continue
@@ -143,15 +226,22 @@ class NvidiaDockerBackend:
                     if not requested:
                         unknown_assignment = True
                     for device in requested:
-                        if str(device).isdigit() and int(device) < len(gpu_ids):
-                            assigned.add(gpu_ids[int(device)])
+                        if str(device) in gpu_indices and gpu_indices[str(device)] in gpu_ids:
+                            assigned.add(gpu_indices[str(device)])
                         elif any(r.id == device for r in devices):
                             assigned.add(device)
                         else:
                             unknown_assignment = True
             parent_of = {r.id: r.parent for r in devices}
-            assigned |= {parent_of[x] for x in list(assigned) if parent_of.get(x) in gpu_ids}
-            devices = [replace(r, busy=True) if unknown_assignment or r.id in assigned or r.parent in assigned else r
+            # Child occupancy blocks its physical GPU, but must not propagate
+            # back down to unrelated sibling GPU instances. Explicit whole-GPU
+            # assignments and unknown device requests still block all children.
+            occupied_parents = {parent_of[x] for x in assigned if parent_of.get(x) in gpu_ids}
+            conservative_parents = {r.parent for r in devices if r.id in assigned and r.kind == "partition"
+                                    and r.details.get("process_inventory_scope") != "gpu_compute_instance"}
+            devices = [replace(r, busy=True) if (unknown_assignment or r.id in assigned
+                       or r.parent in assigned or r.id in occupied_parents
+                       or r.parent in conservative_parents) else r
                        for r in devices]
         except (Error, OSError, ValueError) as exc:
             warnings.append("container inventory unavailable: " + str(exc))
@@ -315,8 +405,7 @@ class NvidiaDockerBackend:
         self.command(["docker", "start", container_id], timeout=60)
         return container_id
 
-    def cleanup(self, lease):
-        self.require_management()
+    def _remove_owned_containers(self, lease):
         owned = self._owned(lease)
         # MPS clients stop before their shared control daemon.
         owned.sort(key=lambda c: c.get("Name", "").endswith("-mps"))
@@ -326,12 +415,78 @@ class NvidiaDockerBackend:
                 self.command(["docker", "stop", "--time", "20", cid], timeout=30)
             self.command(["docker", "rm", cid], timeout=15)
         if self._owned(lease):
-            return CleanupProof(False, self.clock(), lease["id"], lease["generation"], tuple(lease["resources"]),
-                                {"reason": "owned runtime remains after cleanup"})
+            raise Error("runtime_cleanup_incomplete", "owned runtime remains after cleanup", 503)
+
+    def cleanup(self, lease):
+        self.require_management()
+        self._remove_owned_containers(lease)
         if lease["mode"] == "trusted_mps":
             from .sharing import remove_pool_volume
             remove_pool_volume(self, lease)
         return self.verify_clean(lease)
+
+    def recover_partition(self, lease, previous_boot_id, current_boot_id):
+        """Retire an old partition lease after a real host execution fence.
+
+        The service holds the physical authority lock and excludes every other
+        held lease on the original parent GPUs before invoking this operation.
+        Hopper may lose its MIG geometry at reboot. A vanished UUID is not an
+        unchanged device: record its retirement and the actual current geometry,
+        retaining the original lease resources and baseline as audit evidence.
+        """
+        self.require_management()
+        if (lease.get("owner") != "local" or lease.get("mode") != "hardware_partition"
+                or not previous_boot_id or not current_boot_id or previous_boot_id == current_boot_id
+                or self.boot_id() != current_boot_id):
+            raise Error("execution_fence_required", "partition recovery requires a verified host reboot")
+        baseline = {r["id"]: r for r in lease.get("baseline", [])}
+        host = baseline.get(self.host_id)
+        if (not host or host["kind"] != "host"
+                or host["details"].get("boot_id") != previous_boot_id):
+            raise Error("invalid_recovery_baseline", "original host and boot identity are required")
+        parents = set()
+        for resource_id in lease["resources"]:
+            original = baseline.get(resource_id)
+            if not original or original["kind"] != "partition" or original["device_uuid"] != resource_id:
+                raise Error("invalid_recovery_baseline", "original partition identity is required")
+            parent = baseline.get(original["parent"])
+            if not parent or parent["kind"] != "gpu" or parent["parent"] != self.host_id:
+                raise Error("invalid_recovery_baseline", "original physical GPU identity is required")
+            parents.add(parent["id"])
+        if not parents:
+            raise Error("invalid_recovery_baseline", "partition recovery requires a physical GPU")
+        self._remove_owned_containers(lease)
+        snapshot = self.inventory()
+        current = {r.id: r.record() for r in snapshot.resources}
+        reasons = list(snapshot.warnings)
+        current_host = current.get(self.host_id)
+        if (not current_host or not current_host["healthy"]
+                or current_host["details"].get("boot_id") != current_boot_id
+                or self.boot_id() != current_boot_id):
+            reasons.append("current host execution fence or health could not be verified")
+        for parent_id in parents:
+            original, row = baseline[parent_id], current.get(parent_id)
+            if not row or not row["healthy"] or row["busy"] or not row["details"].get("process_inventory_known"):
+                reasons.append(f"{parent_id}: physical GPU is absent, unobservable, unhealthy or busy")
+                continue
+            for field in ("kind", "parent", "device_uuid", "memory_bytes"):
+                if row[field] != original[field]:
+                    reasons.append(f"{parent_id}: physical {field} changed")
+            for field in ("pci_bus_id", "driver_version"):
+                if not original["details"].get(field) or row["details"].get(field) != original["details"][field]:
+                    reasons.append(f"{parent_id}: physical {field} changed or unavailable")
+            if row["details"].get("mig_mode") not in {"Enabled", "Disabled"}:
+                reasons.append(f"{parent_id}: current hardware partitioning mode is unknown")
+            for child in current.values():
+                if child["parent"] == parent_id and (not child["healthy"] or child["busy"]):
+                    reasons.append(f"{child['id']}: current child is unhealthy or busy")
+        return CleanupProof(not reasons, self.clock(), lease["id"], lease["generation"], tuple(lease["resources"]),
+                            {"reasons": reasons, "previous_boot_id": previous_boot_id,
+                             "recovery_boot_id": current_boot_id, "retired_partition_leases": list(lease["resources"]),
+                             "physical_gpu_ids": sorted(parents),
+                             "current_geometry": [r for r in current.values() if r["id"] in parents or r["parent"] in parents],
+                             "inventory_revision": snapshot.record()["revision"],
+                             "verification_scope": "host reboot fence, exact owned Docker cleanup, unchanged idle physical GPUs; original MIG geometry is not restored"})
 
     @staticmethod
     def boot_id():
