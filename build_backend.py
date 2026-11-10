@@ -55,6 +55,14 @@ def build_sdist(sdist_directory, config_settings=None):
     paths = [ROOT / n for n in ("pyproject.toml", "build_backend.py", "LICENSE", "README.md", "PROVENANCE.json")]
     paths += [p for folder in ("src", "tools", "docs", "examples", "tests", "kubernetes")
               for p in (ROOT / folder).rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    models = ROOT / "verification" / "models"
+    paths += [models / n for n in ("README.md", "mapping.md", "source-mapping.json", "checker.py",
+              "allocation.py", "reclaim.py", "financial.py", "integrated.py", "native_handback.py",
+              "native_handback_recovery.py", "run_models.py", "run_native_recovery.py")]
+    # Only checked reference runs ship; local operator results may contain private paths.
+    paths += [p for run in ("core-v1", "native-return-v1")
+              for p in (models / "reference-results" / run).rglob("*")
+              if p.is_file() and "__pycache__" not in p.parts]
     with open(target / filename, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w") as tar:
             for path in sorted(set(paths)):
