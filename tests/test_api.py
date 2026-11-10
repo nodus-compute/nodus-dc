@@ -78,6 +78,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("/v1/bridge/status", token=self.bridge.bridge_token)[0], 200)
         self.assertEqual(self.call("/v1/bridge/status", token=self.bridge.bridge_token, transport="tcp")[0], 403)
 
+    def test_daemon_maintenance_runs_expiry_without_inventory_scan(self):
+        service = self.server.service
+        lease = service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1001, request_key="expiry")
+        service.backend.clean = False
+        def unavailable():
+            raise Error("inventory_unavailable", "hardware observation unavailable", 503)
+        service.backend.inventory = unavailable
+        self.clock.now = 1002
+        class OneTick:
+            def __init__(self): self.calls = []
+            def wait(self, interval):
+                self.calls.append(interval)
+                return len(self.calls) > 1
+        original = self.server.stop_event
+        tick = OneTick()
+        try:
+            self.server.stop_event = tick
+            self.server.maintain()
+        finally:
+            self.server.stop_event = original
+        self.assertEqual(tick.calls, [5, 5])
+        self.assertIsNone(self.server.maintenance_error)
+        self.assertEqual(service.get(lease["id"])["state"], "quarantined")
+        self.assertEqual(service.backend.verify_calls, 1)
+
     def test_privileged_local_mutation_requires_private_socket_and_token(self):
         body = {"resources": ["GPU-aaaa"], "mode": "exclusive_gpu", "expires_at": 1500, "request_key": "unix-owner"}
         self.assertEqual(self.call("/v1/reserve", body, self.server.local_token, transport="tcp")[0], 403)

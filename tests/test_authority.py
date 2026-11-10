@@ -119,6 +119,70 @@ class AuthorityTests(unittest.TestCase):
         self.reserve()
         self.assert_error("allocation_conflict", self.reserve)
 
+    def unavailable_inventory(self):
+        raise Error("inventory_unavailable", "declared failed hardware observer", 503)
+
+    def test_maintenance_expiry_requires_independent_cleanup_even_without_inventory(self):
+        lease = self.reserve()
+        self.service.start(lease["id"], generation=lease["generation"], request_key="start", workload={"test_workload": True})
+        self.backend.inventory = self.unavailable_inventory
+        self.backend.clean = False
+        self.clock.now += 101
+        self.service.maintain_leases()
+        self.assertEqual(self.service.get(lease["id"])["state"], "quarantined")
+        self.assertEqual((self.backend.cleanup_calls, self.backend.verify_calls), (1, 1))
+        self.backend.clean = True
+        self.service.maintain_leases()
+        self.assertEqual(self.service.get(lease["id"])["state"], "quarantined")
+        self.assertEqual(self.backend.cleanup_calls, 1)
+        released = self.service.release(lease["id"], generation=lease["generation"], request_key="retry-cleanup")
+        self.assertEqual(released["state"], "released")
+        self.assertEqual(self.backend.verify_calls, 2)
+
+    def test_maintenance_restart_holds_unknown_launch_without_inventory(self):
+        lease = self.reserve()
+        with self.service.store.transaction(self.clock()) as db:
+            Store.update(db, lease, self.clock(), state="starting", workload={"test_workload": True})
+        self.backend.inventory = self.unavailable_inventory
+        resumed = Service(Store(self.path), self.backend, clock=self.clock)
+        resumed.maintain_leases()
+        self.assertEqual(resumed.get(lease["id"])["state"], "quarantined")
+        self.assertEqual(self.backend.cleanup_calls, 0)
+        self.assert_error("uncertain_launch", lambda: resumed.release(lease["id"], generation=lease["generation"], request_key="unsafe-release"))
+        self.assert_error("inventory_unavailable", self.reserve)
+
+    def test_maintenance_preserves_cached_timestamp_and_explicit_refresh(self):
+        self.reserve()
+        original = self.service.status()["inventory"]
+        available = self.backend.inventory
+        self.backend.inventory = self.unavailable_inventory
+        self.clock.now += 1
+        self.service.maintain_leases()
+        self.assertEqual(self.service.status()["inventory"], original)
+        self.assert_error("inventory_unavailable", self.service.reconcile)
+        self.backend.inventory = available
+        self.service.reconcile()
+        self.assertEqual(self.service.status()["inventory"]["observed_at"], self.clock.now)
+
+    def test_maintenance_external_expiry_never_local_releases(self):
+        self.policy()
+        claim = self.claim()
+        self.backend.inventory = self.unavailable_inventory
+        self.clock.now += 1001
+        self.service.maintain_leases()
+        self.assertEqual(self.service.get(claim["lease_id"])["state"], "draining")
+        self.assertFalse(self.check(claim)["authorized"])
+        self.assertEqual(self.backend.cleanup_calls, 0)
+
+    def test_maintenance_keeps_durable_clock_fence_without_inventory(self):
+        self.reserve()
+        self.backend.inventory = self.unavailable_inventory
+        self.clock.now = 1005
+        self.service.maintain_leases()
+        self.clock.now = 1003
+        resumed = Service(Store(self.path), self.backend, clock=self.clock)
+        self.assert_error("clock_regression", resumed.maintain_leases)
+
     def test_bridge_claim_workload_policy_and_replay_metadata_are_fenced(self):
         self.policy()
         allowed_image = "fixture/image@sha256:" + "a"*64

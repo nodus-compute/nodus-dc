@@ -84,7 +84,7 @@ class _BoundedServer:
     def maintain(self, interval=5):
         while not self.stop_event.wait(interval):
             try:
-                self.service.reconcile()
+                self.service.maintain_leases()
                 self.maintenance_error = None
             except Exception as exc:
                 # Status is honest. A failure never releases any resource.

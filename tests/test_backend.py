@@ -42,6 +42,7 @@ class Commands:
         self.containers = []
         self.xml = XML
         self.listing = "GPU 0: Fixture GPU (UUID: GPU-aaaa)"
+        self.physical = "0, GPU-aaaa, Disabled, 8.0"
         self.fail_docker = False
         self.volume_labels = {}
 
@@ -53,6 +54,10 @@ class Commands:
             return self.listing
         if args[:2] == ["nvidia-smi", "--query-gpu=uuid,compute_cap"]:
             return "GPU-aaaa, 8.0"
+        if args[:2] == ["nvidia-smi", "--query-gpu=index,uuid,mig.mode.current,compute_cap"]:
+            return self.physical
+        if args[:2] == ["nvidia-smi", "--query-gpu=index,uuid,mig.mode.current"]:
+            return "\n".join(",".join(row.split(",")[:3]) for row in self.physical.splitlines())
         if args[:2] == ["docker", "ps"]:
             if self.fail_docker:
                 raise Error("fixture_unavailable", "docker unavailable")
@@ -226,8 +231,60 @@ class BackendTests(unittest.TestCase):
 
     def test_numeric_docker_gpu_uses_driver_index_not_xml_order(self):
         self.cmd.listing = "GPU 7: Fixture GPU (UUID: GPU-aaaa)"
+        self.cmd.physical = "7, GPU-aaaa, Disabled, 8.0"
         self.assign("7")
         self.assertTrue(self.backend.inventory().resources[1].busy)
+
+    def test_non_mig_scan_coalesces_fresh_identity_and_capability(self):
+        self.backend.enable_trusted_mps = True
+        first = self.backend.inventory()
+        self.assertIn("trusted_mps", first.resources[1].modes)
+        self.assertEqual([c for c in self.cmd.calls if c[0] == "nvidia-smi"], [
+            ["nvidia-smi", "-q", "-x"],
+            ["nvidia-smi", "--query-gpu=index,uuid,mig.mode.current,compute_cap", "--format=csv,noheader"]])
+        self.cmd.xml = XML.replace("<processes></processes>", "<processes>" + MIG_PROCESS + "</processes>")
+        self.cmd.physical = "7, GPU-aaaa, Disabled, 7.0"
+        self.cmd.calls.clear()
+        second = self.backend.inventory()
+        self.assertTrue(second.resources[1].busy)
+        self.assertEqual(second.resources[1].details["compute_capability"], 7.0)
+        self.assertEqual(len([c for c in self.cmd.calls if c[0] == "nvidia-smi"]), 2)
+
+    def test_physical_query_unknown_or_changed_identity_refuses_scan(self):
+        self.backend.enable_trusted_mps = True
+        for raw in ("", "0,GPU-other,Disabled,8.0", "0,GPU-aaaa,Enabled,8.0",
+                    "0,GPU-aaaa,N/A,8.0", "-1,GPU-aaaa,Disabled,8.0",
+                    "0,GPU-aaaa,Disabled,8.0\n0,GPU-bbbb,Disabled,8.0",
+                    "0,GPU-aaaa,Disabled,8.0\n1,GPU-aaaa,Disabled,8.0",
+                    "0,GPU-aaaa,Disabled,8.0,extra"):
+            with self.subTest(raw=raw):
+                self.cmd.physical = raw
+                snapshot = self.backend.inventory()
+                self.assertTrue(snapshot.warnings)
+                self.assertFalse(snapshot.resources[0].healthy)
+                self.assertFalse(any(r.kind == "gpu" for r in snapshot.resources))
+
+    def test_unknown_capability_never_invents_mps_support(self):
+        self.backend.enable_trusted_mps = True
+        for capability in ("N/A", "NaN", "inf", "", "unknown", "9" * 400 + ".0"):
+            with self.subTest(capability=capability):
+                self.cmd.physical = "0,GPU-aaaa,Disabled," + capability
+                snapshot = self.backend.inventory()
+                self.assertNotIn("trusted_mps", snapshot.resources[1].modes)
+                self.assertTrue(snapshot.warnings)
+
+    def test_mig_or_unknown_xml_retains_complete_listing(self):
+        for mode in ("Enabled", "N/A", "Unknown", ""):
+            with self.subTest(mode=mode):
+                self.cmd.xml = XML.replace("Disabled", mode)
+                self.cmd.calls.clear()
+                self.backend.inventory()
+                self.assertIn(["nvidia-smi", "-L"], self.cmd.calls)
+                self.assertFalse(any(c[1].startswith("--query-gpu=index") for c in self.cmd.calls if c[0] == "nvidia-smi"))
+        self.cmd.xml = XML.replace("</gpu>", MIG_DEVICES + "</gpu>")
+        self.cmd.calls.clear()
+        self.assertFalse(self.backend.inventory().resources[1].healthy)
+        self.assertIn(["nvidia-smi", "-L"], self.cmd.calls)
 
     def test_missing_or_unrecognized_listing_cannot_report_clean_geometry(self):
         self.mig_fixture(process=False)

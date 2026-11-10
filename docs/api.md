@@ -15,6 +15,14 @@ Local token routes (GET also available over HTTP; POST only on the local Unix so
 * `POST /v1/leases/{id}/native-handoff`: exact `generation`, `request_key`, opaque `provisioner_reference`; records only a sticky private-operator intent, with no supported return/provisioning API.
 * `POST /v1/reconcile`: empty object.
 
+`GET /v1/status` returns the last inventory snapshot with its original
+`observed_at`; it does not sample hardware or promise current GPU health. Request
+`GET /v1/inventory` for fresh observations, as the local dashboard does on refresh.
+Explicit `reconcile` also refreshes inventory. The daemon's five-second lease
+maintenance checks expiry and interrupted launches without a redundant full GPU
+scan; every admission and cleanup still obtains its own fresh evidence. `/health`
+reports local maintenance/connection errors, not a hardware readiness proof.
+
 Bridge token routes, all POST and only on the bridge Unix socket:
 
 | Path under `/v1/bridge/` | Body | Result |

@@ -495,26 +495,43 @@ class Service:
         """No timeout ever establishes clean ownership. Unknown execution stays held."""
         with self.authority():
             self._inventory()
-            with self.store.connection() as db:
-                leases = [Store.decode(r) for r in db.execute("SELECT * FROM leases WHERE state!='released'")]
-            outcomes = []
-            for lease in leases:
-                if lease["state"] == "starting":
+            return self._reconcile_leases()
+
+    def maintain_leases(self):
+        """Keep expiry/recovery fencing independent of optional inventory refresh.
+
+        Admission and cleanup obtain their own fresh hardware evidence. Status
+        retains the last explicitly observed inventory and its original time.
+        """
+        with self.authority():
+            # Keep the periodic durable clock-regression fence formerly supplied
+            # by the inventory transaction, even when no lease changes state.
+            with self.store.transaction(self.clock()):
+                pass
+            return self._reconcile_leases()
+
+    def _reconcile_leases(self):
+        # Both callers hold the same host authority lock throughout this loop.
+        with self.store.connection() as db:
+            leases = [Store.decode(r) for r in db.execute("SELECT * FROM leases WHERE state!='released'")]
+        outcomes = []
+        for lease in leases:
+            if lease["state"] == "starting":
+                with self.store.transaction(self.clock()) as db:
+                    lease = Store.update(db, Store.lease(db, lease["id"]), self.clock(), state="quarantined",
+                                         error="interrupted launch requires backend recovery evidence")
+                    Store.event(db, self.clock(), lease, "recovery_quarantine", {})
+            elif lease["expires_at"] <= self.clock() and lease["state"] not in {"draining", "verifying", "quarantined"}:
+                lease = self._drain(lease["id"], lease["generation"], f"expiry:{lease['generation']}", "lease_expired")
+            if lease["owner"] == "local" and lease["state"] in {"draining", "verifying"}:
+                try:
+                    lease = self._finish_local(lease)
+                except Error as exc:
                     with self.store.transaction(self.clock()) as db:
-                        lease = Store.update(db, Store.lease(db, lease["id"]), self.clock(), state="quarantined",
-                                             error="interrupted launch requires backend recovery evidence")
-                        Store.event(db, self.clock(), lease, "recovery_quarantine", {})
-                elif lease["expires_at"] <= self.clock() and lease["state"] not in {"draining", "verifying", "quarantined"}:
-                    lease = self._drain(lease["id"], lease["generation"], f"expiry:{lease['generation']}", "lease_expired")
-                if lease["owner"] == "local" and lease["state"] in {"draining", "verifying"}:
-                    try:
-                        lease = self._finish_local(lease)
-                    except Error as exc:
-                        with self.store.transaction(self.clock()) as db:
-                            lease = Store.update(db, Store.lease(db, lease["id"]), self.clock(), state="quarantined", error=str(exc))
-                            Store.event(db, self.clock(), lease, "reconciliation_held", {"error": str(exc)})
-                outcomes.append(lease)
-            return {"leases": outcomes}
+                        lease = Store.update(db, Store.lease(db, lease["id"]), self.clock(), state="quarantined", error=str(exc))
+                        Store.event(db, self.clock(), lease, "reconciliation_held", {"error": str(exc)})
+            outcomes.append(lease)
+        return {"leases": outcomes}
 
     def bridge_policy(self, *, enabled, policy_revision, consent_reference, authorization_id, expires_at):
         if not self.bridge_enabled:
