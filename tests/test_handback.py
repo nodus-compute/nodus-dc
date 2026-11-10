@@ -4,6 +4,8 @@ Real SQLite and filesystem transitions; no GPU, systemd or platform retirement
 is qualified by these tests. Platform Node/APIKey handlers have their own tests.
 """
 import json
+import copy
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,7 +14,7 @@ import uuid
 
 from nodus_dc.connection import Connection
 from nodus_dc.errors import Error
-from nodus_dc.handback import Handback, LinuxAgent, SCOPES, JOURNAL_KEY, observed_binding
+from nodus_dc.handback import Handback, LinuxAgent, SCOPES, JOURNAL_KEY, observed_binding, request
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend, Clock
@@ -31,6 +33,39 @@ class Agent:
             raise Error("agent_stop_unverified", "synthetic failed service stop")
         self.stops += 1
         return {"unit": "nodusd.service", "stopped": True, "disabled": True, "synthetic": True}
+
+
+def api_key_object(uid, name, scopes, projects=None):
+    """Normal API object shape; whoami and audit events have separate contracts."""
+    return {"apiVersion": "nodus.dev/v1", "kind": "APIKey",
+            "metadata": {"uid": uid, "name": name, "labels": {"qualification": "synthetic"}},
+            "spec": {"scopes": sorted(scopes), "projects": [] if projects is None else projects},
+            "status": {"owner": "usr_synthetic", "prefix": "synthetic-display-prefix"}}
+
+
+def invalid_api_key_objects(value):
+    cases = [("flat", {**value["metadata"], **value["spec"]})]
+    for section in ("metadata", "spec", "status"):
+        missing = copy.deepcopy(value)
+        del missing[section]
+        cases.append(("missing-"+section, missing))
+    for section, field, replacement in (
+        (None, "apiVersion", "other/v1"), (None, "kind", "APIKeyList"),
+        (None, "uid", value["metadata"]["uid"]), (None, "metadata", []), (None, "spec", []), (None, "status", []),
+        ("metadata", "uid", str(uuid.uuid4())), ("metadata", "name", "other-key"),
+        ("metadata", "scopes", value["spec"]["scopes"]), ("spec", "uid", value["metadata"]["uid"]),
+        ("status", "uid", value["metadata"]["uid"]), ("status", "scopes", value["spec"]["scopes"]),
+        ("status", "token", "synthetic-unexpected-token-never-retained"),
+        ("spec", "scopes", "*"), ("spec", "scopes", [False]),
+        ("spec", "scopes", value["spec"]["scopes"]*2), ("spec", "scopes", [*value["spec"]["scopes"], "*"]),
+        ("spec", "projects", None), ("spec", "projects", ["other-project"]),
+        ("spec", "serviceAccountName", "lab/other"), ("status", "owner", "sa/lab/other"),
+    ):
+        candidate = copy.deepcopy(value)
+        target = candidate if section is None else candidate[section]
+        target[field] = replacement
+        cases.append((str(section)+"."+field, candidate))
+    return cases
 
 
 class HandbackTests(unittest.TestCase):
@@ -92,7 +127,7 @@ class HandbackTests(unittest.TestCase):
                 {"kind": "APIKey", "credentialUID": self.key_uid, "org": self.org, "projects": [], "scopes": sorted(SCOPES)})
         elif path.startswith("/apis/nodus.dev/v1/apikeys/"):
             if method == "GET":
-                result = (200, {"uid": self.key_uid, "name": "host-retirement", "scopes": sorted(SCOPES), "projects": []})
+                result = (200, api_key_object(self.key_uid, "host-retirement", SCOPES))
             else:
                 self.assertTrue(self.node_deleted)
                 self.assertEqual(self.h._load()["stage"], "key_delete_pending")
@@ -141,6 +176,37 @@ class HandbackTests(unittest.TestCase):
             lambda: self.service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1300, request_key="overlap")):
             with self.assertRaises(Error):
                 action()
+
+    def test_api_key_object_identity_rejects_flat_ambiguous_and_malformed_fields(self):
+        for name, value in invalid_api_key_objects(api_key_object(self.key_uid, "host-retirement", SCOPES)):
+            with self.subTest(case=name):
+                self.mutate = lambda method, path, result: (200, value) if method == "GET" and "/apikeys/" in path else result
+                with self.assertRaises(Error):
+                    self.run_handback()
+                self.assertFalse(self.node_deleted)
+                self.assertFalse(self.key_deleted)
+                self.assertIsNone(self.h._load())
+        self.mutate = lambda method, path, result: result
+        self.assertTrue(self.run_handback()["native_access_ready"])
+        self.assertNotIn("synthetic-unexpected-token-never-retained", json.dumps(self.h._load()))
+
+    def test_retirement_http_rejects_duplicate_json_fields(self):
+        class Response(io.BytesIO):
+            code = 200
+        class Opener:
+            def open(self, *_args, **_kwargs):
+                return Response(raw)
+        value = api_key_object(self.key_uid, "host-retirement", SCOPES)
+        valid = json.dumps(value).encode()
+        with patch("nodus_dc.handback.urllib.request.build_opener", return_value=Opener()):
+            raw = valid
+            self.assertEqual((200, value), request("GET", "https://api.invalid/apis/nodus.dev/v1/apikeys/host-retirement", "synthetic-only"))
+            for field, conflicting in ((b'"uid":', b'"uid":"wrong",'), (b'"kind":', b'"kind":"Other",'),
+                                       (b'"scopes":', b'"scopes":["*"],')):
+                raw = valid.replace(field, conflicting + field, 1)
+                with self.assertRaises(Error) as exc:
+                    request("GET", "https://api.invalid/apis/nodus.dev/v1/apikeys/host-retirement", "synthetic-only")
+                self.assertEqual("retirement_protocol", exc.exception.code)
 
     def test_wrong_generation_or_replayed_request_fails(self):
         with self.assertRaises(Error):

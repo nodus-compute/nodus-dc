@@ -31,6 +31,41 @@ SCOPES = frozenset({"pools:read", "nodes:read", "nodes:write", "apikeys:read", "
 JOURNAL_KEY = "terminal_native_handback"
 
 
+def api_key_metadata(value):
+    """Project a GET APIKey object without retaining status or accepting flat aliases."""
+    if (not isinstance(value, dict) or set(value) != {"apiVersion", "kind", "metadata", "spec", "status"}
+            or value.get("apiVersion") != "nodus.dev/v1" or value.get("kind") != "APIKey"):
+        return None
+    metadata, spec, status = (value[field] for field in ("metadata", "spec", "status"))
+    if not all(isinstance(item, dict) for item in (metadata, spec, status)):
+        return None
+    if (set(metadata) - {"name", "uid", "creationTimestamp", "labels", "annotations", "resourceVersion",
+                         "namespace", "generation", "deletionTimestamp", "finalizers"}
+            or set(spec) - {"description", "serviceAccountName", "scopes", "projects", "expirationTime"}
+            or set(status) - {"owner", "prefix", "lastUsedTime"}):
+        return None
+    scopes, projects = spec.get("scopes"), spec.get("projects")
+    if (not all(isinstance(metadata.get(field), str) and metadata[field] for field in ("uid", "name"))
+            or not isinstance(scopes, list) or not all(isinstance(scope, str) and scope for scope in scopes)
+            or len(scopes) != len(set(scopes)) or not isinstance(projects, list)
+            or not all(isinstance(project, str) for project in projects)
+            or not isinstance(spec.get("serviceAccountName", ""), str)
+            or not isinstance(status.get("owner", ""), str)
+            or (status.get("owner", "").startswith("sa/") and not spec.get("serviceAccountName"))):
+        return None
+    return {"uid": metadata["uid"], "name": metadata["name"], "scopes": scopes, "projects": projects,
+            "serviceAccountName": spec.get("serviceAccountName", "")}
+
+
+def _unique_object(pairs):
+    value = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError("duplicate response field")
+        value[name] = item
+    return value
+
+
 def request(method, url, token, body=None):
     """Status-preserving HTTPS, without redirects, proxies or credential logging."""
     data = None if body is None else canonical(body).encode()
@@ -48,7 +83,7 @@ def request(method, url, token, body=None):
             raw = response.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
                 raise ValueError("response limit")
-            result = json.loads(raw) if raw else None
+            result = json.loads(raw, object_pairs_hook=_unique_object) if raw else None
             return response.code, result
     except (OSError, ValueError):
         raise Error("retirement_protocol", "invalid platform retirement response", 503) from None
@@ -240,7 +275,8 @@ class Handback:
         return self._save(journal, "prepared")
 
     def _verify_key(self, journal):
-        status, metadata = self._call(journal, "GET", journal["key_path"])
+        status, value = self._call(journal, "GET", journal["key_path"])
+        metadata = api_key_metadata(value)
         if (status != 200 or not isinstance(metadata, dict) or metadata.get("name") != journal["api_key_name"]
                 or metadata.get("uid") != journal["credential_uid"] or metadata.get("serviceAccountName")
                 or set(metadata.get("scopes", [])) != SCOPES or metadata.get("projects") not in ([], None)):

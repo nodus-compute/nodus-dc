@@ -51,7 +51,7 @@ class RecoveryTests(unittest.TestCase):
             if not target or target['revoked']:
                 result = (404, {'reason': 'NotFound'})
             elif method == 'GET':
-                result = (200, {key: target[key] for key in ('uid', 'name', 'scopes', 'projects')})
+                result = (200, test_handback.api_key_object(target['uid'], target['name'], target['scopes'], target['projects']))
             else:
                 self.assertTrue(self.deleted_node)
                 target['revoked'] = True
@@ -123,6 +123,26 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(all(item['state'] == 'rejected' for item in journal['recovery_keys']))
         self.assertTrue(all(not __import__('pathlib').Path(item['path']).exists() for item in journal['files']))
         self.assertGreaterEqual(sum(self.f.waits), 31)
+
+    def test_recovery_api_key_envelope_failure_keeps_introduced_obligation(self):
+        self.pending_key()
+        extra = self.recovery_key()
+        actor = next(item for item in self.keys.values() if item['name'] == 'recovery-one')
+        value = test_handback.api_key_object(actor['uid'], actor['name'], actor['scopes'])
+        for name, invalid in test_handback.invalid_api_key_objects(value):
+            with self.subTest(case=name):
+                self.mutate = lambda method, path, result: (200, invalid) if method == 'GET' and path.endswith('/apikeys/recovery-one') else result
+                with self.assertRaises(Error):
+                    self.run_return(recover=True, **extra)
+                with self.assertRaises(Error):
+                    self.run_return()
+                self.assertEqual('identity_pending', self.f.h._load()['recovery_keys'][0]['state'])
+                self.assertFalse(actor['revoked'])
+                self.assertEqual(0, self.f.agent.stops)
+                self.assertNotIn('synthetic-unexpected-token-never-retained', json.dumps(self.f.h._load()))
+        self.mutate = lambda method, path, result: result
+        self.assertTrue(self.run_return(recover=True, **extra)['native_access_ready'])
+        self.assertTrue(actor['revoked'])
 
     def test_lost_recovery_key_ack_remains_obligation_and_second_key_reconciles(self):
         self.pending_key()

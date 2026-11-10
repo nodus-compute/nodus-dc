@@ -24,6 +24,11 @@ private root-owned file; keep personal/session credentials off the host. This
 key can retire the enrolled Node and itself. Only the human owner/admin can
 accept or revoke sharing consent through the console.
 
+The retirement check reads the normal APIKey object: identity from `metadata`,
+scopes and project restrictions from `spec`. It refuses flat or conflicting
+responses and never retains APIKey `status` or a returned token. Authentication
+identity (`/auth/whoami`) and audit receipts keep their own response formats.
+
 Add `--terminal-native-return` to the normal `connection connect` command from
 the first connection. Keep the same canonical token-file path, token, platform
 origin, organization, pool and enrolled Node throughout this installation.
