@@ -88,6 +88,8 @@ Choose permitted workloads explicitly: repeat `--allow-image` for approved immut
 
 The daemon periodically verifies accepted consent with the platform. Every claim/check requires a permission receipt no more than 20 seconds old and a matching current enrolled-node identity, even if the network worker stalls. Changed/revoked accepted consent, outages, failed parsing and expiration deny external admission; owner workloads keep their independent local lifecycle. Publication of new terms alone does not revoke the existing immutable accepted consent used by permission and priced offers. A local disconnect or identity/accepted-consent revocation persists and never automatically resumes. Credits are a separate explicitly chosen compensation mode and do not prove a cash payout. Actual cash settlement belongs to the connected platform qualification.
 
+The source archive also includes [runnable bounded safety models](verification/models/README.md) for allocation, reclaim/fencing, financial replay and terminal return. Their reference runs retain40 deliberate mutation witnesses, explicit assumptions and a [source mapping](verification/models/mapping.md); abstract safety is not implementation or hardware proof. The runtime wheel omits this verification tooling.
+
 Run CPU verification with `PYTHONPATH=src python3 -m unittest discover -s tests`. Fixtures declare synthetic hardware. The support matrix records the qualification gaps; no hardware claims are implied by these CPU tests.
 
 New code is Apache-2.0. Third-party research source is not included in this distribution.

@@ -1,0 +1,500 @@
+{
+  "profile": "cash_financial_replay",
+  "mutation": "accept_stale_settlement",
+  "outcome": "counterexample",
+  "exhaustive_search_completed": false,
+  "reachable_states_discovered": 62,
+  "states_explored": 34,
+  "transitions_explored": 132,
+  "pending_states_at_stop": 28,
+  "transition_counts": {
+    "ApplySettlementRevision": 12,
+    "ApplyStaleSettlementRevision": 4,
+    "AuthoritativeRefundCorrection": 11,
+    "CrashWorker": 20,
+    "CreateChargeIntent": 1,
+    "FinalizeQualifiedUsage": 1,
+    "IgnoreSettlementReplay": 10,
+    "ProcessorChargeAcceptedResponseUnknown": 1,
+    "ProcessorChargeFailed": 1,
+    "ReadPayable": 18,
+    "ReconcileCharge": 16,
+    "ReservePayout": 8,
+    "RestartWorker": 13,
+    "RetryChargeSameBusinessIdentity": 16
+  },
+  "violated_properties": [
+    "I_SettlementRevisionMonotonic"
+  ],
+  "counterexample": [
+    {
+      "action": "Init",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": false,
+        "charge_intent": false,
+        "charge_outcome": "none",
+        "remote_charge_count": 0,
+        "charge_observed": false,
+        "authoritative_revision": -1,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "FinalizeQualifiedUsage",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": false,
+        "charge_outcome": "none",
+        "remote_charge_count": 0,
+        "charge_observed": false,
+        "authoritative_revision": -1,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "CreateChargeIntent",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "none",
+        "remote_charge_count": 0,
+        "charge_observed": false,
+        "authoritative_revision": -1,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "ProcessorChargeAcceptedResponseUnknown",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "succeeded",
+        "remote_charge_count": 1,
+        "charge_observed": false,
+        "authoritative_revision": 0,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "ReconcileCharge",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "succeeded",
+        "remote_charge_count": 1,
+        "charge_observed": true,
+        "authoritative_revision": 0,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "AuthoritativeRefundCorrection",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "succeeded",
+        "remote_charge_count": 1,
+        "charge_observed": true,
+        "authoritative_revision": 1,
+        "settled_revision": -1,
+        "highest_seen_revision": -1,
+        "settled_target": 0,
+        "payable": 0,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "ApplySettlementRevision:1",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "succeeded",
+        "remote_charge_count": 1,
+        "charge_observed": true,
+        "authoritative_revision": 1,
+        "settled_revision": 1,
+        "highest_seen_revision": 1,
+        "settled_target": 1,
+        "payable": 1,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "ApplyStaleSettlementRevision:0",
+      "state": {
+        "worker_up": true,
+        "qualified_usage": true,
+        "charge_intent": true,
+        "charge_outcome": "succeeded",
+        "remote_charge_count": 1,
+        "charge_observed": true,
+        "authoritative_revision": 1,
+        "settled_revision": 0,
+        "highest_seen_revision": 1,
+        "settled_target": 2,
+        "payable": 2,
+        "pending": 0,
+        "transferred_booked": 0,
+        "reserve_reads": [
+          -1,
+          -1
+        ],
+        "payout_amounts": [
+          0,
+          0
+        ],
+        "attempt_age": [
+          0,
+          0
+        ],
+        "remote_transfer_counts": [
+          0,
+          0
+        ],
+        "transfer_booked": [
+          false,
+          false
+        ],
+        "bank_truth": [
+          "none",
+          "none"
+        ],
+        "bank_local": [
+          "none",
+          "none"
+        ],
+        "bank_final_seen": [
+          false,
+          false
+        ],
+        "reservation_breach": false
+      }
+    }
+  ],
+  "elapsed_seconds": 0.000713,
+  "bounds": {
+    "qualified_usage_lineages": 1,
+    "charge_business_ids": 1,
+    "settlement_revisions": 3,
+    "payout_business_ids": 2,
+    "worker_processes": "one active, arbitrary crash/restart",
+    "symbolic_target_values": [
+      2,
+      1,
+      0
+    ],
+    "payout_amount_choices": [
+      1,
+      2
+    ],
+    "currencies": 1,
+    "retry_age_classes": [
+      "not_attempted",
+      "within_same_key_window",
+      "expired_reconcile_only"
+    ],
+    "delivery": "Any previously published settlement revision can be redelivered in any order indefinitely."
+  },
+  "assumptions": [
+    "Actual accepted commercial terms freeze the settlement function; symbolic targets 2,1,0 represent earnings then two corrections, not prices or payout percentages.",
+    "Charge and payout business identities persist across crashes; processor idempotency is an explicit external contract to verify separately.",
+    "Settlement revision and its ledger delta commit atomically; actual database transaction enforcement requires conformance.",
+    "Cash payable is separate from credits. Negative payable after post-transfer refund is allowed and blocks new payout reservation.",
+    "Transfer confirmation and bank payout are separate. Failed bank payout does not authorize a second transfer.",
+    "Within-window retries reuse the same processor key. Expired/ambiguous attempts reconcile or remain frozen; no fresh key is created.",
+    "One currency and exact integer token arithmetic; rounding/FX and real micros-to-cents behavior require separate implementation tests.",
+    "No fairness or eventual processor success/delivery assumed. This models processor effects; it does not call a processor."
+  ],
+  "properties": [
+    "I_ChargeIdempotency",
+    "I_SettlementRevisionMonotonic",
+    "I_BalanceConservation",
+    "I_NoOverPayoutReservation",
+    "I_TransferIdempotency",
+    "I_QualifiedUsageLineage",
+    "I_HonestBankPayoutState",
+    "I_NoDuplicateTransferForFailedBankPayout"
+  ],
+  "fairness": "None. This run checks safety over all reachable bounded states; no liveness or wall-clock guarantee is claimed.",
+  "max_states_guard": 1000000,
+  "proof_scope": "Only this finite abstract model. Implementation, GPU and processor conformance remain unverified.",
+  "started_at_run_utc": "2026-11-10T15:21:55.743258+00:00",
+  "source_sha256": {
+    "allocation.py": "bd0bdf47f0652747052ea61463ccd917de1ff4accf2722cad96eb758a385497d",
+    "checker.py": "8a069954d8cbd6462eea4d1d14f405f53b9c1a95285c0d0ab878c16eb885dcde",
+    "financial.py": "4b998aa1ba5574ccd8a2d3746836a15098ad0ff9bfd40d8e15a7c7fbdf552fa3",
+    "integrated.py": "1790d85e2530b747d877f9c1034d9ddecb8298c359185031cd019a989e2065e7",
+    "native_handback.py": "ac3937d533da4b595d06419c1ecbb2b56652d6a1513e7a3573c1f398010757bd",
+    "native_handback_recovery.py": "dacd5f0c11b5c2c52ecdc9bbb25aead54eb683cc78d2823d8d6fa8a2f9b94339",
+    "reclaim.py": "9691fbbe0002b8a8956769ceccd7b0fefbe34c38d91f35326c64cc0da5448ea5",
+    "run_models.py": "357c13e8ea27beb96f0b11df6094ec0f243cf2fdf04051a9aebd9b729938cb1d",
+    "run_native_recovery.py": "49a03b8bfd17dc9742e64cd435704228970392fc9322ecd63744419dbecea382"
+  },
+  "expected_mutation_property": "I_SettlementRevisionMonotonic",
+  "run_expectation_satisfied": true
+}

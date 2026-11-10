@@ -1,0 +1,103 @@
+{
+  "profile": "allocation_hierarchy",
+  "mutation": "ignore_capacity",
+  "outcome": "counterexample",
+  "exhaustive_search_completed": false,
+  "reachable_states_discovered": 137,
+  "states_explored": 59,
+  "transitions_explored": 425,
+  "pending_states_at_stop": 78,
+  "transition_counts": {
+    "AcceptTerms": 58,
+    "Commit": 189,
+    "Release": 62,
+    "ToggleOptIn": 58,
+    "ToggleOwnerReservation": 58
+  },
+  "violated_properties": [
+    "B_CapacityConservation"
+  ],
+  "counterexample": [
+    {
+      "action": "Init",
+      "state": {
+        "leases": [],
+        "opted_in": false,
+        "terms": false,
+        "owner_reserved": false,
+        "permission_breach": false,
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "Commit:trusted-a",
+      "state": {
+        "leases": [
+          6
+        ],
+        "opted_in": false,
+        "terms": false,
+        "owner_reserved": false,
+        "permission_breach": false,
+        "reservation_breach": false
+      }
+    },
+    {
+      "action": "Commit:trusted-overflow",
+      "state": {
+        "leases": [
+          6,
+          8
+        ],
+        "opted_in": false,
+        "terms": false,
+        "owner_reserved": false,
+        "permission_breach": false,
+        "reservation_breach": false
+      }
+    }
+  ],
+  "elapsed_seconds": 0.001113,
+  "bounds": {
+    "hosts": 1,
+    "physical_gpus": 2,
+    "partition_units_per_gpu": 2,
+    "simultaneous_lease_slots": 3,
+    "fixed_request_descriptors": 14,
+    "memory_and_compute_units_per_gpu": 2,
+    "external_fractional_enabled": false
+  },
+  "assumptions": [
+    "Abstract commit is atomic; actual database/scheduler enforcement requires separate conformance.",
+    "Hardware partitions part0/part1 are disjoint qualified profiles on gpu0; other profile requests are unsupported.",
+    "Trusted cooperative memory/compute budgets are declared abstract guarantees, not a claim of hardware SM or tenant isolation.",
+    "An idle scheduler-held allocation is a normal authoritative allocation, independent of telemetry.",
+    "No fairness. Policy can change at any state, but accepted external running lease cessation belongs to reclaim_fencing."
+  ],
+  "properties": [
+    "A_ExclusiveOwnership",
+    "B_CapacityConservation",
+    "C_ExplicitPermissionAtAdmission",
+    "E_ReservationBlocksAdmission",
+    "G_DeclaredIsolation",
+    "SchedulerAuthorityRespected",
+    "ExternalFractionalDisabled"
+  ],
+  "fairness": "None. This run checks safety over all reachable bounded states; no liveness or wall-clock guarantee is claimed.",
+  "max_states_guard": 1000000,
+  "proof_scope": "Only this finite abstract model. Implementation, GPU and processor conformance remain unverified.",
+  "started_at_run_utc": "2026-11-10T15:21:55.743258+00:00",
+  "source_sha256": {
+    "allocation.py": "bd0bdf47f0652747052ea61463ccd917de1ff4accf2722cad96eb758a385497d",
+    "checker.py": "8a069954d8cbd6462eea4d1d14f405f53b9c1a95285c0d0ab878c16eb885dcde",
+    "financial.py": "4b998aa1ba5574ccd8a2d3746836a15098ad0ff9bfd40d8e15a7c7fbdf552fa3",
+    "integrated.py": "1790d85e2530b747d877f9c1034d9ddecb8298c359185031cd019a989e2065e7",
+    "native_handback.py": "ac3937d533da4b595d06419c1ecbb2b56652d6a1513e7a3573c1f398010757bd",
+    "native_handback_recovery.py": "dacd5f0c11b5c2c52ecdc9bbb25aead54eb683cc78d2823d8d6fa8a2f9b94339",
+    "reclaim.py": "9691fbbe0002b8a8956769ceccd7b0fefbe34c38d91f35326c64cc0da5448ea5",
+    "run_models.py": "357c13e8ea27beb96f0b11df6094ec0f243cf2fdf04051a9aebd9b729938cb1d",
+    "run_native_recovery.py": "49a03b8bfd17dc9742e64cd435704228970392fc9322ecd63744419dbecea382"
+  },
+  "expected_mutation_property": "B_CapacityConservation",
+  "run_expectation_satisfied": true
+}

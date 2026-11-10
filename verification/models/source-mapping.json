@@ -1,0 +1,12 @@
+{
+  "reference_public_source": "a536957108a12d61bf6962fb7fe08bd6b7175375",
+  "scope": "Navigation and source identity only; no implementation refinement or hardware/payment proof.",
+  "files": {
+    "src/nodus_dc/service.py": "9437450001016a3979d1e1326599accbb6ca0d05096c8b27738777c94c607d31",
+    "src/nodus_dc/model.py": "5632369d24aec575144808698d05ede9cd6e9df370b79a0dba4627d1c166c4ba",
+    "src/nodus_dc/store.py": "441ceec182a7db53aeb894ac038b75bfd11e7f694adbe03b0b59c4e989674198",
+    "src/nodus_dc/connection.py": "c13f5ea18523eff5dac63dc0b55d02b7a4f3f7c00ebd2df0d2b81d9c83225ebc",
+    "src/nodus_dc/handback.py": "e123861d25f91b73ba18615e0488a49ae7a1b4194692ef82fb926b922738a133",
+    "src/nodus_dc/recovery.py": "9540d06167e510d71e74c20d40b1f3cb4ee850ee96d66d6c39bf72f582077ac6"
+  }
+}

@@ -1,0 +1,300 @@
+{
+  "started_at_utc": "2026-11-10T15:21:55.743258+00:00",
+  "finished_at_utc": "2026-11-10T15:21:57.438233+00:00",
+  "tool": "stdlib Python exhaustive breadth-first explicit-state checker",
+  "python": "3.12.15",
+  "source_sha256": {
+    "allocation.py": "bd0bdf47f0652747052ea61463ccd917de1ff4accf2722cad96eb758a385497d",
+    "checker.py": "8a069954d8cbd6462eea4d1d14f405f53b9c1a95285c0d0ab878c16eb885dcde",
+    "financial.py": "4b998aa1ba5574ccd8a2d3746836a15098ad0ff9bfd40d8e15a7c7fbdf552fa3",
+    "integrated.py": "1790d85e2530b747d877f9c1034d9ddecb8298c359185031cd019a989e2065e7",
+    "native_handback.py": "ac3937d533da4b595d06419c1ecbb2b56652d6a1513e7a3573c1f398010757bd",
+    "native_handback_recovery.py": "dacd5f0c11b5c2c52ecdc9bbb25aead54eb683cc78d2823d8d6fa8a2f9b94339",
+    "reclaim.py": "9691fbbe0002b8a8956769ceccd7b0fefbe34c38d91f35326c64cc0da5448ea5",
+    "run_models.py": "357c13e8ea27beb96f0b11df6094ec0f243cf2fdf04051a9aebd9b729938cb1d",
+    "run_native_recovery.py": "49a03b8bfd17dc9742e64cd435704228970392fc9322ecd63744419dbecea382"
+  },
+  "command": [
+    "python3",
+    "run_models.py",
+    "--mutations",
+    "--output",
+    "reference-results/core-v1"
+  ],
+  "results": [
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": null,
+      "outcome": "passed",
+      "states": 204,
+      "transitions": 1273,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--baseline.json",
+      "receipt_sha256": "b0be8524ea40368a0cfc39da79423df55f4c65a01ff2e3ab0988bda9f41aa835"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_host_exclusion",
+      "outcome": "counterexample",
+      "states": 48,
+      "transitions": 412,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_host_exclusion.json",
+      "receipt_sha256": "8787303d9a0779c3a01d9f7cf0c9099ea88ac828160c91848a3c28a0a0f5ecb4"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_scheduler_authority",
+      "outcome": "counterexample",
+      "states": 48,
+      "transitions": 404,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_scheduler_authority.json",
+      "receipt_sha256": "2b9e581cef9f92f98b725fca91ac9b47dd44927ef6367da8fb3d1b8d74257b40"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_capacity",
+      "outcome": "counterexample",
+      "states": 59,
+      "transitions": 425,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_capacity.json",
+      "receipt_sha256": "b982430ac5192330b3d648ad870a96cf45eb1ecb22e87d9ef8c0d0e407b38640"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_trust",
+      "outcome": "counterexample",
+      "states": 14,
+      "transitions": 114,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_trust.json",
+      "receipt_sha256": "d08796cec9d6c61ceb1ef6463573de3f7c1124f17ea1a5c2b23cf2f25fdec662"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_permission",
+      "outcome": "counterexample",
+      "states": 14,
+      "transitions": 112,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_permission.json",
+      "receipt_sha256": "958b30cb469b5f782c0c87d99486f4733dc8c59b5bf0f26a0d78e96ccea7be33"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "ignore_owner_reservation",
+      "outcome": "counterexample",
+      "states": 136,
+      "transitions": 875,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--ignore_owner_reservation.json",
+      "receipt_sha256": "9bc3ee7a62456caa3678744a2f6796e5dbdeb29e71b0df34cf3b4b1220a5cefa"
+    },
+    {
+      "profile": "allocation_hierarchy",
+      "mutation": "enable_external_fractional",
+      "outcome": "counterexample",
+      "states": 70,
+      "transitions": 481,
+      "expectation_satisfied": true,
+      "receipt": "allocation_hierarchy--enable_external_fractional.json",
+      "receipt_sha256": "c2510842c3f091fa896dd241bb949c9d5764fc993560f788bd1f74444c596943"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": null,
+      "outcome": "passed",
+      "states": 26016,
+      "transitions": 151146,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--baseline.json",
+      "receipt_sha256": "6776dd378454e4b0df90060ad607ceadf64ab070860b641ae8d0ea68c6e41acf"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "ignore_fence",
+      "outcome": "counterexample",
+      "states": 6198,
+      "transitions": 38200,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--ignore_fence.json",
+      "receipt_sha256": "90f448ceec8b440d7651c0967f5d4cf886dba3f55b7cdfc60af84ec42a5f8fd9"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "ignore_permission_at_launch",
+      "outcome": "counterexample",
+      "states": 274,
+      "transitions": 1625,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--ignore_permission_at_launch.json",
+      "receipt_sha256": "2c18f9753de779214fdb238d6b27b72c907f4f3660ff2e6629ef5bc2f7d868bd"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "early_handback",
+      "outcome": "counterexample",
+      "states": 130,
+      "transitions": 721,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--early_handback.json",
+      "receipt_sha256": "6b45d86ce6cda34d5858c45ad9d4d121cb091c8d6284db8b7c5c0e261eb00b06"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "free_on_disconnect",
+      "outcome": "counterexample",
+      "states": 57,
+      "transitions": 291,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--free_on_disconnect.json",
+      "receipt_sha256": "66886926a8a74d0a9694d5c4524e431d8a28069f4312ea8944840d5606607a61"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "forget_lease_on_restart",
+      "outcome": "counterexample",
+      "states": 123,
+      "transitions": 657,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--forget_lease_on_restart.json",
+      "receipt_sha256": "5c2c7deb7e34a5d86df65a95f7849aac31f430413ba1a4ede191326dae58adf6"
+    },
+    {
+      "profile": "reclaim_fencing_offline",
+      "mutation": "require_platform_for_local",
+      "outcome": "counterexample",
+      "states": 13,
+      "transitions": 68,
+      "expectation_satisfied": true,
+      "receipt": "reclaim_fencing_offline--require_platform_for_local.json",
+      "receipt_sha256": "f6eac0105b635642380ba303cb8af2758d5cf98cedf74aed0045e55a4479101b"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": null,
+      "outcome": "passed",
+      "states": 26498,
+      "transitions": 190790,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--baseline.json",
+      "receipt_sha256": "923baaf3a3affa441e72fa976f6892339475de5d62d7c8aee3d86c9161514959"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "new_charge_key_on_retry",
+      "outcome": "counterexample",
+      "states": 10,
+      "transitions": 16,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--new_charge_key_on_retry.json",
+      "receipt_sha256": "96ec1af240f34600885ed13d1af5285c775968bc3e0bbce699ba842caa1db91b"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "duplicate_earnings_post",
+      "outcome": "counterexample",
+      "states": 23,
+      "transitions": 68,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--duplicate_earnings_post.json",
+      "receipt_sha256": "904205c8843c3ff7284c7b5eccb0604af81458603f427fe7abc45b76ab9aa25d"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "accept_stale_settlement",
+      "outcome": "counterexample",
+      "states": 34,
+      "transitions": 132,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--accept_stale_settlement.json",
+      "receipt_sha256": "28701cc09432a31f3d878c2ecdee0028e5592ca4dea607a4d7d09a81ec25b9d3"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "non_atomic_payout_reserve",
+      "outcome": "counterexample",
+      "states": 103,
+      "transitions": 606,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--non_atomic_payout_reserve.json",
+      "receipt_sha256": "007d2775f7f353620d049c185379d2880d962e0937b48231eee785e8ea3fde0c"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "fresh_key_after_retry_expiry",
+      "outcome": "counterexample",
+      "states": 333,
+      "transitions": 2243,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--fresh_key_after_retry_expiry.json",
+      "receipt_sha256": "9bcf0cd7ea16e411127b62a802d07251209f95f5aedc3573ff1210b540818b76"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "stale_bank_event_regresses",
+      "outcome": "counterexample",
+      "states": 1545,
+      "transitions": 10998,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--stale_bank_event_regresses.json",
+      "receipt_sha256": "7889664079e7e803981fc8550e7f27bc39221f7b7f3b6d6cc34e38989cd4af3e"
+    },
+    {
+      "profile": "cash_financial_replay",
+      "mutation": "retransfer_failed_bank_payout",
+      "outcome": "counterexample",
+      "states": 1549,
+      "transitions": 11037,
+      "expectation_satisfied": true,
+      "receipt": "cash_financial_replay--retransfer_failed_bank_payout.json",
+      "receipt_sha256": "c500d389a8b076d0c5a18bc730fdf37de29f07e5515a1b15a3b999ba5ef7299d"
+    },
+    {
+      "profile": "lease_usage_financial_linkage",
+      "mutation": null,
+      "outcome": "passed",
+      "states": 702,
+      "transitions": 4856,
+      "expectation_satisfied": true,
+      "receipt": "lease_usage_financial_linkage--baseline.json",
+      "receipt_sha256": "368700eb0c7bfe23ef12240ca3dd6ae4a7c3249da0ba32a6a10d6207ebc1755b"
+    },
+    {
+      "profile": "lease_usage_financial_linkage",
+      "mutation": "bill_allocated_but_not_running",
+      "outcome": "counterexample",
+      "states": 15,
+      "transitions": 51,
+      "expectation_satisfied": true,
+      "receipt": "lease_usage_financial_linkage--bill_allocated_but_not_running.json",
+      "receipt_sha256": "b2290a822d5902a87a9466703f8631080d6e5d224a19c5afde1c9e565ca4e4fe"
+    },
+    {
+      "profile": "lease_usage_financial_linkage",
+      "mutation": "payment_retry_restarts_work",
+      "outcome": "counterexample",
+      "states": 139,
+      "transitions": 684,
+      "expectation_satisfied": true,
+      "receipt": "lease_usage_financial_linkage--payment_retry_restarts_work.json",
+      "receipt_sha256": "9028703831932f1d2315b6a1a4ef481adac5ced9ade8929f38565bd69d60dbf5"
+    },
+    {
+      "profile": "lease_usage_financial_linkage",
+      "mutation": "lose_lineage_on_release",
+      "outcome": "counterexample",
+      "states": 139,
+      "transitions": 702,
+      "expectation_satisfied": true,
+      "receipt": "lease_usage_financial_linkage--lose_lineage_on_release.json",
+      "receipt_sha256": "849d5f742b1fc58151023b2a78c5dc2572d6015cd2a36c797b007eac46eba028"
+    }
+  ],
+  "implementation_conformance": "unverified",
+  "hardware_qualification": "unverified",
+  "processor_qualification": "unverified",
+  "overall_outcome": "passed_within_declared_abstract_bounds"
+}

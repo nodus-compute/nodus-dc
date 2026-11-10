@@ -1,0 +1,175 @@
+{
+  "bounded_model_and_mutation_checks_passed": true,
+  "implementation_conformance": false,
+  "hardware_qualified": false,
+  "source_sha256": {
+    "checker.py": "8a069954d8cbd6462eea4d1d14f405f53b9c1a95285c0d0ab878c16eb885dcde",
+    "native_handback.py": "ac3937d533da4b595d06419c1ecbb2b56652d6a1513e7a3573c1f398010757bd",
+    "native_handback_recovery.py": "dacd5f0c11b5c2c52ecdc9bbb25aead54eb683cc78d2823d8d6fa8a2f9b94339",
+    "run_native_recovery.py": "49a03b8bfd17dc9742e64cd435704228970392fc9322ecd63744419dbecea382"
+  },
+  "runs": [
+    {
+      "mutation": null,
+      "outcome": "passed",
+      "states": 3622,
+      "transitions": 16946,
+      "receipt": "baseline.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "40f7d259d0487040570a13c5f98a9679e32a996def924a1e633255b746965310"
+    },
+    {
+      "mutation": "ignore_history",
+      "outcome": "counterexample",
+      "states": 70,
+      "transitions": 390,
+      "receipt": "ignore_history.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "15c54e26b0dddbc9a1bfca743d4ac2faec339613afec1ebca49c4aea7e94b2b2"
+    },
+    {
+      "mutation": "ignore_live_work",
+      "outcome": "counterexample",
+      "states": 76,
+      "transitions": 417,
+      "receipt": "ignore_live_work.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "3d62c6f769c7b1a8d7848ee6918e2dbd82465f6e729d6d0d5a0d7ebffdfd018f"
+    },
+    {
+      "mutation": "infer_node_retirement_from_404",
+      "outcome": "counterexample",
+      "states": 1310,
+      "transitions": 5584,
+      "receipt": "infer_node_retirement_from_404.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "f51fc5f05c9fd313dc53e41ac37b9765729c5e22bcbad389f6c85a15ba669fbe"
+    },
+    {
+      "mutation": "reuse_wait_after_restart",
+      "outcome": "counterexample",
+      "states": 649,
+      "transitions": 2709,
+      "receipt": "reuse_wait_after_restart.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "10c79f6c057a7381ac797e7f0a14504afbeb19c1f9f222cd330a00690e9d4bb3"
+    },
+    {
+      "mutation": "omit_full_wait",
+      "outcome": "counterexample",
+      "states": 281,
+      "transitions": 1261,
+      "receipt": "omit_full_wait.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "021285cbdf934f069507e8cac4b4614c75fcb8beacedb8e17e6e51c34e3081be"
+    },
+    {
+      "mutation": "accept_non401",
+      "outcome": "counterexample",
+      "states": 849,
+      "transitions": 3485,
+      "receipt": "accept_non401.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "be44a4fac4f71f748e6c8eb39c52c43615caf1df0cf31ce1ea7968691b3c23fa"
+    },
+    {
+      "mutation": "omit_agent_stop",
+      "outcome": "counterexample",
+      "states": 845,
+      "transitions": 3476,
+      "receipt": "omit_agent_stop.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "f0dd9ff1c38a96db0a228a205abf9c71f947544494e66e9fe40de8ab272704f9"
+    },
+    {
+      "mutation": "omit_final_gpu_validation",
+      "outcome": "counterexample",
+      "states": 740,
+      "transitions": 3059,
+      "receipt": "omit_final_gpu_validation.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "03eceb47d263ed2159438860d1a3b148917f0a6bb6d8e80c4be93bfd21d6462d"
+    },
+    {
+      "mutation": "expiry_unlocks_native",
+      "outcome": "counterexample",
+      "states": 77,
+      "transitions": 417,
+      "receipt": "expiry_unlocks_native.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "6d545a4e892245d982e5c1bdab41f2cf1ec9320d8ab50f055ee3222366ff734f"
+    },
+    {
+      "mutation": "admit_external_after_native",
+      "outcome": "counterexample",
+      "states": 77,
+      "transitions": 417,
+      "receipt": "admit_external_after_native.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "b4da5e9d23391e05cf87514b5b6776751b233f864b97888095808436159c73fe"
+    },
+    {
+      "mutation": "omit_recovery_key_tracking",
+      "outcome": "counterexample",
+      "states": 1640,
+      "transitions": 7551,
+      "receipt": "omit_recovery_key_tracking.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "c07239e8e0400f116216f93db858cbcbae000c8f3eca55408b695857b3bb55ae"
+    },
+    {
+      "mutation": "accept_foreign_recovery_actor",
+      "outcome": "counterexample",
+      "states": 79,
+      "transitions": 431,
+      "receipt": "accept_foreign_recovery_actor.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "627fdccd9a6cd80630a4e1fd1039c97f81444261da74f1602b07a67963f899ab"
+    },
+    {
+      "mutation": "accept_wrong_node_proof",
+      "outcome": "counterexample",
+      "states": 154,
+      "transitions": 691,
+      "receipt": "accept_wrong_node_proof.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "6b5d5c96909aef89d0a291fd5686c7b2f1729839242086e6b9fb6a2c4934aeb2"
+    },
+    {
+      "mutation": "infer_key_revocation_from_404",
+      "outcome": "counterexample",
+      "states": 279,
+      "transitions": 1255,
+      "receipt": "infer_key_revocation_from_404.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "02cb85881055f27011fca0da607bf53865c4727110e370a1a3bc2207e78d24dc"
+    },
+    {
+      "mutation": "forget_unknown_recovery_delete",
+      "outcome": "counterexample",
+      "states": 2525,
+      "transitions": 13246,
+      "receipt": "forget_unknown_recovery_delete.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "6c5d101f08991600be9a501eb2e32d9a89acdb027d6f53f7c7bedb97cadb81a1"
+    },
+    {
+      "mutation": "omit_recovery_retirement",
+      "outcome": "counterexample",
+      "states": 1120,
+      "transitions": 4969,
+      "receipt": "omit_recovery_retirement.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "db79e14c81487daf52cd49bdcc8fa66dd46424bf8f5f4128dc77522edc654d1a"
+    },
+    {
+      "mutation": "omit_recovery_401",
+      "outcome": "counterexample",
+      "states": 2292,
+      "transitions": 11221,
+      "receipt": "omit_recovery_401.json",
+      "expectation_satisfied": true,
+      "receipt_sha256": "485c765a6551084dbd0c694d4ba350b995ce3b2cffeca012d70f0cd8f61a0d2d"
+    }
+  ]
+}
