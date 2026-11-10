@@ -1,0 +1,255 @@
+{
+  "bounded_checks_passed": true,
+  "source_sha256": {
+    "checker.py": "8a069954d8cbd6462eea4d1d14f405f53b9c1a95285c0d0ab878c16eb885dcde",
+    "native_handback.py": "ac3937d533da4b595d06419c1ecbb2b56652d6a1513e7a3573c1f398010757bd",
+    "native_handback_recovery.py": "dacd5f0c11b5c2c52ecdc9bbb25aead54eb683cc78d2823d8d6fa8a2f9b94339",
+    "native_observation.py": "e22536480b8fa116a87f9fe64dd8b6bcfde347b660aa4d3801d4b49d142ef7ef",
+    "run_native_observation.py": "080ae4178742515b11d4e02e796705d74a661d0efae73a167ad5cdef23fcc293"
+  },
+  "runs": [
+    {
+      "origin": "fresh",
+      "mutation": null,
+      "expected_property": null,
+      "expected_result_observed": true,
+      "outcome": "passed",
+      "states": 29373,
+      "transitions": 161237,
+      "receipt": "baseline-fresh.json"
+    },
+    {
+      "origin": "legacy_no_consent",
+      "mutation": null,
+      "expected_property": null,
+      "expected_result_observed": true,
+      "outcome": "passed",
+      "states": 15769,
+      "transitions": 87741,
+      "receipt": "baseline-legacy_no_consent.json"
+    },
+    {
+      "origin": "legacy_with_consent",
+      "mutation": null,
+      "expected_property": null,
+      "expected_result_observed": true,
+      "outcome": "passed",
+      "states": 22757,
+      "transitions": 125275,
+      "receipt": "baseline-legacy_with_consent.json"
+    },
+    {
+      "origin": "ever_enabled",
+      "mutation": null,
+      "expected_property": null,
+      "expected_result_observed": true,
+      "outcome": "passed",
+      "states": 15257,
+      "transitions": 84157,
+      "receipt": "baseline-ever_enabled.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_schema3",
+      "expected_property": "Schema3FencesNewHistory",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 2,
+      "transitions": 1,
+      "receipt": "omit_schema3.json"
+    },
+    {
+      "origin": "legacy_no_consent",
+      "mutation": "initialize_legacy_never",
+      "expected_property": "NeverHistoryRequiresFreshOrigin",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 2,
+      "transitions": 1,
+      "receipt": "initialize_legacy_never.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "disable_clears_history",
+      "expected_property": "EverEnabledHistoryIsSticky",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 54,
+      "transitions": 577,
+      "receipt": "disable_clears_history.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "enable_omits_history",
+      "expected_property": "EverEnabledHistoryIsSticky",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 11,
+      "transitions": 106,
+      "receipt": "enable_omits_history.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "restart_forgets_history",
+      "expected_property": "EverEnabledHistoryIsSticky",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 177,
+      "transitions": 1801,
+      "receipt": "restart_forgets_history.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "mutable_active_admits",
+      "expected_property": "ObservationNeverAuthorizesAllocation",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 51,
+      "transitions": 548,
+      "receipt": "mutable_active_admits.json"
+    },
+    {
+      "origin": "legacy_no_consent",
+      "mutation": "unknown_is_never",
+      "expected_property": "NeverShortcutRequiresAllObservationGates",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 268,
+      "transitions": 2666,
+      "receipt": "unknown_is_never.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "ignore_external_history",
+      "expected_property": "NeverShortcutRequiresAllObservationGates",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 778,
+      "transitions": 7464,
+      "receipt": "ignore_external_history.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_nonaccepting_snapshot",
+      "expected_property": "NeverShortcutRequiresAllObservationGates",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 87,
+      "transitions": 941,
+      "receipt": "omit_nonaccepting_snapshot.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "delete_ack_is_retirement",
+      "expected_property": "NeverRouteNeedsAffirmativeNodeRetirement",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 1414,
+      "transitions": 11139,
+      "receipt": "delete_ack_is_retirement.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "accept_wrong_retirement",
+      "expected_property": "NeverRouteNeedsAffirmativeNodeRetirement",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 1014,
+      "transitions": 8568,
+      "receipt": "accept_wrong_retirement.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "allow_schema2_reader",
+      "expected_property": "Schema3FencesNewHistory",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 9,
+      "transitions": 79,
+      "receipt": "allow_schema2_reader.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "enable_after_native_intent",
+      "expected_property": "NativeIntentBlocksPolicyReenable",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 595,
+      "transitions": 5434,
+      "receipt": "enable_after_native_intent.json"
+    },
+    {
+      "origin": "legacy_with_consent",
+      "mutation": "bypass_consent_revoke",
+      "expected_property": "ConsentRouteStillRequiresRevocation",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 111,
+      "transitions": 1189,
+      "receipt": "bypass_consent_revoke.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_agent_stop",
+      "expected_property": "ReadyRequiresExactRemoteRetirementAndCleanup",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 6085,
+      "transitions": 33349,
+      "receipt": "omit_agent_stop.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_final_gpu_validation",
+      "expected_property": "ReadyRequiresExactRemoteRetirementAndCleanup",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 5267,
+      "transitions": 29590,
+      "receipt": "omit_final_gpu_validation.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_full_wait",
+      "expected_property": "RestartCannotReuseMonotonicWait",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 2370,
+      "transitions": 15971,
+      "receipt": "omit_full_wait.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_recovery_retirement",
+      "expected_property": "EveryIntroducedKeyRetiredBeforeReady",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 7881,
+      "transitions": 43792,
+      "receipt": "omit_recovery_retirement.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_recovery_401",
+      "expected_property": "EveryIntroducedKeyRetiredBeforeReady",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 13277,
+      "transitions": 74875,
+      "receipt": "omit_recovery_401.json"
+    },
+    {
+      "origin": "fresh",
+      "mutation": "omit_recovery_key_tracking",
+      "expected_property": "EveryIntroducedKeyRetiredBeforeReady",
+      "expected_result_observed": true,
+      "outcome": "counterexample",
+      "states": 11159,
+      "transitions": 62658,
+      "receipt": "omit_recovery_key_tracking.json"
+    }
+  ],
+  "implementation_conformance": false,
+  "hardware_qualified": false,
+  "claim": "Only exhaustive safety of each finite selected-origin model and intended omission counterexamples; no refinement or liveness proof."
+}

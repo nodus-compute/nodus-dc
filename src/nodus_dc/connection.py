@@ -102,7 +102,8 @@ class Connection:
         # Runs inside allocation checks without taking connection.lock or making network calls.
         # A stalled platform response cannot extend the last verified permission indefinitely.
         record = self._load()
-        if not record or not record.get("connected") or not record.get("active"):
+        if (not record or record.get("participation") == "disabled"
+                or not record.get("connected") or not record.get("active")):
             return False
         self._verify_identity(record)
         verified = record.get("permission_verified_at")
@@ -230,28 +231,44 @@ class Connection:
                                    authorization_id=record["authorization_id"], expires_at=record["available_until"])
         record.update(active=enabled, local_revision=revision, reason=reason)
 
+    def _disable(self, record, reason):
+        # Disable a real policy using its existing identity; observation creates no consent.
+        policy = self.service.bridge_policy_state()
+        if policy["enabled"]:
+            policy = self.service.bridge_policy(enabled=False, policy_revision=policy["policy_revision"] + 1,
+                consent_reference=policy["consent_reference"], authorization_id=policy["authorization_id"],
+                expires_at=policy["expires_at"])
+        record.update(active=False, local_revision=policy["policy_revision"], reason=reason)
+
     @staticmethod
     def _public(record):
         if record is None:
             return {"connected": False, "active": False}
         names = ("connected", "active", "platform_url", "namespace", "pool", "node", "consent_id", "terms_digest",
-                 "compensation", "available_until", "local_revision", "reason", "allowed_images")
+                 "compensation", "available_until", "local_revision", "reason", "allowed_images", "participation")
         return {name: record[name] for name in names if name in record}
 
-    def connect(self, *, platform_url, namespace, pool, node, token_file, available_until,
+    def connect(self, *, platform_url, namespace, pool, node, token_file, available_until=None,
                 accept_terms_digest=None, required_compensation="CashUSD", node_identity_file="/var/lib/nodus/node.json",
-                allowed_images=(), terminal_native_return=False):
+                allowed_images=(), terminal_native_return=False, participation="enabled"):
+        if participation not in {"enabled", "disabled"}:
+            raise Error("invalid_participation", "select enabled or disabled participation", 400)
+        if participation == "disabled" and (accept_terms_digest is not None or available_until is not None
+                or allowed_images not in ((), [])):
+            raise Error("observation_policy", "observation does not accept terms, availability or workload permissions", 400)
         if required_compensation not in {"CashUSD", "Credits"}:
             raise Error("invalid_compensation", "select CashUSD or Credits explicitly", 400)
-        if allowed_images is not None:
+        if participation == "enabled" and allowed_images is not None:
             if (not isinstance(allowed_images, list) or not 1 <= len(allowed_images) <= 128
                     or any(not self._pinned_image(image) for image in allowed_images)):
                 raise Error("invalid_workload_policy", "explicitly permit qualified Jobs or supply 1–128 pinned image references", 400)
             allowed_images = sorted(set(allowed_images))
         settings = self._settings(platform_url, namespace, pool, node, token_file)
-        until = finite_time(available_until, "available_until")
-        if not self.clock() < until <= self.clock() + 86400:
-            raise Error("invalid_availability", "v1 availability must end within the next 24 hours", 400)
+        until = None
+        if participation == "enabled":
+            until = finite_time(available_until, "available_until")
+            if not self.clock() < until <= self.clock() + 86400:
+                raise Error("invalid_availability", "v1 availability must end within the next 24 hours", 400)
         settings["node_identity_file"] = str(Path(node_identity_file).absolute())
         self._verify_identity(settings)
         # Ordinary connections remain usable with read-only keys/older servers.
@@ -271,9 +288,19 @@ class Connection:
                 observed = observed_binding(settings)
                 if all(history["binding"].get(k) == v for k, v in observed.items()):
                     binding = history["binding"]
-        self.service.record_connection_attempt(binding)
         with self._locked():
+            previous = self._load()
+            self.service.record_connection_attempt(binding, participation=participation, fresh_record=previous is None)
             response = self._request(settings)
+            if participation == "disabled":
+                self._verify_identity(settings)
+                record = {**(previous or {}), **settings, "connected": True, "active": False,
+                          "participation": "disabled", "permission_verified_at": self.clock(),
+                          "authorization_id": (previous or {}).get("authorization_id", "connection-" + uuid.uuid4().hex)}
+                self._save(record)  # Claims fail closed before any existing enabled policy is drained.
+                self._disable(record, "observation")
+                self._save(record)
+                return self._public(record)
             if accept_terms_digest is not None:
                 if response.get("termsDigest") != accept_terms_digest:
                     raise Error("terms_changed", "published terms differ from the reviewed digest", 409)
@@ -290,7 +317,7 @@ class Connection:
             if accept_terms_digest is not None and consent["termsDigest"] != accept_terms_digest:
                 raise Error("terms_changed", "accepted terms differ from the explicitly reviewed digest", 409)
             self._verify_identity(settings)
-            record = {**settings, "connected": True, "active": False, "reason": "connecting",
+            record = {**settings, "connected": True, "active": False, "reason": "connecting", "participation": "enabled",
                       "consent_id": consent["id"], "terms_digest": consent["termsDigest"],
                       "compensation": required_compensation, "available_until": until,
                       "allowed_images": allowed_images,
@@ -307,6 +334,20 @@ class Connection:
             record = self._load()
             if record is None:
                 return self._public(None)
+            if record.get("participation") == "disabled":
+                self._disable(record, "observation" if record["connected"] else "disconnected")
+                if record["connected"]:
+                    try:
+                        self._verify_identity(record)
+                        self._request(record)
+                        self._verify_identity(record)
+                        record["permission_verified_at"] = self.clock()
+                    except (Error, OSError) as exc:
+                        record["reason"] = exc.code if isinstance(exc, Error) else "platform_unavailable"
+                        if record["reason"] == "node_identity_mismatch":
+                            record["connected"] = False
+                self._save(record)
+                return self._public(record)
             if not record["connected"]:
                 policy = self.service.bridge_policy_state()
                 if record.get("active") or (policy.get("enabled") and policy.get("authorization_id") == record["authorization_id"]):
@@ -349,6 +390,6 @@ class Connection:
                 return self._public(None)
             record["connected"] = False
             self._save(record)
-            self._apply(record, False, "disconnected")
+            self._disable(record, "disconnected")
             self._save(record)
             return self._public(record)

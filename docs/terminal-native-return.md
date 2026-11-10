@@ -46,26 +46,19 @@ old file does not restore eligibility. The operator remains trusted before nativ
 grant; this is not a claim to discover arbitrary secrets placed on a root-owned
 host or to attest against an operator who edits local state.
 
-Existing dev1 connection history cannot establish this guarantee. Upgrading
-keeps ordinary local management and connected operation usable, but automatic
-terminal return stays unavailable for those previously connected installations.
-Once dev2 records connection history, authority schema version 2 prevents older
-binaries from opening that state. The installer rejects an incompatible rollback
-target before changing the installed release, even while the daemon is running.
-Compatible activation still requires stopping the daemon and respecting held leases.
-Rolling back a package does not roll back the retirement guard. Use dev2 to operate schema-2 state; never restore an old state
-snapshot to bypass fencing. If an older package was activated, stop its daemon
-and reactivate/reinstall the same reviewed schema-2-capable release against the
-existing state directory. Keep the authority database, connection record and
-physical-host registry. This is recovery by restoring compatible code, not a
-successful downgrade to dev1. A tested schema-2-compatible older rollback target
-does not yet exist; the new feature's downgrade/rollback criterion is incomplete.
+A fresh installation can connect for metrics with `--participation disabled --terminal-native-return`, using that dedicated key from its first connection. This does not accept sharing terms. Keep the signed node agent's local-authority URL/token configured, the Pool's external participation disabled, and any unrelated remote workload routing off. Observation does not enable local policy or external claims. Later explicit `--participation enabled` retains all normal consent, workload and finite-availability requirements.
+
+Participation history is durable. Missing/legacy history never means “never participated”; any enabled bridge policy permanently records `ever_enabled`, even if no external work starts. Returning to observation preserves prior consent and does not reset this history. A continuously tracked host that has never enabled participation may return without inventing or accepting capacity terms: the protocol verifies current remote nonacceptance, then requires the exact positive NodeRetirement proof after deleting the enrolled Node.
+
+Existing dev1 connection history cannot establish continuous credential tracking. A compatible upgrade preserves ordinary local management but does not restore missing history. Previously tracked schema-2 connections retain the existing exact-consent-revocation path. New observation or enabled policy selects authority schema 3; dev5 and earlier refuse it. The installer checks the actual target's state reader before activation, leaving installed code and authority state unchanged on refusal. Compatible activation still requires stopping the daemon and respecting held leases. Never restore an old database to bypass this fence; retain the authority database, connection record and physical-host registry and restore compatible code when needed.
 
 ## Return the host
 
-1. In the Nodus console, revoke the exact host's accepted sharing consent. Wait
-   for external reclaim, termination and cleanup to finish. A local disconnect
-   alone does not revoke remote permission.
+1. If this host ever enabled sharing, revoke its exact accepted consent in the
+   Nodus console and wait for external reclaim, termination and cleanup. A local
+   disconnect alone does not revoke remote permission. A genuinely fresh tracked
+   observation host needs no consent to revoke, but remote sharing must be
+   nonaccepting and no current accepted consent may cover it.
 2. Run `connection disconnect`. All external claims and local workloads must
    already be cleanly released. Reserve a new unused `exclusive_host` lease via
    normal `reserve --resource HOST_ID --mode exclusive_host --ttl-seconds 3600`.
@@ -93,14 +86,18 @@ containerd, unrelated services or unknown owner processes.
 
 A single connection lock and host ownership lock prevent local admission races.
 An unused, clean whole-host lease becomes a sticky native hold before any remote
-mutation. The command verifies the exact accepted consent is revoked and binds
-Node identity, API-key identity and request generation into its SQLite journal.
+mutation. The command verifies either exact consent revocation or durable
+never-enabled history with current remote nonacceptance, then binds Node identity,
+API-key identity and request generation into its SQLite journal.
 It then:
 
 - Deletes the exact Node with its wire UID and resourceVersion preconditions,
   Background propagation, and requires the matching successful deletion
   acknowledgement. The platform transaction revokes all credentials bound to
   that Node and removes enrolled membership. Active external leases block it.
+  The never-enabled path additionally requires a positive same-org, exact-UID
+  `NodeRetirement` response with a revoked identity generation before key deletion;
+  a missing Node, HTTP 404 or deletion acknowledgement alone is insufficient.
 - Durably records that acknowledgement before deleting the exact current API
   key. API-key names are immutable and cannot be reused after revocation, so the
   UID-verified name lookup cannot target a replacement key.

@@ -423,7 +423,7 @@ class HandbackTests(unittest.TestCase):
         connection.connect(**args, available_until=2000, allowed_images=None, terminal_native_return=True)
         with self.service.store.connection() as db:
             initial = json.loads(db.execute("SELECT value FROM meta WHERE key='native_credential_history'").fetchone()[0])
-            self.assertEqual("2", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
+            self.assertEqual("3", db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0])
         self.assertTrue(initial["eligible"])
         self.assertEqual(self.org, initial["binding"]["org_uid"])
         review_args = {key: value for key, value in args.items() if key != "node_identity_file"}

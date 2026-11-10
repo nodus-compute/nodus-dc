@@ -10,7 +10,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 NAME = "nodus_datacenter"
-VERSION = "0.1.0.dev5"
+VERSION = "0.1.0.dev6"
 DIST = f"{NAME}-{VERSION}.dist-info"
 METADATA = f"""Metadata-Version: 2.1
 Name: nodus-datacenter
@@ -58,9 +58,10 @@ def build_sdist(sdist_directory, config_settings=None):
     models = ROOT / "verification" / "models"
     paths += [models / n for n in ("README.md", "mapping.md", "source-mapping.json", "checker.py",
               "allocation.py", "reclaim.py", "financial.py", "integrated.py", "native_handback.py",
-              "native_handback_recovery.py", "run_models.py", "run_native_recovery.py")]
+              "native_handback_recovery.py", "run_models.py", "run_native_recovery.py",
+              "native_observation.py", "run_native_observation.py", "native-observation.md")]
     # Only checked reference runs ship; local operator results may contain private paths.
-    paths += [p for run in ("core-v1", "native-return-v1")
+    paths += [p for run in ("core-v1", "native-return-v1", "native-observation-v1")
               for p in (models / "reference-results" / run).rglob("*")
               if p.is_file() and "__pycache__" not in p.parts]
     with open(target / filename, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as gz:

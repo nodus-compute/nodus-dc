@@ -12,3 +12,7 @@ These anchors refer to the runtime in this distribution. [source-mapping.json](s
 The runtime test files use real SQLite/private files with simulated external or hardware responses. The separate systemd qualification concerns representative workers. Those results have their own artifact identities and limits; they are not converted into model conformance here. All GPU, hosted retirement, native-access and payment requirements remain independently qualified or unqualified according to their own evidence.
 
 Partition recovery after reboot maps to the abstract verified-cleanup transition. `Service.recover` additionally excludes held allocations on the original physical parents, and `NvidiaDockerBackend.recover_partition` preserves the original lease identities while checking the boot fence and current parent identity/activity. The abstract models do not simulate NVIDIA XML, Docker requests, disappearing MIG UUIDs, or installation. The targeted backend, partition-recovery and installer tests exercise these implementation boundaries separately.
+
+## Connected observation and schema3
+
+See [the additive observation model and owning implementation anchors](native-observation.md) for fresh-versus-legacy participation history, sticky enablement and affirmative NodeRetirement before no-consent terminal return. Its exact reference sources/results are separate from the unchanged earlier model mapping. No refinement theorem is claimed.
