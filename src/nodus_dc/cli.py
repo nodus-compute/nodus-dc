@@ -41,6 +41,7 @@ def parser():
         if action in {"connect", "sync"}:
             q.add_argument("--bridge-token-file", required=True)
         if action == "connect":
+            q.add_argument("--terminal-native-return", action="store_true", help="track a fresh dedicated API key for irreversible native return")
             q.add_argument("--available-until", type=float, required=True)
             q.add_argument("--accept-terms-digest")
             q.add_argument("--required-compensation", choices=["CashUSD", "Credits"], default="CashUSD")
@@ -52,11 +53,13 @@ def parser():
     reserve.add_argument("--mode", choices=["exclusive_host", "exclusive_gpu", "hardware_partition", "gpu_configuration", "trusted_mps"], required=True)
     reserve.add_argument("--ttl-seconds", type=int, required=True)
     reserve.add_argument("--request-key", default=None)
-    for command in ("start", "drain", "release", "configure", "recover", "native-handoff"):
+    for command in ("start", "drain", "release", "configure", "recover", "native-handoff", "native-return"):
         q = sub.add_parser(command)
         q.add_argument("lease_id")
         q.add_argument("--generation", type=int, required=True)
-        q.add_argument("--request-key", default=None)
+        q.add_argument("--request-key", required=command == "native-return", default=None)
+        if command == "native-return":
+            q.add_argument("--api-key-name", required=True, help="exact current connection API key to irreversibly retire")
         if command == "start":
             q.add_argument("--workload", required=True, help="JSON file, or - for stdin")
         if command == "configure":
@@ -124,6 +127,12 @@ def main(argv=None):
                                        plan=json.loads(Path(args.plan).read_text()))
         elif args.command in {"drain", "release", "recover"}:
             result = getattr(service, args.command)(args.lease_id, generation=args.generation, request_key=request_key)
+        elif args.command == "native-return":
+            if args.allocation_authority != "standalone":
+                raise Error("observe_only", "native return requires standalone allocation authority", 403)
+            from .handback import Handback
+            result = Handback(service, state).run(args.lease_id, generation=args.generation,
+                                                 request_key=request_key, api_key_name=args.api_key_name)
         elif args.command == "native-handoff":
             result = service.native_handoff(args.lease_id, generation=args.generation, request_key=request_key,
                                             provisioner_reference=args.provisioner_reference)
@@ -136,7 +145,7 @@ def main(argv=None):
                               ("platform_url", "namespace", "pool", "node", "token_file", "node_identity_file")}
             if args.connection_action == "connect":
                 parameters.update(available_until=args.available_until, accept_terms_digest=args.accept_terms_digest,
-                                  required_compensation=args.required_compensation,
+                                  required_compensation=args.required_compensation, terminal_native_return=args.terminal_native_return,
                                   allowed_images=None if args.allow_qualified_jobs else args.allow_image)
             result = getattr(connection, args.connection_action)(**parameters)
         else:

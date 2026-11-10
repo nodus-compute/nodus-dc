@@ -91,3 +91,8 @@ The daemon periodically verifies accepted consent with the platform. Every claim
 Run CPU verification with `PYTHONPATH=src python3 -m unittest discover -s tests`. Fixtures declare synthetic hardware. The support matrix records the qualification gaps; no hardware claims are implied by these CPU tests.
 
 New code is Apache-2.0. Third-party research source is not included in this distribution.
+
+The development candidate also includes an explicit, one-way
+[terminal native return](docs/terminal-native-return.md) protocol for a fresh
+tracked connection. It is unqualified on hardware and requires the matching
+platform credential-identity API. Published dev1 artifacts remain unchanged.
