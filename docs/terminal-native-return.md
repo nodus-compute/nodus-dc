@@ -118,6 +118,40 @@ return. They can mark the native hold quarantined but cannot release its
 resources. Repeating an already completed command returns the recorded terminal
 result; it does not re-attest arbitrary subsequent root/customer activity.
 
+## Recover a stopped service that systemd marks failed
+
+The stop check deliberately requires `inactive/dead`, disabled state, zero main
+and control PIDs, no pending job, `KillMode=control-group`, and `SendSIGKILL=yes`.
+A service whose processes ignored SIGTERM can be fully killed at its stop timeout
+while systemd retains `failed/failed` with `Result=timeout`. The command refuses
+that state and keeps the native hold quarantined. It does not automatically clear
+the failure or grant access because the main PID disappeared.
+
+Keep customer access closed. As the trusted host operator, inspect the exact
+`nodusd.service`, its journal, and its entire owned cgroup subtree. Verify it is
+disabled, has no pending job or main/control PID, and no known owned process is
+still alive. For the official unit, the cgroup is
+`/sys/fs/cgroup/system.slice/nodusd.service`: its absence, or `populated 0` in
+`cgroup.events`, establishes that the whole subtree is empty. An empty top-level
+`cgroup.procs` alone is insufficient because child cgroups can contain processes.
+Unreadable, changed or unfamiliar cgroup paths are uncertainty, not cleanup proof.
+Do not clear the failed state while any such uncertainty remains.
+
+After independently establishing that quiescence and investigating the stop
+failure, explicitly clear only this unit's failure marker:
+
+```sh
+sudo systemctl reset-failed nodusd.service
+```
+
+Then repeat the ordinary `native-return` command with the original lease,
+generation, request key and key name. If recovery credentials were already
+retired, repeat `--recover` without supplying a new recovery token. The command
+must freshly verify the strict stopped state, managed-file cleanup and device
+cleanup before returning `native_access_ready: true`. Resetting the systemd
+marker itself never grants access or changes the authority journal. Do not edit
+the database, remove the native hold, or bypass the normal retry.
+
 ## Recover an interrupted remote retirement
 
 Repeat the same lease, generation, request key and original key name with

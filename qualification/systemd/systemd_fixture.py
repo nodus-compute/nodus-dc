@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import sqlite3
 import subprocess
 import sys
@@ -21,10 +22,10 @@ import time
 
 UNIT = "nodusd.service"
 UNIT_FILE = Path("/etc/systemd/system/nodusd.service")
-PROPERTIES = "LoadState,ActiveState,SubState,MainPID,ControlPID,UnitFileState,Job,KillMode,SendSIGKILL,ControlGroup,NRestarts,FragmentPath,DropInPaths"
+PROPERTIES = "LoadState,ActiveState,SubState,MainPID,ControlPID,UnitFileState,Job,KillMode,SendSIGKILL,ControlGroup,NRestarts,FragmentPath,DropInPaths,Result,ExecMainCode,ExecMainStatus"
 CASES = ("active_descendants", "restart_then_stop", "already_stopped", "refuse_killmode_process",
          "refuse_no_sigkill", "stop_command_timeout", "refuse_stale_stopped_receipt",
-         "schema2_rollback_refusal_and_restoration")
+         "schema2_rollback_refusal_and_restoration", "stubborn_descendants_operator_recovery")
 WORKER = '''import json,os,signal,sys,time
 from pathlib import Path
 root,case,mode=sys.argv[1:]
@@ -34,8 +35,9 @@ def record():
     fd=os.open(str(Path(root)/'processes.jsonl'),os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)
     os.write(fd,(json.dumps(row)+'\\n').encode());os.fsync(fd);os.close(fd)
 record()
-if mode=='descendants':
-    signal.signal(signal.SIGTERM,signal.SIG_IGN)
+if mode.endswith('descendants'):
+    if mode=='stubborn_descendants':
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
     for _ in range(2):
         if os.fork()==0:
             record()
@@ -93,10 +95,13 @@ class Fixture:
         self.result["bindings_sha256"] = hashlib.sha256((root / "bindings.json").read_bytes()).hexdigest()
 
     def command_result(self, argv, *, timeout=15, check=True):
+        started_ns = time.monotonic_ns()
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, text=True, check=False)
+        result.started_ns, result.completed_ns = started_ns, time.monotonic_ns()
         with (self.evidence / "commands.jsonl").open("a") as out:
-            out.write(json.dumps({"argv": argv, "returncode": result.returncode, "output": result.stdout[-65536:]}) + "\n")
+            out.write(json.dumps({"argv": argv, "returncode": result.returncode, "output": result.stdout[-65536:],
+                                  "started_ns": result.started_ns, "completed_ns": result.completed_ns}) + "\n")
         if check and result.returncode:
             raise RuntimeError(f"fixture command failed ({result.returncode}): {argv[0:3]}")
         return result
@@ -159,12 +164,12 @@ class Fixture:
         if self.inspect().get("LoadState") != "not-found":
             raise RuntimeError("owned unit remained loaded after removal")
 
-    def unit(self, case, *, killmode="control-group", sigkill="yes", slow_stop=False, descendants=True):
+    def unit(self, case, *, killmode="control-group", sigkill="yes", slow_stop=False, descendants=True, stubborn=False):
         self.cleanup_unit()
         worker = self.root / "worker.py"
         worker.write_text(WORKER)
         worker.chmod(0o600)
-        mode = "descendants" if descendants else "cooperative"
+        mode = ("stubborn_descendants" if stubborn else "cooperative_descendants") if descendants else "cooperative"
         text = (f"[Unit]\nDescription=Disposable Nodus systemd qualification {self.root.name}\n"
                 f"[Service]\nType=simple\nExecStart={sys.executable} -I {worker} {self.root} {case} {mode}\n"
                 f"Restart=always\nRestartSec=0.5\nKillMode={killmode}\nSendSIGKILL={sigkill}\n"
@@ -187,14 +192,128 @@ class Fixture:
         self.command(["systemctl", "enable", "--now", UNIT])
         self.eventually(lambda: self.inspect().get("ActiveState") == "active" and len(self.processes(case)) >= (3 if descendants else 1))
 
-    def fresh_stopped(self, case):
+    def retain_process_journal(self):
+        path = self.root / "processes.jsonl"
+        raw = path.read_bytes() if path.exists() else b""
+        (self.evidence / "processes.jsonl").write_bytes(raw)
+
+    @staticmethod
+    def cgroup_snapshot():
+        group = Path("/sys/fs/cgroup/system.slice/nodusd.service")
+        expected = {"path": str(group / "cgroup.procs"), "events_path": str(group / "cgroup.events")}
+        if any(parent.is_symlink() for parent in (group, *group.parents)):
+            raise RuntimeError("owned cgroup path contains a symlink")
+        try:
+            directory = os.open(group, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return {**expected, "exists": False, "identity": None, "raw": "", "pids": [], "events_raw": "", "populated": 0}
+        try:
+            before = os.fstat(directory)
+            if before.st_uid != 0 or not stat.S_ISDIR(before.st_mode):
+                raise RuntimeError("owned cgroup directory identity is invalid")
+            def read(name):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise RuntimeError("owned cgroup observation is not a regular control file")
+                    raw = os.read(fd, 65537)
+                    if len(raw) > 65536:
+                        raise RuntimeError("owned cgroup observation exceeded bound")
+                    return raw.decode()
+                finally:
+                    os.close(fd)
+            raw, events_raw = read("cgroup.procs"), read("cgroup.events")
+            after = group.lstat()
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino) or not stat.S_ISDIR(after.st_mode):
+                raise RuntimeError("owned cgroup path changed during observation")
+            events = dict(line.split() for line in events_raw.splitlines())
+            if events.get("populated") not in {"0", "1"}:
+                raise RuntimeError("subtree cgroup population is unavailable")
+            return {**expected, "exists": True, "identity": {"device": before.st_dev, "inode": before.st_ino},
+                    "raw": raw, "pids": [int(pid) for pid in raw.split()], "events_raw": events_raw,
+                    "populated": int(events["populated"])}
+        finally:
+            os.close(directory)
+
+    def observe(self, label, case):
         value = self.inspect()
-        cgroup = Path("/sys/fs/cgroup/system.slice/nodusd.service/cgroup.procs")
-        group_empty = not cgroup.exists() or not cgroup.read_text().strip()
-        return (value.get("ActiveState") == "inactive" and value.get("SubState") == "dead"
-                and value.get("MainPID") == "0" and value.get("ControlPID") == "0"
-                and value.get("UnitFileState") == "disabled" and value.get("Job") in {"", "0"}
-                and group_empty and not any(self.alive(row) for row in self.processes(case)))
+        group = self.cgroup_snapshot()
+        rows = [{**row, "alive": self.alive(row)} for row in self.processes(case)]
+        observation = {"label": label, "case": case, "observed_ns": time.monotonic_ns(), "unit": value,
+                       "owned_unit": self.own_unit(), "processes": rows,
+                       "cgroup": group}
+        with (self.evidence / "snapshots.jsonl").open("a") as output:
+            output.write(json.dumps(observation) + "\n")
+        self.retain_process_journal()
+        return observation
+
+    @staticmethod
+    def quiescent(observation, *, failed=False):
+        unit = observation["unit"]
+        state, substate = ("failed", "failed") if failed else ("inactive", "dead")
+        return (observation["owned_unit"] is True and unit.get("LoadState") == "loaded"
+                and unit.get("ActiveState") == state and unit.get("SubState") == substate
+                and unit.get("MainPID") == "0" and unit.get("ControlPID") == "0"
+                and unit.get("UnitFileState") == "disabled" and unit.get("Job") in {"", "0"}
+                and unit.get("KillMode") == "control-group" and unit.get("SendSIGKILL") == "yes"
+                and unit.get("ControlGroup") in {"", "/system.slice/nodusd.service"}
+                and observation["cgroup"]["path"] == "/sys/fs/cgroup/system.slice/nodusd.service/cgroup.procs"
+                and observation["cgroup"]["events_path"] == "/sys/fs/cgroup/system.slice/nodusd.service/cgroup.events"
+                and observation["cgroup"]["populated"] == 0
+                and not observation["cgroup"]["pids"] and not observation["cgroup"]["raw"].strip()
+                and bool(observation["processes"]) and not any(row["alive"] for row in observation["processes"]))
+
+    def fresh_stopped(self, case):
+        return self.quiescent(self.observe("check_stopped", case))
+
+    def stop(self, agent, row, label):
+        attempt = {"label": label, "started_ns": time.monotonic_ns()}
+        row.setdefault("agent_attempts", []).append(attempt)
+        try:
+            attempt["result"] = agent.stop()
+            return attempt["result"]
+        except Exception as error:
+            attempt.update(error_code=getattr(error, "code", None), error_type=type(error).__name__, error=str(error))
+            raise
+        finally:
+            attempt["completed_ns"] = time.monotonic_ns()
+            attempt["snapshot"] = self.observe(label + "_after", row["name"])
+            with (self.evidence / "agent-attempts.jsonl").open("a") as output:
+                output.write(json.dumps({"case": row["name"], **attempt}) + "\n")
+
+    def stubborn_case(self, row, agent, error_type):
+        try:
+            self.stop(agent, row, "stubborn_initial_stop")
+        except error_type as error:
+            if error.code != "agent_stop_unverified":
+                raise
+            row["expected_refusal"] = error.code
+        else:
+            raise RuntimeError("failed forced stop was unexpectedly accepted")
+        before = self.observe("stubborn_before_operator_reset", row["name"])
+        if (not self.quiescent(before, failed=True) or len(before["processes"]) != 3
+                or before["unit"].get("Result") != "timeout" or before["unit"].get("ExecMainCode") != "2"
+                or before["unit"].get("ExecMainStatus") != "9"):
+            raise RuntimeError("forced stop lacks exact independent failed-state and process/cgroup cleanup evidence")
+        journal = self.command(["journalctl", "--no-pager", "-u", UNIT, "-n", "250"])
+        if not all(re.search(rf"Killing process {process['pid']} \([^)]*\) with signal SIGKILL\.", journal) for process in before["processes"]):
+            raise RuntimeError("kernel journal does not corroborate every stubborn process kill")
+        (self.evidence / "stubborn-forced-stop-journal.log").write_text(journal)
+        row["before_operator_reset"] = before
+        # Explicit fixture operator action after independent quiescence proof.
+        # LinuxAgent and the production native-return acceptance remain unchanged.
+        reset = self.command_result(["systemctl", "reset-failed", UNIT])
+        row["operator_reset"] = {"argv": reset.args, "returncode": reset.returncode,
+                                 "started_ns": reset.started_ns, "completed_ns": reset.completed_ns}
+        row["operator_recovery_is_explicit"] = True
+        row["retry_stop_result"] = self.stop(agent, row, "after_operator_reset")
+        after = self.observe("stubborn_after_retry", row["name"])
+        if not self.quiescent(after):
+            raise RuntimeError("ordinary strict stop retry did not independently verify inactive/dead quiescence")
+        row["after_operator_retry"] = after
+        time.sleep(2)
+        if not self.fresh_stopped(row["name"]):
+            raise RuntimeError("explicit recovery did not remain stopped")
 
     def rollback_case(self, row, agent):
         # Real installer and wheel bytes; the credential-history entry is an
@@ -234,7 +353,7 @@ class Fixture:
         row["incompatible_refused_while_service_active"] = True
         row["active_pid_link_manifest_history_preserved"] = True
         self.command(cli)
-        agent.stop()
+        self.stop(agent, row, "rollback_stop")
         self.eventually(lambda: self.fresh_stopped(row["name"]))
         # Reproduce the actual old installer's unsafe activation only after our
         # owned stand-in is stopped. Restore using the reviewed current installer.
@@ -249,9 +368,9 @@ class Fixture:
             raise RuntimeError("manual restoration changed authority history or selected the wrong release")
         row["legacy_break_and_current_restoration_preserved_history"] = True
         self.command(["systemctl", "start", UNIT])
-        self.eventually(lambda: self.inspect().get("ActiveState") == "active")
+        self.eventually(lambda: self.inspect().get("ActiveState") == "active" and len(self.processes(row["name"])) >= 6)
         row["service_restarted_after_restoration"] = True
-        agent.stop()
+        self.stop(agent, row, "rollback_stop")
         self.eventually(lambda: self.fresh_stopped(row["name"]))
         row["synthetic_history_only"] = True
 
@@ -263,9 +382,12 @@ class Fixture:
         try:
             self.unit(name, killmode="process" if name == "refuse_killmode_process" else "control-group",
                       sigkill="no" if name == "refuse_no_sigkill" else "yes",
-                      slow_stop=name == "stop_command_timeout",
+                      slow_stop=name == "stop_command_timeout", stubborn=name == "stubborn_descendants_operator_recovery",
                       descendants=name not in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"})
-            row["before"] = self.inspect()
+            row["before_observation"] = self.observe("case_started", name)
+            row["before"] = row["before_observation"]["unit"]
+            if not all(process["alive"] for process in row["before_observation"]["processes"]):
+                raise RuntimeError("expected owned workers were not alive at case start")
             if row["before"].get("ControlGroup") != "/system.slice/nodusd.service":
                 raise RuntimeError("unit did not use its expected isolated cgroup")
             if name == "schema2_rollback_refusal_and_restoration":
@@ -277,9 +399,11 @@ class Fixture:
                 os.kill(first, signal.SIGKILL)
                 self.eventually(lambda: self.inspect().get("MainPID") not in {"0", str(first)} and len(self.processes(name)) >= 6)
                 row["restarted"] = self.inspect()
-            if name in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"}:
+            if name == "stubborn_descendants_operator_recovery":
+                self.stubborn_case(row, agent, error_type)
+            elif name in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"}:
                 try:
-                    agent.stop()
+                    self.stop(agent, row, "expected_refusal_stop")
                 except error_type as error:
                     if error.code != "agent_stop_unverified":
                         raise
@@ -287,18 +411,18 @@ class Fixture:
                 else:
                     raise RuntimeError("invalid/unverified stop was accepted")
             else:
-                row["stop_result"] = agent.stop()
+                row["stop_result"] = self.stop(agent, row, "ordinary_stop")
                 self.eventually(lambda: self.fresh_stopped(name))
                 if name == "already_stopped":
-                    row["repeated_stop_result"] = agent.stop()
+                    row["repeated_stop_result"] = self.stop(agent, row, "repeat_stopped")
                 if name == "refuse_stale_stopped_receipt":
                     self.command(["systemctl", "start", UNIT])
-                    self.eventually(lambda: self.inspect().get("ActiveState") == "active")
+                    self.eventually(lambda: self.inspect().get("ActiveState") == "active" and len(self.processes(name)) >= 6)
                     if self.fresh_stopped(name):
                         raise RuntimeError("old stop result accepted after actual service restart")
                     row["stale_receipt_rejected_by_independent_observation"] = True
                     row["historical_ready_is_not_reattestation"] = True
-                    agent.stop()
+                    self.stop(agent, row, "after_stale_receipt_restart")
                     self.eventually(lambda: self.fresh_stopped(name))
                 # A stopped Restart=always unit must remain stopped during this bounded observation.
                 time.sleep(2)
@@ -312,8 +436,12 @@ class Fixture:
             raise
         finally:
             row["elapsed_seconds"] = time.monotonic() - start
-            atomic(self.evidence / "receipt.json", self.result)
-            self.cleanup_unit()
+            try:
+                row["final_observation"] = self.observe("case_final", name)
+            finally:
+                self.retain_process_journal()
+                atomic(self.evidence / "receipt.json", self.result)
+                self.cleanup_unit()
 
     def run(self):
         from nodus_dc.handback import LinuxAgent
@@ -363,8 +491,10 @@ def main():
     fixture = Fixture(args.root)
     if args.cleanup:
         fixture.cleanup_unit()
+        fixture.retain_process_journal()
+        observation = fixture.observe("outer_cleanup", None)
         atomic(fixture.evidence / "outer-cleanup.json", {"owned_unit_absent": not os.path.lexists(UNIT_FILE),
-               "owned_processes_gone": not any(fixture.alive(r) for r in fixture.processes())})
+               "owned_processes_gone": not any(fixture.alive(r) for r in fixture.processes()), "observation": observation})
         return
     fixture.run()
 

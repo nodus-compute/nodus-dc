@@ -9,7 +9,111 @@ import sys
 
 EXPECTED = {"active_descendants", "restart_then_stop", "already_stopped", "refuse_killmode_process",
             "refuse_no_sigkill", "stop_command_timeout", "refuse_stale_stopped_receipt",
-            "schema2_rollback_refusal_and_restoration"}
+            "schema2_rollback_refusal_and_restoration", "stubborn_descendants_operator_recovery"}
+
+
+def process_ids(rows):
+    assert isinstance(rows, list) and rows
+    ids = []
+    for row in rows:
+        assert type(row["pid"]) is int and row["pid"] > 1
+        assert isinstance(row["start_ticks"], str) and row["start_ticks"].isdigit()
+        assert row["case"] in EXPECTED
+        ids.append((row["case"], row["pid"], row["start_ticks"]))
+    assert len(set(ids)) == len(ids)
+    return set(ids)
+
+
+def stopped_snapshot(value, records, *, failed=False, removed=False):
+    assert type(value["observed_ns"]) is int and value["observed_ns"] > 0
+    assert process_ids(value["processes"]) == process_ids(records)
+    assert all(row.get("alive") is False for row in value["processes"])
+    unit = value["unit"]
+    assert unit["LoadState"] == ("not-found" if removed else "loaded")
+    assert (unit["ActiveState"], unit["SubState"]) == (("failed", "failed") if failed else ("inactive", "dead"))
+    assert unit["MainPID"] == unit["ControlPID"] == "0" and unit["Job"] in ("", "0")
+    assert unit["ControlGroup"] in ("", "/system.slice/nodusd.service")
+    assert value["owned_unit"] is (not removed)
+    if not removed:
+        assert unit["UnitFileState"] == "disabled" and unit["KillMode"] == "control-group" and unit["SendSIGKILL"] == "yes"
+    group = value["cgroup"]
+    assert group["path"] == "/sys/fs/cgroup/system.slice/nodusd.service/cgroup.procs"
+    assert type(group["exists"]) is bool and group["pids"] == [] and isinstance(group["raw"], str) and not group["raw"].strip()
+    assert group["events_path"] == "/sys/fs/cgroup/system.slice/nodusd.service/cgroup.events"
+    assert type(group["populated"]) is int and group["populated"] == 0
+    if group["exists"]:
+        assert dict(line.split() for line in group["events_raw"].splitlines()).get("populated") == "0"
+        assert type(group["identity"]["device"]) is int and type(group["identity"]["inode"]) is int
+    else:
+        assert group["events_raw"] == "" and group["identity"] is None
+
+
+def service_evidence(root, cases, cleanup):
+    rows = [json.loads(line) for line in (root / "systemd/processes.jsonl").read_text().splitlines()]
+    snapshots = [json.loads(line) for line in (root / "systemd/snapshots.jsonl").read_text().splitlines()]
+    attempts = [json.loads(line) for line in (root / "systemd/agent-attempts.jsonl").read_text().splitlines()]
+    commands = [json.loads(line) for line in (root / "systemd/commands.jsonl").read_text().splitlines()]
+    process_ids(rows)
+    assert snapshots and attempts and commands
+    for case in cases:
+        observed = [row for row in rows if row["case"] == case["name"]]
+        assert process_ids(case["processes"]) == process_ids(observed)
+        minimum = 1 if case["name"] in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"} else 3
+        if case["name"] in {"restart_then_stop", "refuse_stale_stopped_receipt", "schema2_rollback_refusal_and_restoration"}:
+            minimum = 6
+        assert len(observed) >= minimum
+        assert case["before_observation"] in snapshots and case["final_observation"] in snapshots
+        assert len(case["before_observation"]["processes"]) == (1 if case["name"] in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"} else 3)
+        assert process_ids(case["before_observation"]["processes"]).issubset(process_ids(observed))
+        assert isinstance(case["agent_attempts"], list) and case["agent_attempts"]
+        assert all(row["alive"] is True for row in case["before_observation"]["processes"])
+        before_unit = case["before_observation"]["unit"]
+        assert case["before"] == before_unit and case["before_observation"]["owned_unit"] is True
+        assert before_unit["LoadState"] == "loaded" and before_unit["ActiveState"] == "active" and before_unit["SubState"] == "running"
+        assert before_unit["ControlGroup"] == "/system.slice/nodusd.service" and before_unit["FragmentPath"] == "/etc/systemd/system/nodusd.service" and before_unit["DropInPaths"] == ""
+        assert before_unit["MainPID"] in {str(row["pid"]) for row in case["before_observation"]["processes"]}
+        assert before_unit["KillMode"] == ("process" if case["name"] == "refuse_killmode_process" else "control-group")
+        assert before_unit["SendSIGKILL"] == ("no" if case["name"] == "refuse_no_sigkill" else "yes")
+
+        for attempt in case["agent_attempts"]:
+            assert {"case": case["name"], **attempt} in attempts and attempt["snapshot"] in snapshots
+            assert 0 < attempt["started_ns"] <= attempt["completed_ns"] <= attempt["snapshot"]["observed_ns"]
+        if case["name"] in {"refuse_killmode_process", "refuse_no_sigkill", "stop_command_timeout"}:
+            assert len(case["agent_attempts"]) == 1
+            assert case["expected_refusal"] == "agent_stop_unverified"
+            assert case["agent_attempts"][-1]["error_code"] == "agent_stop_unverified"
+            attempt = case["agent_attempts"][-1]
+            if case["name"] == "stop_command_timeout":
+                assert attempt["completed_ns"] - attempt["started_ns"] >= 45_000_000_000
+                assert attempt["error"] == "nodusd service stop/disable could not be verified"
+            else:
+                assert attempt["error"] == "nodusd is not verified stopped and disabled"
+        else:
+            stopped_snapshot(case["final_observation"], observed)
+            assert case["agent_attempts"][-1]["result"] == {"unit": "nodusd.service", "stopped": True, "disabled": True}
+            if case["name"] != "stubborn_descendants_operator_recovery":
+                assert all("error_code" not in attempt and attempt["result"] == {"unit": "nodusd.service", "stopped": True, "disabled": True} for attempt in case["agent_attempts"])
+    recovery = next(case for case in cases if case["name"] == "stubborn_descendants_operator_recovery")
+    records = [row for row in rows if row["case"] == recovery["name"]]
+    assert len(records) == 3 and len(recovery["agent_attempts"]) == 2
+    first, second = recovery["agent_attempts"]
+    assert first["error_code"] == recovery["expected_refusal"] == "agent_stop_unverified" and "result" not in first
+    assert first["error"] == "nodusd is not verified stopped and disabled"
+    assert first["label"] == "stubborn_initial_stop" and second["label"] == "after_operator_reset"
+    before, after, reset = recovery["before_operator_reset"], recovery["after_operator_retry"], recovery["operator_reset"]
+    assert before in snapshots and after in snapshots
+    stopped_snapshot(before, records, failed=True)
+    stopped_snapshot(after, records)
+    assert before["unit"]["Result"] == "timeout" and before["unit"]["ExecMainCode"] == "2" and before["unit"]["ExecMainStatus"] == "9"
+    assert recovery["operator_recovery_is_explicit"] is True
+    assert reset["argv"] == ["systemctl", "reset-failed", "nodusd.service"] and reset["returncode"] == 0
+    assert any(all(command.get(key) == value for key, value in reset.items()) for command in commands)
+    assert (first["completed_ns"] <= before["observed_ns"] < reset["started_ns"] <= reset["completed_ns"]
+            < second["started_ns"] <= second["completed_ns"] <= after["observed_ns"])
+    journal = (root / "systemd/stubborn-forced-stop-journal.log").read_text()
+    assert all(re.search(rf"Killing process {row['pid']} \([^)]*\) with signal SIGKILL\.", journal) for row in records)
+    assert cleanup["observation"] in snapshots
+    stopped_snapshot(cleanup["observation"], rows, removed=True)
 
 
 def assess(root):
@@ -36,6 +140,7 @@ def assess(root):
         cases = systemd["cases"]
         assert len(cases) == len(EXPECTED) and {c["name"] for c in cases} == EXPECTED
         assert all(c["status"] == "passed" for c in cases)
+        service_evidence(root, cases, cleanup)
         legacy = bindings["legacy"]
         assert artifact["candidate_installer_sha256"] == bindings["candidate_installer_sha256"]
         assert artifact["legacy_inputs_sha256"] == {"wheel": legacy["wheel_sha256"], "sdist": legacy["sdist_sha256"], "installer": legacy["installer_sha256"]}
@@ -57,7 +162,7 @@ def assess(root):
         assert "--api-key-name" in (root / "native-return-help.txt").read_text()
         assert (root / "systemd/commands.jsonl").stat().st_size > 0
         result["passed_scoped_systemd_and_artifact_checks"] = True
-    except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError, AssertionError) as error:
         result["errors"].append({"type": type(error).__name__, "message": str(error)})
     return result
 
