@@ -78,18 +78,23 @@ def start_pool(backend, lease):
     controller = backend._launch_container(lease, {"image": workload["controller_image"],
                       "entrypoint": "/usr/bin/nvidia-cuda-mps-control", "command": ["-f"]},
                       [gpu.device_uuid], suffix="-mps", extra=[*common, "--ipc", "shareable"])
-    # Probe actual daemon control pipe before starting clients. This is not an
-    # admission sleep; the command itself must observe a live daemon.
+    # The CUDA 13 control endpoint is a UNIX socket, not a FIFO. A stale
+    # socket alone is insufficient: require a read-only daemon round trip.
+    # Bound the client inside the container too; timing out docker exec alone
+    # need not terminate its remote process. No server is expected yet, so an
+    # empty successful get_server_list response is valid.
     ready = False
     for _ in range(50):
         try:
-            backend.command(["docker", "exec", controller, "test", "-p", "/mps/control"], timeout=2)
+            backend.command(["docker", "exec", controller, "/bin/sh", "-c",
+                             "test -S /mps/control && printf 'get_server_list\\n' | "
+                             "timeout -s KILL 1 /usr/bin/nvidia-cuda-mps-control"], timeout=2)
             ready = True
             break
         except Error:
             time.sleep(0.1)
     if not ready:
-        raise Error("mps_not_ready", "MPS control pipe did not become ready", 503)
+        raise Error("mps_not_ready", "MPS control socket did not answer readiness query", 503)
     ids = []
     for i, client in enumerate(workload["clients"]):
         extra = [*common, "--ipc", "container:" + controller, "--pid", "container:" + controller,
