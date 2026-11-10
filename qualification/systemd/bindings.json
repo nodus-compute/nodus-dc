@@ -1,0 +1,40 @@
+{
+  "status": "Pinned manual qualification inputs. Source and CPU protocol reviewed; actual systemd/hosted/GPU qualification requires retained execution evidence.",
+  "source_commit": "4328234b90e6b19147ea919b45aa60aae5771bc3",
+  "version": "0.1.0.dev2",
+  "wheel": "nodus_datacenter-0.1.0.dev2-py3-none-any.whl",
+  "artifacts": {
+    "nodus_datacenter-0.1.0.dev2-py3-none-any.whl": "b86380486c36949533d49ea66e95366aa2f0a879c23c3035eb8f6264da87859d",
+    "nodus_datacenter-0.1.0.dev2.tar.gz": "fa4bfcd1ac2e819633d197943095320c9ba9bc5002e1cb580613e3e4dd2096fd"
+  },
+  "handback_sha256": "c6ef8be354d304b8934010e43f6759b0f0762493f05f6afde75a76da44f4f7fd",
+  "module_sha256": {
+    "nodus_dc/handback.py": "c6ef8be354d304b8934010e43f6759b0f0762493f05f6afde75a76da44f4f7fd",
+    "nodus_dc/connection.py": "c13f5ea18523eff5dac63dc0b55d02b7a4f3f7c00ebd2df0d2b81d9c83225ebc",
+    "nodus_dc/service.py": "9437450001016a3979d1e1326599accbb6ca0d05096c8b27738777c94c607d31",
+    "nodus_dc/store.py": "441ceec182a7db53aeb894ac038b75bfd11e7f694adbe03b0b59c4e989674198",
+    "nodus_dc/cli.py": "c32ee874ccf30b8f2026a99a905150b46af93259a73d0a78c20b30d85d47fb56",
+    "nodus_dc/recovery.py": "19c263fd1a736327c767032adb54c5825bcd44c99d7c7102a3ecdc93722be5ce"
+  },
+  "published_nodusd": {
+    "source_commit": "ca1e8ce6774b39b62515c0a5402ea1c84e44fb04",
+    "release_run_id": 42816482857,
+    "release_amd64_job_id": 129831009660,
+    "binary_url": "https://api-staging.nodus-compute.ai/install/nodusd/git-ca1e8ce6774b/amd64",
+    "bundle_url": "https://api-staging.nodus-compute.ai/install/nodusd/git-ca1e8ce6774b/amd64.bundle",
+    "sha256": "2605c7a49aa37eb0724a192f4aeb2e22054a74f376e11ab19809a98d970d7551",
+    "identity_regex": "^https://github\\.com/nodus-compute/nodus-platform/\\.github/workflows/release\\.yml@refs/heads/main$",
+    "issuer": "https://token.actions.githubusercontent.com",
+    "scope": "Published older release signature/digest and port protocol executable only; not current local-authority daemon or enrollment qualification."
+  },
+  "candidate_installer_sha256": "18e3a3ce54c25919733c7d585538f3ba7c9742da2b3061df18752248e370f61f",
+  "legacy": {
+    "source_commit": "5aa03c3b6961d3c4bf7e11698113c94cc57a3d9a",
+    "wheel": "nodus_datacenter-0.1.0.dev1-py3-none-any.whl",
+    "wheel_sha256": "af84d890e652c6a62ae7b1672703691db8eb99df1f65920a2a5d3a34c49e67f9",
+    "sdist": "nodus_datacenter-0.1.0.dev1.tar.gz",
+    "sdist_sha256": "391ff4a03be4ee67e9131217fe97c9371d81187aba18e37ce0755cab7b7d2531",
+    "installer_sha256": "7f34f8f482b45baa14af0fdc3886601265c9dc9fbc18884d36857b245f82599e",
+    "release_url": "https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev1/"
+  }
+}

@@ -26,7 +26,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev1-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev2-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
@@ -91,3 +91,10 @@ The daemon periodically verifies accepted consent with the platform. Every claim
 Run CPU verification with `PYTHONPATH=src python3 -m unittest discover -s tests`. Fixtures declare synthetic hardware. The support matrix records the qualification gaps; no hardware claims are implied by these CPU tests.
 
 New code is Apache-2.0. Third-party research source is not included in this distribution.
+
+The development candidate also includes an explicit, one-way
+[terminal native return](docs/terminal-native-return.md) protocol for a fresh
+tracked connection. It is unqualified on hardware and requires the matching
+platform credential-identity and Node retirement APIs. Bounded recovery retains
+every introduced temporary-key obligation across crashes and requires exact
+retirement evidence before customer access. Published dev1 artifacts remain unchanged.

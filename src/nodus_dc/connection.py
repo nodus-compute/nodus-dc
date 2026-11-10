@@ -169,7 +169,9 @@ class Connection:
         return {"platform_url": platform_url.rstrip("/"), "namespace": namespace, "pool": pool,
                 "node": node, "token_file": str(Path(token_file).resolve())}
 
-    def _request(self, settings, method="GET", body=None):
+    def _request(self, settings, method="GET", body=None, *, audit_history=True):
+        if audit_history:
+            self._audit_credential_history(settings)
         token = token_file(settings["token_file"])
         quote = lambda value: urllib.parse.quote(value, safe="")
         path = "/apis/nodus.dev/v1/namespaces/" + quote(settings["namespace"]) + "/pools/" + quote(settings["pool"]) + "/sharing"
@@ -178,6 +180,20 @@ class Connection:
         if not isinstance(response, dict) or settings["node"] not in response.get("nodes", []):
             raise Error("node_identity_mismatch", "platform did not confirm the selected enrolled node", 409)
         return response
+
+    def _audit_credential_history(self, settings):
+        from .handback import observed_binding
+        with self.service.store.connection() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='native_credential_history'").fetchone()
+        history = json.loads(row[0]) if row else None
+        if history and history.get("eligible"):
+            try:
+                observed = observed_binding(settings)
+                unchanged = all(history["binding"].get(k) == v for k, v in observed.items())
+            except (Error, OSError):
+                unchanged = False
+            if not unchanged:
+                self.service.record_connection_attempt(None)
 
     @staticmethod
     def _accepted(response, node, compensation):
@@ -199,7 +215,9 @@ class Connection:
 
     def review(self, *, platform_url, namespace, pool, node, token_file, node_identity_file=None):
         settings = self._settings(platform_url, namespace, pool, node, token_file)
-        response = self._request(settings)
+        # Review is read-only and does not enroll/configure this host or change
+        # its managed connection history; it may run off-host without node.json.
+        response = self._request(settings, audit_history=False)
         return {"node": node, "generation": response.get("generation"), "accepting": response.get("accepting"),
                 "terms": response.get("terms"), "terms_digest": response.get("termsDigest"),
                 "accepted_consent": response.get("consent"), "hosts": response.get("hosts", [])}
@@ -222,7 +240,7 @@ class Connection:
 
     def connect(self, *, platform_url, namespace, pool, node, token_file, available_until,
                 accept_terms_digest=None, required_compensation="CashUSD", node_identity_file="/var/lib/nodus/node.json",
-                allowed_images=()):
+                allowed_images=(), terminal_native_return=False):
         if required_compensation not in {"CashUSD", "Credits"}:
             raise Error("invalid_compensation", "select CashUSD or Credits explicitly", 400)
         if allowed_images is not None:
@@ -236,7 +254,24 @@ class Connection:
             raise Error("invalid_availability", "v1 availability must end within the next 24 hours", 400)
         settings["node_identity_file"] = str(Path(node_identity_file).absolute())
         self._verify_identity(settings)
-        self.service.record_connection_attempt()
+        # Ordinary connections remain usable with read-only keys/older servers.
+        # Terminal return requires a dedicated, identifiable key from day one.
+        binding = None
+        if terminal_native_return:
+            from .handback import credential_binding
+            binding = credential_binding(settings, self.transport)
+        else:
+            # Reapplying identical settings does not need a new opt-in and must
+            # not erase the original verified identity. No missing history is inferred.
+            from .handback import observed_binding
+            with self.service.store.connection() as db:
+                row = db.execute("SELECT value FROM meta WHERE key='native_credential_history'").fetchone()
+            history = json.loads(row[0]) if row else None
+            if history and history.get("eligible"):
+                observed = observed_binding(settings)
+                if all(history["binding"].get(k) == v for k, v in observed.items()):
+                    binding = history["binding"]
+        self.service.record_connection_attempt(binding)
         with self._locked():
             response = self._request(settings)
             if accept_terms_digest is not None:
