@@ -95,4 +95,6 @@ New code is Apache-2.0. Third-party research source is not included in this dist
 The development candidate also includes an explicit, one-way
 [terminal native return](docs/terminal-native-return.md) protocol for a fresh
 tracked connection. It is unqualified on hardware and requires the matching
-platform credential-identity API. Published dev1 artifacts remain unchanged.
+platform credential-identity and Node retirement APIs. Bounded recovery retains
+every introduced temporary-key obligation across crashes and requires exact
+retirement evidence before customer access. Published dev1 artifacts remain unchanged.

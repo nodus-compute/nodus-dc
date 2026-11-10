@@ -255,9 +255,14 @@ class Handback:
             raise Error("native_cleanup_unverified", "device and workload cleanup has not been verified; host remains held", 409)
         return proof.record()
 
-    def run(self, lease_id, *, generation, request_key, api_key_name):
+    def run(self, lease_id, *, generation, request_key, api_key_name, recover=False,
+            recovery_token_file=None, recovery_api_key_name=None):
         key(request_key, "request_key")
         key(api_key_name, "api_key_name")
+        if recovery_api_key_name:
+            key(recovery_api_key_name, "recovery_api_key_name")
+        if (recovery_token_file or recovery_api_key_name) and not recover:
+            raise Error("recovery_explicit", "recovery credentials require --recover", 409)
         # Same order as Connection.sync: connection lock before the host authority.
         # Admission and local starts remain serialized during verification/retirement.
         with self.connection._locked(), self.service.authority():
@@ -268,7 +273,16 @@ class Handback:
                     raise Error("handback_conflict", "terminal handback is bound to a different immutable request", 409)
                 self.service._fence(self.service.get(lease_id), generation)
             else:
+                if recover:
+                    raise Error("recovery_journal_required", "recovery requires an existing frozen handback journal", 409)
                 journal = self._prepare(lease_id, generation, request_key, api_key_name)
+            if recover and journal["stage"] in {"prepared", "node_delete_pending", "node_retired", "key_delete_pending", "key_revoked", "key_rejected"}:
+                from .recovery import Recovery
+                journal = Recovery(self).run(journal, recovery_token_file, recovery_api_key_name)
+            elif recover and (recovery_token_file or recovery_api_key_name):
+                raise Error("recovery_stage", "no new recovery credential may be introduced after agent shutdown", 409)
+            elif any(item["state"] != "rejected" for item in journal.get("recovery_keys", [])):
+                raise Error("recovery_required", "tracked recovery keys remain retirement obligations; resume with --recover", 409)
             if journal["stage"] in {"node_delete_pending", "key_delete_pending"}:
                 raise Error("retirement_uncertain", "remote deletion outcome is uncertain; keep host quarantined for external operator API reconciliation", 409)
             if journal["stage"] == "prepared":

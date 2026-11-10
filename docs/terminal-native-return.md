@@ -12,7 +12,8 @@ The implementation is a candidate. CPU tests exercise durable SQLite transitions
 filesystem checks and simulated platform/service/device responses. These are not
 actual GPU cleanup, Linux service shutdown, native customer login or hosted
 retirement qualification. The platform must expose `credentialUID` on APIKey
-`GET /auth/whoami` responses; earlier servers fail closed for this feature.
+`GET /auth/whoami` responses and the Node `retirement` read subresource for
+uncertain-node recovery; earlier servers fail closed for these features.
 
 ## Start with a dedicated connection key
 
@@ -39,8 +40,10 @@ Existing dev1 connection history cannot establish this guarantee. Upgrading
 keeps ordinary local management and connected operation usable, but automatic
 terminal return stays unavailable for those previously connected installations.
 Once dev2 records connection history, authority schema version 2 prevents older
-binaries from opening that state. Rolling back a package does not roll back the
-retirement guard. Use dev2 to operate schema-2 state; never restore an old state
+binaries from opening that state. The installer rejects an incompatible rollback
+target before changing the installed release, even while the daemon is running.
+Compatible activation still requires stopping the daemon and respecting held leases.
+Rolling back a package does not roll back the retirement guard. Use dev2 to operate schema-2 state; never restore an old state
 snapshot to bypass fencing. If an older package was activated, stop its daemon
 and reactivate/reinstall the same reviewed schema-2-capable release against the
 existing state directory. Keep the authority database, connection record and
@@ -104,10 +107,8 @@ It then:
 
 A crash after a durable stage resumes safely. A crash or lost response between a
 remote DELETE and its durable acknowledgement leaves an **uncertain** journal
-stage. The command refuses a blind retry or inference from HTTP 404, and cannot
-grant access. Keep the host quarantined and use an external authorized operator
-for platform reconciliation. Automated import of external retirement evidence
-is not implemented; do not edit SQLite or restore a snapshot to advance it.
+stage. Ordinary resume refuses a blind retry or inference from HTTP404.
+Use the explicit recovery command below; keep native access closed until ready.
 Network errors, HTTP 403, failed service stop, changed credential files or failed
 device cleanup also keep access closed. The command never retries a paid job or
 creates platform resources.
@@ -116,3 +117,52 @@ Lease expiry, drain, daemon restart and a new boot do not prove native customer
 return. They can mark the native hold quarantined but cannot release its
 resources. Repeating an already completed command returns the recorded terminal
 result; it does not re-attest arbitrary subsequent root/customer activity.
+
+## Recover an interrupted remote retirement
+
+Repeat the same lease, generation, request key and original key name with
+`--recover`. A retained exact Node retirement proof can reconcile a lost Node
+DELETE acknowledgement using the original still-active key. If the exact Node
+is still live, recovery reads its current resourceVersion and conditionally
+deletes only the frozen UID. A missing or different Node never substitutes for
+positive proof.
+
+If the original key was revoked but its DELETE acknowledgement was lost, an
+authorized operator must create a temporary, non-service-account API key in the
+same organization. Give it exactly the original five scopes plus
+`auditevents:read`, without project restrictions. Use the same human owner/admin
+who owns the original key, so normal key-management permissions authorize its
+retirement. Save it in a separate private root-owned file, then run:
+
+```sh
+nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
+  native-return LEASE_ID --generation GENERATION \
+  --request-key terminal-owner-return --api-key-name HOST_KEY_NAME --recover \
+  --recovery-token-file /var/lib/nodus-dc/recovery.token \
+  --recovery-api-key-name RECOVERY_KEY_NAME
+```
+
+The introduction boundary is the command's acceptance of a private canonical
+recovery-token path and exact key name. It durably records that unresolved file
+fingerprint as an obligation **before the first authenticated read**. UID/org
+discovery and the exact key metadata are then verified. A crash during discovery,
+a wrong identity or an invalid credential cannot be forgotten by ordinary resume.
+Only the path, fingerprint and identity/proof metadata are retained, never tokens.
+Unrelated caller-owned credentials are outside automatic discovery and must not
+be placed on the host before native grant.
+
+For uncertain key deletion, recovery requires an exact same-org successful
+`apikeys.delete` AuditEvent binding both immutable key UUID and name. The audit
+scan is capped at20pages of1000events. Missing/expired evidence, permission errors
+or exhausted limits remain quarantined. Every introduced recovery key must also
+be irrevocably retired; all keys must return HTTP401 after one fresh31-second
+monotonic wait before agent shutdown, file cleanup and final GPU verification.
+The recovery key is retired last. A lost acknowledgement for that key can be
+resolved by a subsequent tracked key; the journal accepts at most four. An
+unresolved token revoked before its UID was discovered cannot be safely mapped
+from its filename or a404 and remains quarantined. No database repair is supported.
+
+After all keys are rejected, repeat the command with `--recover` and omit the
+recovery file/name arguments to resume local shutdown/cleanup or read the terminal
+result. Do not introduce a new key after agent shutdown. A later native-to-lending
+cycle still requires independent trusted reprovisioning.

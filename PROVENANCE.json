@@ -3,7 +3,7 @@
   "version": "0.1.0.dev2",
   "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
   "new_code_license": "Apache-2.0",
-  "qualification": "UNQUALIFIED development prerelease. Terminal native return has CPU protocol/model evidence only; actual remote retirement, Linux service shutdown, GPU cleanup and native access are unqualified. Uncertain retirement recovery and schema2 downgrade remain unsupported.",
+  "qualification": "UNQUALIFIED development prerelease. Terminal native return and bounded uncertainty recovery have CPU protocol/model evidence only; actual hosted retirement, Linux service shutdown, GPU cleanup and native access are unqualified. Incompatible schema2 downgrades are refused; native-to-lending reprovisioning remains unsupported.",
   "runtime_python_dependencies": [],
   "upstream_interfaces": [
     "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",

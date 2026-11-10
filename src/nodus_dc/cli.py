@@ -60,6 +60,9 @@ def parser():
         q.add_argument("--request-key", required=command == "native-return", default=None)
         if command == "native-return":
             q.add_argument("--api-key-name", required=True, help="exact current connection API key to irreversibly retire")
+            q.add_argument("--recover", action="store_true", help="reconcile an existing frozen journal through exact normal API retirement evidence")
+            q.add_argument("--recovery-token-file", help="private file for a temporary same-org recovery key; it must also be retired")
+            q.add_argument("--recovery-api-key-name", help="exact temporary recovery key name")
         if command == "start":
             q.add_argument("--workload", required=True, help="JSON file, or - for stdin")
         if command == "configure":
@@ -132,7 +135,9 @@ def main(argv=None):
                 raise Error("observe_only", "native return requires standalone allocation authority", 403)
             from .handback import Handback
             result = Handback(service, state).run(args.lease_id, generation=args.generation,
-                                                 request_key=request_key, api_key_name=args.api_key_name)
+                                                 request_key=request_key, api_key_name=args.api_key_name, recover=args.recover,
+                                                 recovery_token_file=args.recovery_token_file,
+                                                 recovery_api_key_name=args.recovery_api_key_name)
         elif args.command == "native-handoff":
             result = service.native_handoff(args.lease_id, generation=args.generation, request_key=request_key,
                                             provisioner_reference=args.provisioner_reference)
