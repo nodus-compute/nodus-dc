@@ -1,0 +1,13 @@
+# Manual native service-control qualification
+
+This directory supports one manually dispatched, credential-free job on a fresh GitHub-hosted Ubuntu 24.04 VM. It has no push or pull-request trigger. The workflow builds the exact source commit and verifies the wheel, source archive, installer, and runtime hashes in `bindings.json` before installing anything.
+
+The fixture exercises the installed `LinuxAgent.stop` against an owned `nodusd.service` containing an explicitly representative Python worker. The worker includes descendants that ignore SIGTERM. The service and all its processes must be absent after cleanup. A pre-existing `nodusd.service` causes refusal; this fixture must never be run against a shared VM or container host.
+
+The eight required cases cover active descendants, `Restart=always`, repeated stop, refusal of `KillMode=process`, refusal of `SendSIGKILL=no`, a real stop timeout, a restarted service invalidating an earlier stopped observation, and artifact-based rollback refusal and restoration. The rollback case uses the immutable published dev1 wheel and installer. With a real daemon lock and active representative service, the current installer must refuse the incompatible schema2 target while preserving the process, active release, manifest, and credential history. After stopping that service, the fixture reproduces the legacy installer's incompatible activation, restores the reviewed release, and checks service restart and shutdown. The credential-history entry for this case is synthetic local test state.
+
+A separate step downloads a pinned public `nodusd` binary and its Sigstore bundle, checks the release digest and exact GitHub workflow identity, rejects an altered byte and wrong signing identity, then executes only its credential-free `port-version` command. This is a separate public-artifact check. It does not start or enroll `nodusd`.
+
+`assess.py` requires every case, exact input hashes, raw command evidence, successful cleanup, and the independent signature checks. A skipped, cancelled, missing, or partial run cannot pass. The job retains evidence for seven days, including negative results. A successful scoped assessment establishes actual systemd control of the representative worker and the artifact checks. It does not establish GPU cleanup, an enrolled agent lifecycle, hosted Node or API-key retirement, native SSH customer return, or complete product qualification.
+
+Before a future run, update the pinned source and artifact hashes only after review of the candidate. `prepare.py` refuses mismatched bytes. The workflow must be available on the repository's default branch for manual dispatch. No platform or provider credential is needed by this workflow.
