@@ -4,7 +4,7 @@ import urllib.parse
 
 from .api import token_file
 from .errors import Error
-from .handback import SCOPES, REVOCATION_WAIT_SECONDS, private_file
+from .handback import SCOPES, REVOCATION_WAIT_SECONDS, private_file, api_key_metadata
 
 RECOVERY_SCOPES = SCOPES | {"auditevents:read"}
 MAX_RECOVERY_KEYS = 4
@@ -86,6 +86,7 @@ class Recovery:
 
     @staticmethod
     def verify_metadata(target, status, meta):
+        meta = api_key_metadata(meta)
         if (status != 200 or not isinstance(meta, dict) or meta.get("uid") != target["uid"]
                 or meta.get("name") != target["name"] or meta.get("serviceAccountName")
                 or set(meta.get("scopes", [])) != set(target["scopes"]) or meta.get("projects") not in ([], None)):
