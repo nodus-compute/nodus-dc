@@ -23,6 +23,21 @@ maintenance checks expiry and interrupted launches without a redundant full GPU
 scan; every admission and cleanup still obtains its own fresh evidence. `/health`
 reports local maintenance/connection errors, not a hardware readiness proof.
 
+`status` also returns a read-only `availability` projection from one database
+snapshot. It reports each resource's local eligibility, supported available
+modes, blocking lease IDs, and separate GPU/partition counts. Whole-host and
+ancestor allocations block overlapping devices; expired and quarantined leases
+remain held until verified release. Observe-only and Kubernetes authority never
+report locally allocatable devices. Missing, future, older-than-30-second or
+clock-uncertain observations report no available capacity. The dashboard expires
+the view using the returned remaining freshness interval and marks failed reads
+unavailable. `status` does not refresh hardware, reconcile, or change leases.
+
+This projection is neither a reservation nor external lending eligibility.
+Admission still performs the ordinary fresh resource and ownership checks.
+Capacity participation policy is displayed separately; it does not establish
+authorization for a particular external workload or a clean host handback.
+
 Bridge token routes, all POST and only on the bridge Unix socket:
 
 | Path under `/v1/bridge/` | Body | Result |
