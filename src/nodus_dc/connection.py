@@ -176,7 +176,8 @@ class Connection:
         token = token_file(settings["token_file"])
         quote = lambda value: urllib.parse.quote(value, safe="")
         path = "/apis/nodus.dev/v1/namespaces/" + quote(settings["namespace"]) + "/pools/" + quote(settings["pool"]) + "/sharing"
-        path += "?node=" + quote(settings["node"])
+        if method == "GET":
+            path += "?node=" + quote(settings["node"])
         response = self.transport(method, settings["platform_url"] + path, token, body)
         if not isinstance(response, dict) or settings["node"] not in response.get("nodes", []):
             raise Error("node_identity_mismatch", "platform did not confirm the selected enrolled node", 409)

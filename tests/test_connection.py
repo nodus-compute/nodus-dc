@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from urllib.parse import urlsplit
 from pathlib import Path
 
 from nodus_dc.connection import Connection
@@ -29,6 +30,8 @@ class Platform:
 
     def __call__(self, method, url, token, body):
         self.calls.append((method, url, body))
+        if method == "POST" and urlsplit(url).query:
+            raise Error("platform_rejected", "put node in the request body", 400)
         if self.error:
             raise self.error
         return copy.deepcopy(self.response)
@@ -132,6 +135,18 @@ class ConnectionTests(unittest.TestCase):
         self.platform.response["terms"]["compensation"] = "Credits"
         self.assert_error("compensation_mismatch", lambda: self.connection.connect(**self.settings, accept_terms_digest=DIGEST))
         self.assertFalse(self.service.bridge_policy_state()["enabled"])
+        self.platform.response["terms"]["compensation"] = "CashUSD"
+        accepted = copy.deepcopy(self.platform.response)
+        self.platform.response.pop("consent")
+        def accept(method, url, token, body):
+            response = self.platform(method, url, token, body)
+            return accepted if method == "POST" else response
+        self.connection.transport = accept
+        self.assertTrue(self.connection.connect(**self.settings, accept_terms_digest=DIGEST)["active"])
+        method, url, body = self.platform.calls[-1]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, "https://api.fixture.invalid/apis/nodus.dev/v1/namespaces/project/pools/pool/sharing")
+        self.assertEqual(body, {"action": "Accept", "node": NODE, "generation": 1, "termsDigest": DIGEST, "agreed": True})
 
     def test_expiry_and_unconfigured_state_do_not_make_network_calls(self):
         self.assertFalse(self.connection.sync()["connected"])

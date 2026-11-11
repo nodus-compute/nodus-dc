@@ -1,10 +1,14 @@
-# vLLM and SGLang on dev7
+# vLLM and SGLang on dev7 and dev8
 
-Use the pinned serving recipes with the installed `0.1.0.dev7` package. They
+Use the pinned serving recipes with the installed `0.1.0.dev7` or `0.1.0.dev8` package. They
 generate workload JSON for the normal allocation commands; generation does not
 reserve a GPU, pull an image, launch a container, or enable capacity lending.
 The [hardware report](hardware-evidence-dev7.md) and
 [support matrix](support-matrix.md) record the limits of the observed results.
+
+Dev8 changes the platform consent request encoding. Its serving, allocation and
+partitioning modules are byte-identical to dev7. The linked GPU measurements
+were performed on dev7; they are not a new dev8 hardware qualification.
 
 ## Generate and start a workload
 

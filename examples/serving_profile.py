@@ -1,4 +1,4 @@
-"""Generate a versioned dev7 serving descriptor; never launch or allocate work."""
+"""Generate a versioned dev7/dev8 serving descriptor; never launch or allocate work."""
 import argparse
 import json
 
@@ -7,8 +7,8 @@ from nodus_dc.serving import ServingError, build_workload
 
 
 def descriptor(engine, model_directory, *, numerical_profile, network, host_port):
-    if __version__ != '0.1.0.dev7':
-        raise ServingError('this recipe requires nodus-datacenter 0.1.0.dev7')
+    if __version__ not in ('0.1.0.dev7', '0.1.0.dev8'):
+        raise ServingError('this recipe requires nodus-datacenter 0.1.0.dev7 or 0.1.0.dev8')
     if numerical_profile not in ('default-v1', 'deterministic-v1'):
         raise ServingError('unknown numerical profile')
     if network not in ('loopback', 'none'):
