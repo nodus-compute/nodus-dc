@@ -20,6 +20,7 @@ from .errors import Error
 from .model import finite_time, key
 
 PERMISSION_MAX_AGE = 20
+PERMISSION_TIMESTAMP_BASIS = "request_start_v1"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -109,7 +110,10 @@ class Connection:
             return False
         self._verify_identity(record)
         verified = record.get("permission_verified_at")
+        # Bind the basis to this value: older writers retain unknown keys while
+        # replacing permission_verified_at with response completion time.
         fresh = (type(verified) in {int, float} and math.isfinite(verified)
+                 and record.get("permission_timestamp_basis") == {"kind": PERMISSION_TIMESTAMP_BASIS, "at": verified}
                  and 0 <= self.clock() - verified <= PERMISSION_MAX_AGE and self.clock() < record["available_until"])
         if not fresh:
             return False
@@ -342,6 +346,7 @@ class Connection:
                       "allowed_images": allowed_images,
                       "authorization_id": "connection-" + uuid.uuid4().hex,
                       "permission_verified_at": permission_verified_at,
+                      "permission_timestamp_basis": {"kind": PERMISSION_TIMESTAMP_BASIS, "at": permission_verified_at},
                       "local_revision": self.service.bridge_policy_state()["policy_revision"]}
             self._save(record)
             self._apply(record, True, "authorized")
@@ -390,6 +395,7 @@ class Connection:
                         raise Error("terms_changed", "new consent requires another explicit connection", 409)
                     self._verify_identity(record)
                     record["permission_verified_at"] = permission_verified_at
+                    record["permission_timestamp_basis"] = {"kind": PERMISSION_TIMESTAMP_BASIS, "at": permission_verified_at}
                     enabled, reason = True, "authorized"
                 except (Error, OSError) as exc:
                     reason = exc.code if isinstance(exc, Error) else "platform_unavailable"
