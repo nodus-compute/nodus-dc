@@ -20,6 +20,8 @@ AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM pass
 
 For an existing GPU cluster, use `python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
+For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator uses the installed dev7 package and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+
 ## Offline build and install
 
 Python 3.11+ is required. Runtime/build have no third-party Python dependencies. Build uses only the standard library and produces deterministic wheel/sdist archives:
