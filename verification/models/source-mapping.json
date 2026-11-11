@@ -4,14 +4,14 @@
     "src/nodus_dc/service.py": "6e576570b50e86d6fb45edd401846294bb08d07d766c55d77729fa916a1912dd",
     "src/nodus_dc/model.py": "5632369d24aec575144808698d05ede9cd6e9df370b79a0dba4627d1c166c4ba",
     "src/nodus_dc/store.py": "cf2122de22fc90e04f61bf693a20a60aaa08e9fbe65b94a14ab8c7d181d03e1c",
-    "src/nodus_dc/connection.py": "dceaa32b0be7e0eb54d2ac8953ee0699a9e627bb6baa0138e6d361e5dc6f8582",
+    "src/nodus_dc/connection.py": "a3cfe6f400591beff0094273277274bdfaab76a0d0641476a4813eb06aa03499",
     "src/nodus_dc/handback.py": "53e379a175cf551dbc87fde7f519d53457b3e038238e51f36c1d5cf2c4fcf9fe",
     "src/nodus_dc/recovery.py": "2949d4137ffa547a42651931f2637da08a8a13ba0bc3bdec26f6397d187d43b3",
     "src/nodus_dc/backend.py": "d3a945da699ad03df542a104f952ad7894ca36dc874cec7f991ca86c33143c62",
     "tools/install.py": "43b728d40533c89c42412a446bb5ed02429eb6cc23259a5b4e56fd8533c1a314"
   },
   "historical_reference_public_source": "a536957108a12d61bf6962fb7fe08bd6b7175375",
-  "runtime_version": "0.1.0.dev9",
-  "runtime_source_commit": "18cea650d3958e3b4bea7fd30db85c0af9fc5de4",
-  "identity_scope": "Exact runtime/navigation anchors only; updating these hashes does not transfer historical model or conformance results to this runtime."
+  "runtime_version": "0.1.0.dev10",
+  "runtime_source_commit": "34149f892c7f4b70b4a9e82d2f36103bd9fe0e06",
+  "identity_scope": "Exact listed enforcement/navigation files at runtime_source_commit only; package-version and release metadata are bound by the release manifest. Updating these hashes does not transfer historical model or conformance results to this runtime."
 }

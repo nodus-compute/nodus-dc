@@ -10,7 +10,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 NAME = "nodus_datacenter"
-VERSION = "0.1.0.dev9"
+VERSION = "0.1.0.dev10"
 DIST = f"{NAME}-{VERSION}.dist-info"
 METADATA = f"""Metadata-Version: 2.1
 Name: nodus-datacenter
