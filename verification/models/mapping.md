@@ -1,6 +1,6 @@
 # Source mapping and conformance limits
 
-These anchors refer to the dev10 enforcement files at source commit `34149f892c7f4b70b4a9e82d2f36103bd9fe0e06` (package-version and release metadata are bound separately by the release manifest). [source-mapping.json](source-mapping.json) records its exact file hashes and the historical public reference. The source identities below supersede stale dev4 navigation hashes; the historical reference and original run records remain unchanged. Retained model runs bind their original model sources, not every later runtime revision. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
+These anchors refer to the dev10 enforcement files at source commit `59d88ec9b8410fa785b11004c4e734ca8ddf6c46` (package-version and release metadata are bound separately by the release manifest). [source-mapping.json](source-mapping.json) records its exact file hashes and the historical public reference. The source identities below supersede stale dev4 navigation hashes; the historical reference and original run records remain unchanged. Retained model runs bind their original model sources, not every later runtime revision. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
 
 | Abstract responsibility | Public source anchors | Limits |
 |---|---|---|

@@ -8,6 +8,12 @@ response or a backward/invalid request clock refuses authorization.
 
 The change preserves exact enrolled-node identity, explicit opt-in, accepted
 terms, workload policy, lease generations and normal cleanup requirements.
+Persisted dev9 permission timestamps have no request-start provenance and are
+denied until an ordinary fresh permission GET succeeds. The marker binds its
+exact timestamp, so an older writer cannot preserve the marker while replacing
+the timestamp. Connection settings, accepted consent and history are retained;
+no renewed terms acceptance or database migration is required.
+
 Observation-only requests continue to create no execution permission. A fresh
 successful request can restore permission through the existing policy path;
 it cannot release held ownership or revive a draining lease.
@@ -16,8 +22,11 @@ One focused regression uses the real local SQLite allocation and admission path
 with an explicitly simulated platform response and clock. It fails on the dev9
 code and passes on dev10: a response taking 19 seconds has no remaining validity
 two seconds later, an ordinary fresh response recovers, and a response taking
-21 seconds refuses permission. All 26 affected connection, observation and CLI
-tests passed locally. This is CPU implementation evidence, not a deployed
+21 seconds refuses permission. The 26 existing affected connection, observation
+and CLI tests passed locally. An additional persisted-record regression checks
+legacy, unknown and mismatched timestamp markers after restarting Connection;
+a fresh GET restores admission without changing consent, policy revision or
+event history. This is CPU implementation evidence, not a deployed
 connected GPU or commercial-consent test.
 
 Only `connection.py` and the package-version module change in the runtime wheel
