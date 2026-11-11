@@ -73,6 +73,38 @@ assessment: `4994e460c246074d882cde8c8014a9f0f5ee0849d2d1f007b67133616c0d096b`.
 This is a same-process diagnostic result, not a replacement for the original
 separate-launch offline negative or a full lifecycle/performance qualification.
 
+### Longer offline vLLM confirmation
+
+A separately preregistered deterministic-profile run passed its declared offline
+comparison. It retained 160 counterbalanced four-block groups (80 ABBA and
+80 BAAB), 640 blocks and all 20,480 measured responses. Every measured completion,
+token and token log probability matched the fresh serial reference exactly.
+Public and platform connectivity were blocked during measurement.
+
+| Measurement | Observed | Primary conditional bound | Required |
+| --- | ---: | ---: | ---: |
+| Managed / direct throughput | 1.001800 | Lower: 0.989895 | ≥0.95 |
+| Added p95 request latency | -0.000276 ms | Upper: 2.773465 ms | ≤10 ms |
+| Controller CPU | 0.067173 cores | Upper: 0.067694 cores | ≤0.1 cores |
+
+The primary analysis used circular 16-group bootstrap blocks and 9,999 draws,
+with a nominal per-bound error rate of 1/120. The required eight-group sensitivity analysis
+also passed. All prespecified time/order strata and dependence diagnostics passed.
+These are approximate bounds conditional on the stated dependence assumptions;
+the diagnostics do not prove stationarity or finite-sample coverage. Earlier
+failed and inconclusive runs were retained and were not pooled into this result.
+
+Independent review verified all 150 archived evidence files, exact inference
+outputs, CPU arithmetic, resampling indices and reported bounds. Normal cleanup
+took 11.041585 seconds. The run left no held leases, GPU processes or containers;
+firewall restoration and SSH closure were verified. This establishes the recorded
+offline comparison, not a sharing benefit or the complete product's qualification.
+
+Raw archive SHA-256:
+`8fe1871ec178d3be0c901c44a740c25dc31f74e7a6f0a06b051ef5a90d4456c7`.
+Independent review:
+`9313715c5c487bfe8b6d8f088407f68cfa2b967f0684441893e6cf19ee066e09`.
+
 ## Hardware partitions
 
 The documented maintenance-lease and allocation commands created two `3g.40gb`
@@ -182,6 +214,20 @@ waive the vLLM failure or establish a consolidation benefit.
 
 Independent SGLang primary review SHA-256:
 `103e6f12f2c466b4730181d94005918be1134eb96cbdd27bb729891bfcde9608`.
+
+A later complete SGLang numerical prerequisite was run after the latest host
+reboot. It compared 32 dedicated responses with 32 responses from each of two
+simultaneously attached SGLang MPS clients. Both shared clients matched the
+dedicated text, tokens and token log probabilities exactly. Dedicated and shared
+normal cleanup took 16.518328 and 15.949605 seconds respectively. Independent
+review verified all 113 archived files and all 64 comparisons, with no remaining
+held leases, containers or GPU processes. This is a current-boot numerical and
+cleanup result; throughput benefit remains unqualified.
+
+Raw archive SHA-256:
+`1931ab9d0fa039c484f5cb1d8f37324a0fca1b7089ed062df2c3f00f4e35249d`.
+Independent review:
+`b77c2d9c4d8477075a680d740cee94d831684141b4b170df17cbeb5af521e291`.
 
 ## Installation lifecycle and host recovery
 
