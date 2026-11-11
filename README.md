@@ -2,6 +2,11 @@
 
 Local GPU inventory, explicit allocations, controlled hardware partitioning and opt-in capacity participation. The local runtime works offline without a Nodus account. This is a development release; CPU verification is not hardware qualification.
 
+Dev8 fixes explicit capacity-consent acceptance to send the node in the request
+body, as required by the platform API. Terms review still uses the exact-node
+query. Normal owner/admin authorization and opt-in requirements remain in force.
+See the [dev8 change record](docs/release-dev8.md) for verification and limits.
+
 ## Current implementation
 
 | Mode | Scope | Boundary | Qualification |
@@ -20,7 +25,7 @@ AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM pass
 
 For an existing GPU cluster, use `python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator uses the installed dev7 package and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7 and dev8 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
@@ -28,7 +33,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev7-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev8-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
