@@ -19,6 +19,8 @@ from .api import token_file
 from .errors import Error
 from .model import finite_time, key
 
+PERMISSION_MAX_AGE = 20
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -108,7 +110,7 @@ class Connection:
         self._verify_identity(record)
         verified = record.get("permission_verified_at")
         fresh = (type(verified) in {int, float} and math.isfinite(verified)
-                 and 0 <= self.clock() - verified <= 20 and self.clock() < record["available_until"])
+                 and 0 <= self.clock() - verified <= PERMISSION_MAX_AGE and self.clock() < record["available_until"])
         if not fresh:
             return False
         if workload_image is None and workload_kind is None:
@@ -182,6 +184,18 @@ class Connection:
         if not isinstance(response, dict) or settings["node"] not in response.get("nodes", []):
             raise Error("node_identity_mismatch", "platform did not confirm the selected enrolled node", 409)
         return response
+
+    def _permission_request(self, settings, method="GET", body=None):
+        # The response may describe permission checked at any point during the
+        # request. Its arrival must not start a new permission lifetime.
+        requested_at = self.clock()
+        response = self._request(settings, method, body)
+        received_at = self.clock()
+        if (type(requested_at) not in {int, float} or not math.isfinite(requested_at)
+                or type(received_at) not in {int, float} or not math.isfinite(received_at)
+                or not 0 <= received_at - requested_at <= PERMISSION_MAX_AGE):
+            raise Error("permission_stale", "platform permission response exceeded its freshness window", 503)
+        return response, requested_at
 
     def _audit_credential_history(self, settings):
         from .handback import observed_binding
@@ -292,7 +306,10 @@ class Connection:
         with self._locked():
             previous = self._load()
             self.service.record_connection_attempt(binding, participation=participation, fresh_record=previous is None)
-            response = self._request(settings)
+            if participation == "disabled":
+                response = self._request(settings)
+            else:
+                response, permission_verified_at = self._permission_request(settings)
             if participation == "disabled":
                 self._verify_identity(settings)
                 record = {**(previous or {}), **settings, "connected": True, "active": False,
@@ -312,8 +329,9 @@ class Connection:
                 except Error:
                     existing = {}
                 if existing.get("termsDigest") != accept_terms_digest:
-                    response = self._request(settings, "POST", {"action": "Accept", "generation": response["generation"],
-                                              "node": node, "termsDigest": accept_terms_digest, "agreed": True})
+                    response, permission_verified_at = self._permission_request(
+                        settings, "POST", {"action": "Accept", "generation": response["generation"],
+                                           "node": node, "termsDigest": accept_terms_digest, "agreed": True})
             consent = self._accepted(response, node, required_compensation)
             if accept_terms_digest is not None and consent["termsDigest"] != accept_terms_digest:
                 raise Error("terms_changed", "accepted terms differ from the explicitly reviewed digest", 409)
@@ -323,7 +341,7 @@ class Connection:
                       "compensation": required_compensation, "available_until": until,
                       "allowed_images": allowed_images,
                       "authorization_id": "connection-" + uuid.uuid4().hex,
-                      "permission_verified_at": self.clock(),
+                      "permission_verified_at": permission_verified_at,
                       "local_revision": self.service.bridge_policy_state()["policy_revision"]}
             self._save(record)
             self._apply(record, True, "authorized")
@@ -366,12 +384,12 @@ class Connection:
             if self.clock() < record["available_until"]:
                 try:
                     self._verify_identity(record)
-                    response = self._request(record)
+                    response, permission_verified_at = self._permission_request(record)
                     consent = self._accepted(response, record["node"], record["compensation"])
                     if consent["id"] != record["consent_id"] or consent["termsDigest"] != record["terms_digest"]:
                         raise Error("terms_changed", "new consent requires another explicit connection", 409)
                     self._verify_identity(record)
-                    record["permission_verified_at"] = self.clock()
+                    record["permission_verified_at"] = permission_verified_at
                     enabled, reason = True, "authorized"
                 except (Error, OSError) as exc:
                     reason = exc.code if isinstance(exc, Error) else "platform_unavailable"

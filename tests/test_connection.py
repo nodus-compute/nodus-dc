@@ -191,6 +191,33 @@ class ConnectionTests(unittest.TestCase):
                                                   generation=claim["generation"])["authorized"])
         self.assertEqual(count, len(self.platform.calls))
 
+    def test_completed_delayed_response_does_not_renew_stale_permission(self):
+        result = self.connection.connect(**self.settings)
+        claim = self.service.bridge_claim(platform_lease_id="delayed", platform_epoch=1,
+                                          policy_revision=result["local_revision"], idempotency_key="delayed",
+                                          workload_image=IMAGE, workload_kind="Job")
+
+        def delayed(seconds):
+            def transport(*args):
+                response = self.platform(*args)
+                self.clock.now += seconds
+                return response
+            return transport
+
+        self.connection.transport = delayed(19)
+        self.assertTrue(self.connection.sync()["active"])
+        self.clock.now += 2
+        self.assertFalse(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                   generation=claim["generation"])["authorized"])
+        self.connection.transport = self.platform
+        self.assertTrue(self.connection.sync()["active"])
+        self.assertTrue(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                  generation=claim["generation"])["authorized"])
+        self.connection.transport = delayed(21)
+        self.assertFalse(self.connection.sync()["active"])
+        self.assertFalse(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                   generation=claim["generation"])["authorized"])
+
     def test_workload_policy_denies_unlisted_images_and_nonjob_execution(self):
         result = self.connection.connect(**self.settings)
         claim = dict(platform_lease_id="policy", platform_epoch=1,
