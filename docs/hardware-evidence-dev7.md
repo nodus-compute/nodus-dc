@@ -311,12 +311,34 @@ The export process exited, no process retained the partial file, and fresh check
 showed no held allocation, container, or GPU work. The partial remains private
 as an incomplete artifact. The two installed images report 87.17 GB combined
 expanded size; their digest-bound compressed layer descriptors total 24.84 GB.
-A separate run is in progress using a reviewed compressed OCI export path and
-an adequate preparation budget. It has not yet produced a Kubernetes
-qualification result.
+A separate run subsequently used a reviewed compressed OCI export path and
+an adequate preparation budget. This input failure remains separate from the
+later setup results.
 
 Independent input-failure review SHA-256:
 `5859c6c1b166dc709f1268f61e12d4a3f1ec11a4e1bcb1304e747215879312a2`.
+
+A subsequent private-runtime attempt passed source, image and host entry checks,
+then refused the runtime identity during bootstrap. K3s had rewritten the child
+process title to `containerd `, so the check could not match its expected command
+name and original config arguments. The qualification setup, inference-image
+import and GPU-workload stages did not start. This is a failed qualification
+attempt.
+
+Bounded cleanup completed in 11.184 seconds, followed by planned reboot and
+restoration in 56.582 seconds, within their original 240- and 300-second limits.
+All 70 released lease records remained unchanged. The GPU and Docker were empty;
+the original network policy, sysctls, runtime executable/unit configuration and
+standalone active/manual-disabled service state were restored. Eight optional
+original kernel modules were absent after reboot; full module equality is not
+claimed. Early SSH readiness failures are retained alongside the eventual
+successful restoration. The new boot requires fresh numerical references for
+another Kubernetes attempt; earlier serving results remain historical evidence.
+
+Raw archive SHA-256 (475 regular files):
+`ed1d762d78205e850bc6cbdf01b478397579cd2f3cc2304d4a1b08b9ccbd74f5`.
+Independent negative and restoration review:
+`4989d25f5d7f9a566efca29fe74aff822a5c31cea6d7e761047ec586b958fe61`.
 
 ## Remaining qualification
 
