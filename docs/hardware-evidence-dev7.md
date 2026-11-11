@@ -229,6 +229,46 @@ Raw archive SHA-256:
 Independent review:
 `b77c2d9c4d8477075a680d740cee94d831684141b4b170df17cbeb5af521e291`.
 
+## Standalone admission and fault recovery
+
+A bounded dev7 fault phase passed on the same H100 boot. It created four new
+leases and exercised two fixed, overlapping two-client reserve schedules. Each
+schedule admitted one request and refused the other with an allocation conflict.
+Exact reserve replays returned the original lease; changed inputs using the same
+request key were refused. Repeated starts preserved the same container and
+process identity while CUDA continued checking all 4,096 output elements. A stale
+generation release and a late start of an already released lease were refused.
+
+The phase then killed the exact running standalone daemon and started the normal
+service. The active lease and container survived, with the same container process
+and CUDA iteration progress from 1 to 14. The original 120-second request expiry
+was not extended. Daemon maintenance completed physical cleanup 12.161351 seconds
+after expiry, within the fixed 45-second grace, without an explicit reconcile,
+drain or release call for that lease.
+
+A separately identified, task-owned foreign CUDA container made the next cleanup
+refuse a clean handback and quarantine the lease. New allocations were refused
+while the GPU was busy and remained refused after the foreign container was
+removed, until normal cleanup verification released the held lease. Normal
+release durations in this phase were 7.084036, 7.034123 and 6.233135 seconds.
+
+The complete phase took 305.688118 seconds. Independent reviews verified all 570
+archived files. The prior 66 lease records were unchanged; all 70 leases were
+released cleanly at completion. No GPU processes or containers remained. The
+normal service was active with its original unit configuration, the phase unit
+was inactive, and the host boot and provider deadline were unchanged.
+
+This covers four new leases and two fixed admission schedules on dev7. It does
+not establish every race interleaving or crash point, host-unreachable recovery,
+connected or financial behavior, or qualification of another release.
+
+Raw archive SHA-256:
+`a66a4a6e61c5c1dc613a28cbad7a3d719be6297b98093af938ee97a31487c841`.
+Independent case review:
+`d795254780800fa0230232a25df06c11286bb549174ff569c3d5ecdd84439395`.
+Independent source-bound raw replay:
+`0a80df7ab268400c78f0254da08501cdcf2be16459de8b080ce25c3d3dec2790`.
+
 ## Installation lifecycle and host recovery
 
 The supported installer lifecycle passed on the H100 after a controlled reboot.
