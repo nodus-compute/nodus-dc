@@ -1,6 +1,6 @@
-# vLLM and SGLang on dev7 and dev8
+# vLLM and SGLang on dev7, dev8 and dev9
 
-Use the pinned serving recipes with the installed `0.1.0.dev7` or `0.1.0.dev8` package. They
+Use the pinned serving recipes with the installed `0.1.0.dev7`, `0.1.0.dev8` or `0.1.0.dev9` package. They
 generate workload JSON for the normal allocation commands; generation does not
 reserve a GPU, pull an image, launch a container, or enable capacity lending.
 The [hardware report](hardware-evidence-dev7.md) and
@@ -8,7 +8,10 @@ The [hardware report](hardware-evidence-dev7.md) and
 
 Dev8 changes the platform consent request encoding. Its serving, allocation and
 partitioning modules are byte-identical to dev7. The linked GPU measurements
-were performed on dev7; they are not a new dev8 hardware qualification.
+were performed on dev7; they are not a new dev8 hardware qualification. Dev9 adds
+a read-only availability projection to status and changes the local dashboard;
+its allocation enforcement, partitioning and serving modules are unchanged.
+These historical measurements do not qualify dev9 automatically.
 
 ## Generate and start a workload
 
@@ -87,7 +90,7 @@ the statistical assumptions in the hardware report. The default shared profiles
 failed numerical targets. No two-GPU-to-one inference benefit is qualified yet; this recipe does
 not automatically enable sharing or mark any configuration hardware-qualified.
 
-The generator requires an explicit profile and the dev7 or dev8 package.
+The generator requires an explicit profile and the dev7, dev8 or dev9 package.
 It does not alter the installed serving module or its default behavior. For
 Kubernetes use the [scheduler integration](../kubernetes/README.md); a Docker
 descriptor is not a Kubernetes allocation and must not be used to bypass the

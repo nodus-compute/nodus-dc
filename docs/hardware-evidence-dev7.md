@@ -340,6 +340,28 @@ Raw archive SHA-256 (475 regular files):
 Independent negative and restoration review:
 `4989d25f5d7f9a566efca29fe74aff822a5c31cea6d7e761047ec586b958fe61`.
 
+The next private-runtime attempt passed the revised runtime identity checks,
+imported the exact engine images and created the setup objects, but the GPU
+plugin's sandbox could not start. The selected runc handlers had no explicit
+private state root and attempted to create `/run/containerd/runc` on the
+intentionally read-only host runtime path. No inference workload started.
+
+The exact setup owner was stopped and normal UID-bound API cleanup succeeded.
+Host teardown removed the cluster processes, mounts and network state, then
+refused two additional modules, `xt_comment` and `xt_tcpudp`, beyond the original
+ten declared additions. The original setup and 240-second cleanup remain failed.
+A separate controlled recovery restored the three sysctls and rebooted with the
+standalone allocator fenced. Recovery completed in 77.361 seconds within its
+300-second limit; all twelve additions were absent, the original module set was
+restored, and all 73 released, clean lease records were unchanged. The GPU and
+Docker were empty before the allocator returned active and disabled.
+
+Raw archive SHA-256 (1,652 regular files):
+`a8b4a4554d0e761a272acbb6aa8b33726044f388507d3fde8701015823fe0a63`.
+Independent negative and recovery review:
+`65090c5025fb3f5b70eae6a9205d2b441c1ef191aa14418cca11b472bcc1e25a`.
+The prospective private runc-root correction still requires a new actual run.
+
 ## Remaining qualification
 
 Kubernetes authority, connected host enrollment and retirement, paid workload execution, native
