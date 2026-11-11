@@ -81,11 +81,13 @@ every model, GPU, driver or attention backend.
 On the recorded H100 configuration, both deterministic profiles matched their
 dedicated serial references under trusted MPS sharing. SGLang also passed its
 separate full primary test. vLLM's full primary test failed the fixed performance
-targets despite correct outputs. The default shared profiles failed numerical
-targets. No two-GPU-to-one inference benefit is qualified yet; this recipe does
+targets despite correct outputs; a later preregistered, longer offline comparison
+passed its declared correctness, throughput, latency and CPU checks, subject to
+the statistical assumptions in the hardware report. The default shared profiles
+failed numerical targets. No two-GPU-to-one inference benefit is qualified yet; this recipe does
 not automatically enable sharing or mark any configuration hardware-qualified.
 
-The generator deliberately requires an explicit profile and the dev7 package.
+The generator requires an explicit profile and the dev7 or dev8 package.
 It does not alter the installed serving module or its default behavior. For
 Kubernetes use the [scheduler integration](../kubernetes/README.md); a Docker
 descriptor is not a Kubernetes allocation and must not be used to bypass the
