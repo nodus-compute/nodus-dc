@@ -91,11 +91,21 @@ class Service:
             return self._inventory()
 
     def status(self):
+        from .availability import project
         with self.store.connection() as db:
+            # One read snapshot: a concurrent reserve/release must not mix its
+            # leases with another version of the resource hierarchy.
+            db.execute("BEGIN")
             raw = db.execute("SELECT value FROM meta WHERE key='inventory'").fetchone()
             leases = [Store.decode(r) for r in db.execute("SELECT * FROM leases ORDER BY generation")]
             policy = db.execute("SELECT * FROM bridge_policy WHERE singleton=1").fetchone()
-            return {"api_version": API_VERSION, "inventory": json.loads(raw[0]) if raw else None,
+            records = [dict(row) for row in db.execute("SELECT id,parent,present,observed_at FROM resources")]
+            last = float(db.execute("SELECT value FROM meta WHERE key='last_wall_time'").fetchone()[0])
+            inventory = json.loads(raw[0]) if raw else None
+            availability = project(inventory, leases, records,
+                                   authority=getattr(self.backend, "allocation_authority", "observe"),
+                                   now=self.clock(), last_wall_time=last)
+            return {"api_version": API_VERSION, "inventory": inventory, "availability": availability,
                     "leases": leases, "bridge_policy": dict(policy) if policy else None,
                     "hardware_qualified": False}
 
