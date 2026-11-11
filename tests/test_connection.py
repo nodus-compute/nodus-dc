@@ -191,6 +191,72 @@ class ConnectionTests(unittest.TestCase):
                                                   generation=claim["generation"])["authorized"])
         self.assertEqual(count, len(self.platform.calls))
 
+    def test_completed_delayed_response_does_not_renew_stale_permission(self):
+        result = self.connection.connect(**self.settings)
+        claim = self.service.bridge_claim(platform_lease_id="delayed", platform_epoch=1,
+                                          policy_revision=result["local_revision"], idempotency_key="delayed",
+                                          workload_image=IMAGE, workload_kind="Job")
+
+        def delayed(seconds):
+            def transport(*args):
+                response = self.platform(*args)
+                self.clock.now += seconds
+                return response
+            return transport
+
+        self.connection.transport = delayed(19)
+        self.assertTrue(self.connection.sync()["active"])
+        self.clock.now += 2
+        self.assertFalse(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                   generation=claim["generation"])["authorized"])
+        self.connection.transport = self.platform
+        self.assertTrue(self.connection.sync()["active"])
+        self.assertTrue(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                  generation=claim["generation"])["authorized"])
+        self.connection.transport = delayed(21)
+        self.assertFalse(self.connection.sync()["active"])
+        self.assertFalse(self.service.bridge_check(platform_lease_id="delayed", platform_epoch=1,
+                                                   generation=claim["generation"])["authorized"])
+
+    def test_legacy_persisted_permission_needs_fresh_sync_after_upgrade(self):
+        result = self.connection.connect(**self.settings)
+        claim = self.service.bridge_claim(platform_lease_id="upgrade", platform_epoch=1,
+                                          policy_revision=result["local_revision"], idempotency_key="upgrade",
+                                          workload_image=IMAGE, workload_kind="Job")
+        record = json.loads(self.connection.path.read_text())
+        old_basis = record.get("permission_timestamp_basis")
+        # Dev9 persisted response completion, not request start, with no basis.
+        # Request at 1000, completion at 1019, upgraded process at 1027.
+        record["permission_verified_at"] = self.clock.now + 19
+        record.pop("permission_timestamp_basis", None)
+        self.clock.now += 27
+        restarted = Connection(self.service, self.root, transport=self.platform, clock=self.clock)
+        calls = len(self.platform.calls)
+        with self.service.store.connection() as db:
+            history = [tuple(row) for row in db.execute("SELECT * FROM events ORDER BY sequence")]
+        # Old writers can retain unknown keys while overwriting the timestamp.
+        for basis in (None, "unknown", old_basis):
+            if basis is not None:
+                record["permission_timestamp_basis"] = basis
+            restarted._save(record)
+            before = restarted.path.read_bytes()
+            self.assertFalse(self.service.bridge_check(platform_lease_id="upgrade", platform_epoch=1,
+                                                       generation=claim["generation"])["authorized"])
+            self.assertEqual(restarted.path.read_bytes(), before)
+            self.assertEqual(len(self.platform.calls), calls)
+        refreshed = restarted.sync()
+        self.assertTrue(refreshed["connected"])
+        self.assertTrue(refreshed["active"])
+        self.assertEqual(refreshed["local_revision"], result["local_revision"])
+        current = json.loads(restarted.path.read_text())
+        for field in ("consent_id", "terms_digest", "authorization_id", "available_until", "allowed_images"):
+            self.assertEqual(current[field], record[field])
+        self.assertEqual([call[0] for call in self.platform.calls[calls:]], ["GET"])
+        with self.service.store.connection() as db:
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM events ORDER BY sequence")], history)
+        self.assertTrue(self.service.bridge_check(platform_lease_id="upgrade", platform_epoch=1,
+                                                  generation=claim["generation"])["authorized"])
+
     def test_workload_policy_denies_unlisted_images_and_nonjob_execution(self):
         result = self.connection.connect(**self.settings)
         claim = dict(platform_lease_id="policy", platform_epoch=1,

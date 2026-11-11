@@ -1,9 +1,9 @@
 {
   "product": "nodus-datacenter",
-  "version": "0.1.0.dev7",
+  "version": "0.1.0.dev10",
   "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
   "new_code_license": "Apache-2.0",
-  "qualification": "UNQUALIFIED development prerelease. Coalesces fresh physical GPU queries only with explicit MIG-disabled cross-checks and separates periodic lease maintenance from optional inventory refresh. Authority decisions and cleanup retain fresh hardware proofs. Status inventory retains its original observed_at timestamp. Earlier dev6 serving throughput/control-overhead failures remain unresolved until exact-artifact requalification; a read-only inventory scan does not establish serving performance. CPU tests and unchanged bounded models do not establish full hardware, Kubernetes, hosted retirement, native access or processor qualification. Native-to-lending reprovisioning remains unsupported.",
+  "qualification": "UNQUALIFIED development prerelease; zero fully hardware-qualified production configurations. Dev10 counts platform permission-request time within the existing 20-second freshness limit and rejects over-age or regressed-clock responses. Legacy or unknown timestamp provenance denies admission until normal fresh sync; consent and history remain intact. The other 16 runtime modules and installer are byte-identical to dev9; source applicability preserves only the exact scope of historical observations, not complete final-release qualification. CPU tests with synthetic platform responses do not establish a deployed connected GPU, commercial acceptance, cash settlement or native customer-return journey. Fresh installation, framework inference on MIG, full Kubernetes acceptance, inference-consolidation benefit and native-to-lending reprovisioning remain incomplete or unsupported.",
   "runtime_python_dependencies": [],
   "upstream_interfaces": [
     "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",
@@ -11,6 +11,6 @@
     "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html",
     "https://docs.nvidia.com/deploy/nvidia-smi/"
   ],
-  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev6",
+  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev9",
   "serving_client_sha256": "cb7633aa62d5f4813ce466490748916b61d440d7e248df4be0a25b98bf6523de"
 }
