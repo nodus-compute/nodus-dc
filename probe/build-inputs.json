@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/amd64",
+  "sourceSHA256": "834d4858bc0a6802d31ca7da3772d7e4aeda4aa6a219adedd7693269fe2a407f",
+  "builder": "nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749",
+  "runtime": "debian:12-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018",
+  "image": "ghcr.io/nodus-compute/nodus-dc-probe",
+  "release": "cuda-probe-v1",
+  "license": "Apache-2.0"
+}

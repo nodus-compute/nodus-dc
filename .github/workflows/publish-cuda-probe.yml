@@ -1,0 +1,83 @@
+name: Publish CUDA readiness probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-cuda-probe
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # Create only the new probe release; existing releases are never edited.
+      packages: write # The public probe package only; no platform/cloud credentials.
+    env:
+      IMAGE: ghcr.io/nodus-compute/nodus-dc-probe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate exact public source and pinned inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          python3 probe/release.py inputs
+          mkdir evidence
+          printf 'DOCKER_CONFIG=%s/nodus-probe-auth-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - name: Authenticate the package writer through the normal workflow token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          install -d -m 0700 "$DOCKER_CONFIG"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build only the public probe and push by immutable digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --metadata-file evidence/build.json --file probe/Dockerfile \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" .
+          digest=$(jq -er '."containerimage.digest"' evidence/build.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'PROBE_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+      - name: Require anonymous pull and exact image configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io
+          anonymous="$RUNNER_TEMP/nodus-probe-anonymous-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 0700 "$anonymous"
+          docker --config "$anonymous" pull "$IMAGE@$PROBE_DIGEST"
+          docker image inspect "$IMAGE@$PROBE_DIGEST" > evidence/inspection.json
+          python3 probe/release.py descriptor --source "$GITHUB_SHA" --metadata evidence/build.json \
+            --inspection evidence/inspection.json --out evidence/probe.json
+      - name: Publish a new probe-only prerelease without changing existing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Typed ref creation refuses an existing tag; it never adopts or moves somebody else's release.
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/tags/cuda-probe-v1 -f sha="$GITHUB_SHA" > /dev/null
+          gh release create cuda-probe-v1 --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title 'CUDA readiness probe v1 (AMD64)' --notes-file probe/RELEASE-NOTES.md evidence/probe.json
+      - name: Remove the task's ephemeral registry credential file
+        if: always() && steps.inputs.outcome == 'success'
+        run: rm -f "$DOCKER_CONFIG/config.json"
+      - name: Preserve public build and negative verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cuda-probe-${{ github.sha }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30
