@@ -1,15 +1,17 @@
 {
   "scope": "Navigation and source identity for this distribution only; no implementation refinement or hardware/payment proof. Historical reference model results retain their original source bindings.",
   "files": {
-    "src/nodus_dc/service.py": "53775a3856a917a06ac02bb15a1beee369a0469c836c34b05341be6890df975b",
+    "src/nodus_dc/service.py": "6e576570b50e86d6fb45edd401846294bb08d07d766c55d77729fa916a1912dd",
     "src/nodus_dc/model.py": "5632369d24aec575144808698d05ede9cd6e9df370b79a0dba4627d1c166c4ba",
-    "src/nodus_dc/store.py": "441ceec182a7db53aeb894ac038b75bfd11e7f694adbe03b0b59c4e989674198",
-    "src/nodus_dc/connection.py": "c13f5ea18523eff5dac63dc0b55d02b7a4f3f7c00ebd2df0d2b81d9c83225ebc",
-    "src/nodus_dc/handback.py": "e123861d25f91b73ba18615e0488a49ae7a1b4194692ef82fb926b922738a133",
-    "src/nodus_dc/recovery.py": "9540d06167e510d71e74c20d40b1f3cb4ee850ee96d66d6c39bf72f582077ac6",
-    "src/nodus_dc/backend.py": "b1e373e7843be2ab8029006028853c34ab16c06cc77cb40c9c335702d1556a2c",
+    "src/nodus_dc/store.py": "cf2122de22fc90e04f61bf693a20a60aaa08e9fbe65b94a14ab8c7d181d03e1c",
+    "src/nodus_dc/connection.py": "dceaa32b0be7e0eb54d2ac8953ee0699a9e627bb6baa0138e6d361e5dc6f8582",
+    "src/nodus_dc/handback.py": "53e379a175cf551dbc87fde7f519d53457b3e038238e51f36c1d5cf2c4fcf9fe",
+    "src/nodus_dc/recovery.py": "2949d4137ffa547a42651931f2637da08a8a13ba0bc3bdec26f6397d187d43b3",
+    "src/nodus_dc/backend.py": "d3a945da699ad03df542a104f952ad7894ca36dc874cec7f991ca86c33143c62",
     "tools/install.py": "43b728d40533c89c42412a446bb5ed02429eb6cc23259a5b4e56fd8533c1a314"
   },
   "historical_reference_public_source": "a536957108a12d61bf6962fb7fe08bd6b7175375",
-  "runtime_version": "0.1.0.dev4"
+  "runtime_version": "0.1.0.dev9",
+  "runtime_source_commit": "18cea650d3958e3b4bea7fd30db85c0af9fc5de4",
+  "identity_scope": "Exact runtime/navigation anchors only; updating these hashes does not transfer historical model or conformance results to this runtime."
 }

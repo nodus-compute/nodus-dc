@@ -1,6 +1,6 @@
 # Source mapping and conformance limits
 
-These anchors refer to the runtime in this distribution. [source-mapping.json](source-mapping.json) records its exact file hashes and the historical public reference. Retained model runs bind their original model sources, not every later runtime revision. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
+These anchors refer to the dev9 runtime at source commit `18cea650d3958e3b4bea7fd30db85c0af9fc5de4`. [source-mapping.json](source-mapping.json) records its exact file hashes and the historical public reference. The source identities below supersede stale dev4 navigation hashes; the historical reference and original run records remain unchanged. Retained model runs bind their original model sources, not every later runtime revision. Names and hashes aid review; they do not prove simulation/refinement or that a runtime action implements every abstract transition.
 
 | Abstract responsibility | Public source anchors | Limits |
 |---|---|---|
