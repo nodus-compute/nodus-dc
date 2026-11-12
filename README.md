@@ -47,6 +47,8 @@ Installation does not start services, change drivers or opt into participation. 
 
 Open `http://127.0.0.1:7441/` and enter the local token from the daemon's printed file path. Use SSH port forwarding for remote viewing. The dashboard keeps the token in memory only. Press Enter after entering it. Refresh runs one read at a time and announces progress or errors. A refresh stops waiting after 120 seconds; this browser timeout does not stop a daemon scan. Availability still expires normally while a refresh is pending. Local availability is a recent observation of unheld resources under this allocator. Reserve through the API before use; a displayed count does not grant ownership or authorize external work. Default authority is `observe`; choose `standalone` only after draining other schedulers and routing all managed workloads through this service. Root and other Docker administrators remain trusted; this tool cannot fence independent administrator launches or out-of-band hardware access.
 
+After starting or restarting the service, use the [read-only readiness checks](docs/operations.md#checking-after-a-start-or-restart) to distinguish a running service, daemon health, fresh inventory and allocatable resources. A successful `status` command alone does not confirm that the daemon is serving.
+
 ## Allocate and launch
 
 `inventory` returns exact resource IDs and supported modes. Every allocation consumes the entire selected resource. Reserved, starting, draining, verifying and quarantined leases all retain capacity.
