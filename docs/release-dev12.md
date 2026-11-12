@@ -5,6 +5,9 @@ installed executable at `/opt/nodus-dc/current/bin/nodus-dc`; the installer does
 not add it to the shell PATH. The serving guide shows matching generator and
 client examples for vLLM and SGLang, including each engine's drain, memory-release
 and resume operations. A vLLM workload must use `ServingClient('vllm', ...)`.
+The README also distinguishes the ordinary read-only connection credential from
+the dedicated credential and tracking required before a first connection that
+must preserve terminal-return eligibility.
 
 The recipe generator accepts dev12 with the same image digests, numerical
 profiles, arguments, model mounts and networking choices. These instructions
