@@ -6,6 +6,8 @@ Dev10 corrects platform permission freshness and keeps the dev9 GPU allocation, 
 
 Dev11 improves local dashboard interaction and accessibility. The other 16 runtime modules and installer are byte-identical to dev10. Its [change record](release-dev11.md) scopes the local browser and offline installation checks; this UI release adds no GPU execution or hardware qualification. Historical observations retain their original release and environment bindings.
 
+Dev12 corrects first-run executable paths and matching engine examples. All 17 non-version runtime modules and the installer are byte-identical to dev11. Its [change record](release-dev12.md) adds no hardware execution or qualification.
+
 | Component | Implemented / pinned path | Qualification status |
 | --- | --- | --- |
 | Python | 3.11+ syntax/API; stdlib runtime/build; CPU suite run on 3.12.14/macOS arm64 | CPU lifecycle checks and published dev4 installation on Ubuntu 24.04/Python 3.12.3 passed; final release qualification remains separate |
