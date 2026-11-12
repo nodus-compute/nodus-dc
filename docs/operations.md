@@ -28,6 +28,43 @@ Keep all authority state and tokens owner-only. HTTP exposes the read-only dashb
 
 Local listeners start independently of platform connectivity. The connection worker initially denies external admission, refreshes every five seconds after completion, and every claim/check independently rejects permission older than twenty seconds. Root nodusd must continue its local monitoring/reclaim loop; a denied check triggers workload termination and clean handback, not immediate reallocation. An explicit availability window cannot override stale or revoked permission.
 
+## Checking after a start or restart
+
+A successful service-manager start or restart does not mean the API is listening yet. Check the service first; these commands only read its state and recent logs:
+
+```sh
+sudo systemctl show nodus-dc.service -p ActiveState -p SubState -p MainPID -p Result
+sudo journalctl -u nodus-dc.service -n 50 --no-pager
+```
+
+Then check the local daemon's health response. This read stops after five seconds and checks the JSON body: HTTP 200 alone does not mean healthy. Five seconds is a diagnostic limit, not a promised startup time.
+
+```sh
+curl --fail --show-error --silent --max-time 5 http://127.0.0.1:7441/health |
+  /opt/nodus-dc/current/bin/python -c '
+import json, sys
+try:
+    health = json.load(sys.stdin)
+except (ValueError, OSError):
+    sys.exit("No valid health response; inspect the service state and logs above.")
+healthy = isinstance(health, dict) and set(health) == {"ok", "maintenance_error", "connection_error"}
+healthy = healthy and health["ok"] is True and health["maintenance_error"] is None and health["connection_error"] is None
+print("Daemon health:", json.dumps(health, sort_keys=True))
+sys.exit(0 if healthy else 1)
+'
+```
+
+A refused connection or missing response means this check could not reach the listener; inspect the service logs before trying another read. A response with `ok: false` identifies a maintenance or connection error. A connection error denies external admission even if local management remains available. Neither result releases a lease or proves GPU cleanup.
+
+Daemon health is separate from GPU observations. Read fresh inventory, then its allocation projection using the same state directory and authority options as your unit; these commands match the example unit above:
+
+```sh
+sudo /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone inventory
+sudo /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone status
+```
+
+`status` alone reads saved state and can succeed while the daemon is stopped. In its output, inspect `availability.state` and each resource's `available` and `reason` fields. A fresh, available resource still requires a successful reservation before use. Stale, held, draining or quarantined resources are unavailable; restarting the service or repeating a failed mutation does not establish a clean release. Preserve the original lease ID and generation and follow the [recovery guide](recovery-upgrade.md) when a recovery proof is required.
+
 Production checks still required: real driver/toolkit/container matrix, hardware cleanup verification, MPS client attachment and limits, MIG create/destroy/reset behavior, concurrent serving memory/latency, node restart and disconnect handling, GPU health/ECC behavior and external consent/metering/payout lifecycle. A GPU process list alone cannot prove all device handles are closed; the intended exclusive platform backend must add its own cleanup evidence. This development backend checks Docker assignment, NVIDIA process inventory and exact selected-device configuration, and fails closed when those observations are unavailable.
 
 An allocation does not expose an arbitrary SSH session or raw device file to a tenant. The local adapter launches controlled Docker descriptors as an operator convenience; hostile workloads need a separately qualified isolation backend. No image pull or model download occurs implicitly.
