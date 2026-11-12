@@ -78,7 +78,21 @@ For SGLang, use `--workload sglang.json` in the start command. Run only the
 client block that matches the descriptor you started. Both examples use port
 18000, so release the first workload before starting the other on that port.
 
-Wait for the engine to become ready before calling `ServingClient.activate()`.
+Both pinned engines expose the same read-only health endpoint on the selected
+host port. Check it before calling `ServingClient.activate()`:
+
+```sh
+curl --fail --show-error --max-time 10 http://127.0.0.1:18000/health
+```
+
+A successful response means the engine reports healthy. A refused connection,
+HTTP error or timeout can mean it is still loading or has failed; do not continue
+to the client block on an error. Check `docker logs CONTAINER_ID`, using the
+container ID in the start result, and repeat the health check after resolving
+the cause. The 10-second bound applies only to this HTTP request, not to engine
+startup. Health alone is not inference validation: `activate()` also checks the
+served model and performs a one-token completion.
+
 Keep one client in the application process that owns managed request admission.
 For vLLM:
 

@@ -22,7 +22,7 @@ the [dev12 change record](docs/release-dev12.md) for verification and limits.
 
 AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM passthrough, live migration and fractional external lending are not implemented by this package. Model sleep is not permission to lend a GPU.
 
-For an existing GPU cluster, use `python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
+For an existing GPU cluster, use `/opt/nodus-dc/current/bin/python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
 For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9, dev10, dev11 and dev12 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
