@@ -33,7 +33,7 @@ element('gpus').textContent=rs.filter(x=>x.kind==='gpu').length;element('leases'
 function busy(value){refreshing=value;element('token').disabled=value;element('unlock').disabled=value;element('refresh').disabled=value||!credential;element('refresh').setAttribute('aria-busy',String(value));element('refresh').textContent=value?'Refreshing…':'Refresh inventory';}
 async function refresh(){
 if(!credential||refreshing)return;
-const sequence=++refreshSequence,controller=new AbortController();let timedOut=false;
+const sequence=++refreshSequence,controller=new AbortController(),focusTarget=document.activeElement;let timedOut=false;
 busy(true);element('error').textContent='';element('status').textContent='Refreshing inventory…';
 // Bound the complete read sequence, including response bodies. This cancels the
 // browser wait; it does not assert cancellation of the daemon's hardware scan.
@@ -51,7 +51,7 @@ if(sequence!==refreshSequence)return;
 refreshFailed=true;render();element('connection').textContent='Connection unavailable';
 element('status').textContent='Refresh failed. Availability is unavailable.';
 element('error').textContent=timedOut?'Refresh timed out after 120 seconds. Check the local daemon and try again.':e.message||'Refresh failed. Check the local daemon and try again.';
-}finally{clearTimeout(timeout);busy(false);}
+}finally{clearTimeout(timeout);busy(false);if(document.hasFocus()&&document.activeElement===document.body&&['token','unlock','refresh'].some(id=>element(id)===focusTarget))focusTarget.focus();}
 }
 setInterval(()=>{if(lastStatus&&renderedFresh&&!fresh()){render();element('status').textContent=refreshing?'Refreshing inventory. The last observation is stale or unavailable.':'Inventory is stale or unavailable. Refresh to check current availability.';}},1000);
 element('token-form').onsubmit=e=>{e.preventDefault();if(refreshing)return;credential=element('token').value;element('token').value='';refresh();};element('refresh').onclick=refresh;
