@@ -33,7 +33,8 @@ memory and performance measurements. These recipes use BF16, one tensor-parallel
 worker, context length 2048, eager execution, memory fraction 0.45, and the served
 model name `nodus-qualification`.
 
-From this source checkout, with the package installed, choose one engine.
+From the unpacked source archive (or source checkout), with the package installed,
+choose one engine.
 The commands use the installed interpreter and CLI directly; no global package
 or shell PATH change is required. Replace `/srv/models/qwen` with your preloaded
 model snapshot directory.
