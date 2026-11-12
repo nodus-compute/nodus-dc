@@ -300,6 +300,10 @@ class Handler(BaseHTTPRequestHandler):
                 return service.inventory()
             if path.startswith("/v1/leases/") and len(path.split("/")) == 4:
                 return service.get(path.split("/")[-1])
+            parts = path.split("/")
+            if len(parts) == 5 and parts[1:3] == ["v1", "leases"] and parts[4] == "terminal-retirement":
+                from .handback import terminal_retirement
+                return terminal_retirement(service, parts[3])
         if method == "POST":
             body = self.body()
             direct = {"/v1/reserve": service.reserve, "/v1/reconcile": service.reconcile,

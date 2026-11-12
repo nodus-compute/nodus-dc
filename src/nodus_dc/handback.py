@@ -22,7 +22,7 @@ from pathlib import Path
 from .api import token_file
 from .connection import Connection, _NoRedirect, _node_uuid
 from .errors import Error
-from .model import CleanupProof, canonical, key
+from .model import CleanupProof, Snapshot, canonical, key
 from .store import Store
 
 # APIKey revocation's documented authentication cache bound is 30 seconds.
@@ -80,6 +80,77 @@ def node_retirement_proof(journal, status, proof):
         raise Error("node_retirement_unverified", "no affirmative retirement proof for the frozen Node identity; keep host quarantined", 409)
     return {name: proof[name] for name in ("apiVersion", "kind", "retired", "node", "uid", "organizationUID",
                                          "credentialGeneration", "nodeIdentityRevokedTime")}
+
+
+def terminal_retirement(service, lease_id):
+    """Read retained handback evidence; this neither grants access nor attests native use.
+
+    Local-only native_handoff and older journals without an affirmative saved
+    NodeRetirement are deliberately ineligible. No remote requests or state writes.
+    """
+    def refuse():
+        raise Error("terminal_retirement_unverified", "no matching ready terminal handback proof for this host lease", 409)
+
+    key(lease_id, "lease_id")
+    with service.store.connection() as db:
+        db.execute("BEGIN")
+        row = db.execute("SELECT value FROM meta WHERE key=?", (JOURNAL_KEY,)).fetchone()
+        journal = json.loads(row[0]) if row else None
+        lease = Store.lease(db, lease_id)
+        now = service.clock()
+        last = float(db.execute("SELECT value FROM meta WHERE key='last_wall_time'").fetchone()[0])
+        if (not isinstance(journal, dict) or journal.get("stage") != "ready"
+                or journal.get("lease_id") != lease_id or type(journal.get("generation")) is not int
+                or journal["generation"] != lease["generation"] or lease["owner"] != "local"
+                or lease["mode"] != "exclusive_host" or lease["state"] != "active" or lease["workload"]
+                or not math.isfinite(now) or now + 1 < last or lease["expires_at"] <= now):
+            refuse()
+        runtime = lease["runtime"]
+        expected = {"execution_kind": "native_handoff", "lease_id": lease_id, "generation": journal["generation"],
+                    "handback_stage": "ready", "native_access_ready": True, "return_supported": False,
+                    "node_uid": journal.get("node_uid"), "credential_uid": journal.get("credential_uid")}
+        if (runtime != expected or type(runtime.get("generation")) is not int
+                or runtime.get("native_access_ready") is not True or runtime.get("return_supported") is not False
+                or not all(isinstance(journal.get(name), str) and journal[name]
+                                          for name in ("node_uid", "credential_uid", "org_uid"))
+                or not isinstance(journal.get("settings"), dict)):
+            refuse()
+        evidence = journal.get("evidence", {})
+        if not isinstance(evidence, dict):
+            refuse()
+        retirement = node_retirement_proof(journal, 200, evidence.get("node_retirement_proof"))
+        rejection = evidence.get("rejection", {})
+        cleanup = evidence.get("final_device_cleanup", {})
+        if (not isinstance(rejection, dict) or not isinstance(cleanup, dict)
+                or not isinstance(evidence.get("agent"), dict)
+                or evidence.get("key_delete") != {"http_status": 204, "uid": journal["credential_uid"]}
+                or rejection.get("http_status") != 401
+                or type(rejection.get("monotonic_wait_seconds")) not in {int, float}
+                or not math.isfinite(rejection["monotonic_wait_seconds"])
+                or rejection["monotonic_wait_seconds"] < REVOCATION_WAIT_SECONDS
+                or evidence.get("agent", {}).get("stopped") is not True
+                or evidence.get("agent", {}).get("disabled") is not True
+                or any(item.get("state") != "rejected" for item in journal.get("recovery_keys", []))
+                or cleanup.get("clean") is not True or cleanup.get("lease_id") != lease_id
+                or type(cleanup.get("generation")) is not int or cleanup["generation"] != lease["generation"]
+                or cleanup.get("resource_ids") != lease["resources"]):
+            refuse()
+        host = db.execute("SELECT value FROM meta WHERE key='host_id'").fetchone()
+        snapshot = service.backend.inventory()
+        observed_now = service.clock()
+        if (not host or not isinstance(snapshot, Snapshot) or snapshot.host_id != host[0]
+                or lease["resources"] != [snapshot.host_id] or not math.isfinite(snapshot.observed_at)
+                or not math.isfinite(observed_now) or observed_now < now
+                or lease["expires_at"] <= observed_now or abs(observed_now - snapshot.observed_at) > 30):
+            refuse()
+        hosts = [resource for resource in snapshot.resources if resource.kind == "host"]
+        if (len(hosts) != 1 or hosts[0].id != snapshot.host_id or hosts[0].parent is not None
+                or not isinstance(hosts[0].details.get("boot_id"), str) or not hosts[0].details["boot_id"]):
+            refuse()
+        return {"schema": "nodus-terminal-retirement-v1", "lease_id": lease_id, "generation": lease["generation"],
+                "stage": "ready", "native_access_ready": True, "reconnect_supported": False,
+                "node_uid": journal["node_uid"], "credential_uid": journal["credential_uid"],
+                "retirement": retirement, "host_id": snapshot.host_id, "boot_id": hosts[0].details["boot_id"]}
 
 
 def _unique_object(pairs):
@@ -369,13 +440,10 @@ class Handback:
                         or details.get("uid") != journal["node_uid"] or details.get("name") != journal["settings"]["node"]
                         or details.get("kind") != "nodes" or details.get("group") != "nodus.dev"):
                     raise Error("node_retirement_unverified", "exact Node retirement acknowledgement missing; host remains quarantined", 409)
-                if journal.get("retirement_basis") == "never_enabled":
-                    journal = self._save(journal, "node_delete_pending", node_delete=ack)
-                    status, proof = self._call(journal, "GET", journal["node_path"] + "/retirement?uid="
-                                               + urllib.parse.quote(journal["node_uid"], safe=""))
-                    journal = self._save(journal, "node_retired", node_retirement_proof=node_retirement_proof(journal, status, proof))
-                else:
-                    journal = self._save(journal, "node_retired", node_delete=ack)
+                journal = self._save(journal, "node_delete_pending", node_delete=ack)
+                status, proof = self._call(journal, "GET", journal["node_path"] + "/retirement?uid="
+                                           + urllib.parse.quote(journal["node_uid"], safe=""))
+                journal = self._save(journal, "node_retired", node_retirement_proof=node_retirement_proof(journal, status, proof))
             if journal["stage"] == "node_retired":
                 self._verify_key(journal)
                 journal = self._save(journal, "key_delete_pending")

@@ -13,7 +13,8 @@ filesystem checks and simulated platform/service/device responses. These are not
 actual GPU cleanup, Linux service shutdown, native customer login or hosted
 retirement qualification. The platform must expose `credentialUID` on APIKey
 `GET /auth/whoami` responses and the Node `retirement` read subresource for
-uncertain-node recovery; earlier servers fail closed for these features.
+normal retirement and uncertain-node recovery; earlier servers fail closed for
+these features.
 
 ## Start with a dedicated connection key
 
@@ -95,7 +96,7 @@ It then:
   Background propagation, and requires the matching successful deletion
   acknowledgement. The platform transaction revokes all credentials bound to
   that Node and removes enrolled membership. Active external leases block it.
-  The never-enabled path additionally requires a positive same-org, exact-UID
+  Every new retirement requires a positive same-org, exact-UID
   `NodeRetirement` response with a revoked identity generation before key deletion;
   a missing Node, HTTP 404 or deletion acknowledgement alone is insufficient.
 - Durably records that acknowledgement before deleting the exact current API
@@ -124,6 +125,18 @@ Lease expiry, drain, daemon restart and a new boot do not prove native customer
 return. They can mark the native hold quarantined but cannot release its
 resources. Repeating an already completed command returns the recorded terminal
 result; it does not re-attest arbitrary subsequent root/customer activity.
+
+An authenticated `GET /v1/leases/LEASE_ID/terminal-retirement` on the existing
+local API projects retained retirement evidence. It requires the exact ready,
+unexpired host lease and journal, the affirmative saved `NodeRetirement`, key
+revocation/rejection evidence, and matching current inventory host identity.
+The response includes the lease generation, Node and key UIDs, safe retirement
+fields, and current host/boot IDs. It exposes no token, credential path, or file
+fingerprint and changes no state. Local-only `native-handoff` and older journals
+without affirmative retirement proof are refused. This observation grants no
+authority and does not attest subsequent customer activity; an external owner
+must independently bind the physical host and verify current platform retirement
+and key revocation before granting access.
 
 ## Recover a stopped service that systemd marks failed
 
