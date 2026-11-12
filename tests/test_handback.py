@@ -307,6 +307,53 @@ class HandbackTests(unittest.TestCase):
             thread.join(timeout=5)
             self.assertFalse(thread.is_alive())
 
+    def test_resume_legacy_node_retired_obtains_proof_before_revoking_key(self):
+        for case in ("valid", "missing", "wrong_uid", "invalid_saved"):
+            with self.subTest(case=case):
+                child = HandbackTests()
+                child.setUp()
+                try:
+                    # Produce the old ever-enabled node_retired shape through the
+                    # owning journal helpers and the exact conditional DELETE.
+                    with child.h.connection._locked(), child.service.authority():
+                        journal = child.h._prepare(child.lease["id"], child.lease["generation"],
+                                                   "return-owner", "host-retirement")
+                        journal = child.h._save(journal, "node_delete_pending")
+                        status, ack = child.h._call(journal, "DELETE", journal["node_path"] + "?propagationPolicy=Background",
+                            {"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background",
+                             "preconditions": {"uid": child.node_uid, "resourceVersion": "123"}})
+                        self.assertEqual(status, 200)
+                        evidence = {"node_delete": ack}
+                        if case == "invalid_saved":
+                            evidence["node_retirement_proof"] = {"retired": False}
+                        child.h._save(journal, "node_retired", **evidence)
+                    child.h = child.new_handback()  # Upgrade/restart reads persisted state.
+                    def mutate(method, path, result):
+                        if "/retirement?" in path:
+                            if case == "missing":
+                                return 404, None
+                            if case == "wrong_uid":
+                                return 200, {**result[1], "uid": "bnod_stale"}
+                        return result
+                    child.mutate = mutate
+                    before = len(child.calls)
+                    if case == "valid":
+                        self.assertTrue(child.run_handback()["native_access_ready"])
+                        self.assertEqual(child.h._load()["evidence"]["node_retirement_proof"]["credentialGeneration"], 4)
+                        self.assertTrue(child.key_deleted)
+                    else:
+                        with self.assertRaises(Error) as caught:
+                            child.run_handback()
+                        self.assertEqual(caught.exception.code, "node_retirement_unverified")
+                        self.assertFalse(child.key_deleted)
+                        self.assertTrue(child.token_path.exists())
+                        self.assertEqual(child.h._load()["stage"], "node_retired")
+                    resumed = child.calls[before:]
+                    self.assertFalse(any(method == "DELETE" and "/nodes/" in path for method, path, _ in resumed))
+                    self.assertEqual(sum("/retirement?" in path for _, path, _ in resumed), int(case != "invalid_saved"))
+                finally:
+                    child.doCleanups()
+
     def test_connection_identity_requires_exact_effective_scopes(self):
         transport = lambda *args: self.transport(*args)[1]
         self.assertEqual(self.key_uid, credential_binding(self.record, transport)["credential_uid"])

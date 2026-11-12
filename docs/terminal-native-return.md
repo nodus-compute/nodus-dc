@@ -138,6 +138,13 @@ authority and does not attest subsequent customer activity; an external owner
 must independently bind the physical host and verify current platform retirement
 and key revocation before granting access.
 
+An older interrupted journal at `node_retired` may still have its dedicated key
+but only the DELETE acknowledgement. Ordinary resume reads affirmative retirement
+proof once with that key and saves it before key revocation; failed proof leaves
+the key and quarantined hold intact. A saved proof is revalidated before this
+transition. This does not repair already-completed journals after their key was
+removed.
+
 ## Recover a stopped service that systemd marks failed
 
 The stop check deliberately requires `inactive/dead`, disabled state, zero main

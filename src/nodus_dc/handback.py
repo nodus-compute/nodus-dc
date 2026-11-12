@@ -445,6 +445,15 @@ class Handback:
                                            + urllib.parse.quote(journal["node_uid"], safe=""))
                 journal = self._save(journal, "node_retired", node_retirement_proof=node_retirement_proof(journal, status, proof))
             if journal["stage"] == "node_retired":
+                # Older ever-enabled journals retained only the DELETE ACK.
+                # Fetch affirmative proof while their dedicated key still exists.
+                evidence = journal.get("evidence", {})
+                if "node_retirement_proof" not in evidence:
+                    status, proof = self._call(journal, "GET", journal["node_path"] + "/retirement?uid="
+                                               + urllib.parse.quote(journal["node_uid"], safe=""))
+                    journal = self._save(journal, "node_retired", node_retirement_proof=node_retirement_proof(journal, status, proof))
+                else:
+                    node_retirement_proof(journal, 200, evidence["node_retirement_proof"])
                 self._verify_key(journal)
                 journal = self._save(journal, "key_delete_pending")
                 status, _ = self._call(journal, "DELETE", journal["key_path"])
