@@ -94,6 +94,14 @@ Connect for metrics first with `--participation disabled`. This mode verifies th
 
 The companion platform node installer must receive `--local-authority-url unix:///run/nodus-dc/bridge.sock --local-authority-token-file /var/lib/nodus-dc/bridge.token`. Use the same bridge file for the local daemon. The privileged local API has a separate socket at `/run/nodus-dc/local.sock`; HTTP is read-only. Production sockets require root-owned private paths and OS peer UID checks. The cloud API credential is a different private token file. `connection review` displays current exact-node terms without accepting them. `connection connect --participation enabled` verifies the enrolled node UUID from `/var/lib/nodus/node.json`, checks accepted terms/compensation and grants only an explicit availability window of at most 24 hours. Passing `--accept-terms-digest` explicitly accepts that exact reviewed digest and requires a human owner/admin session credential. An on-host API key cannot accept terms; use the console to accept them, then omit this flag to connect with the host's read credential.
 
+Choose the credential path **before this installation's first connection**:
+
+- For ordinary metrics and sharing-status reads, use a host API key with `pools:read` (the **Data center connection** preset) and omit `--terminal-native-return` from the first command below. This does not establish terminal-return eligibility.
+- If you need terminal native return, follow the [terminal return guide](docs/terminal-native-return.md) **before connecting for the first time**. It requires a separate dedicated key with the guide's exact five organization scopes and continuous credential tracking from that first connection. The ordinary `pools:read` preset is insufficient; adding the flag or replacing the key later does not restore missing tracking history.
+
+The first connect command below shows the terminal-return path. Use its dedicated
+key and retain the flag only after completing that guide's first-connection setup.
+
 ```sh
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone connection connect --participation disabled --terminal-native-return --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token --bridge-token-file /var/lib/nodus-dc/bridge.token
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc connection review --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token
