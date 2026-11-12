@@ -8,6 +8,8 @@ Dev11 improves local dashboard interaction and accessibility. The other 16 runti
 
 Dev12 corrects first-run executable paths and matching engine examples. All 17 non-version runtime modules and the installer are byte-identical to dev11. Its [change record](release-dev12.md) adds no hardware execution or qualification.
 
+Dev13 adds a read-only terminal-retirement evidence projection and requires affirmative NodeRetirement proof before key revocation, including compatible interrupted journals. Fifteen runtime modules and the installer remain byte-identical to dev12. Its [change record](release-dev13.md) describes CPU verification; the complete native customer-access and return-to-lending journeys remain unqualified.
+
 | Component | Implemented / pinned path | Qualification status |
 | --- | --- | --- |
 | Python | 3.11+ syntax/API; stdlib runtime/build; CPU suite run on 3.12.14/macOS arm64 | CPU lifecycle checks and published dev4 installation on Ubuntu 24.04/Python 3.12.3 passed; final release qualification remains separate |

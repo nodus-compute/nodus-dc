@@ -149,6 +149,10 @@ class HandbackTests(unittest.TestCase):
         elif "/sharing?" in path:
             result = (200, {"accepting": False, "nodes": [self.node], "generation": 2,
                 "consent": {"id": self.record["consent_id"], "termsDigest": "a"*64, "revokedTime": "2026-11-10T00:00:00Z"}})
+        elif "/retirement?" in path:
+            result = (200, {"apiVersion": "nodus.dev/v1", "kind": "NodeRetirement", "node": self.node,
+                "uid": self.node_uid, "organizationUID": self.org, "credentialGeneration": 4,
+                "nodeIdentityRevokedTime": "2026-11-10T00:00:00Z", "retired": True}) if self.node_deleted else (409, {})
         elif method == "GET":
             result = (200, {"metadata": {"name": self.node, "uid": self.node_uid, "resourceVersion": "123"}})
         else:
@@ -173,6 +177,12 @@ class HandbackTests(unittest.TestCase):
         self.assertFalse(self.token_path.exists())
         self.assertFalse(self.node_path.exists())
         self.assertGreaterEqual(self.agent.stops, 1)
+        proof = self.h._load()["evidence"]["node_retirement_proof"]
+        self.assertEqual(proof["credentialGeneration"], 4)
+        self.assertEqual(proof["uid"], self.node_uid)
+        proof_index = next(i for i, (_, url, _) in enumerate(self.calls) if "/retirement?" in url)
+        key_delete = next(i for i, (method, url, _) in enumerate(self.calls) if method == "DELETE" and "/apikeys/" in url)
+        self.assertLess(proof_index, key_delete)
         before = len(self.calls)
         self.assertEqual(result, self.run_handback())
         self.assertEqual(before, len(self.calls))
@@ -188,6 +198,161 @@ class HandbackTests(unittest.TestCase):
             lambda: self.service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1300, request_key="overlap")):
             with self.assertRaises(Error):
                 action()
+
+    def test_ever_enabled_requires_affirmative_retirement_before_key_revocation(self):
+        cases = [(404, None), (200, {"retired": False}), (200, {"uid": "bnod_wrong"}),
+                 (200, {"credentialGeneration": 0})]
+        for status, change in cases:
+            with self.subTest(status=status, change=change):
+                child = HandbackTests()
+                child.setUp()
+                try:
+                    def mutate(method, path, result):
+                        if "/retirement?" in path:
+                            return status, None if change is None else {**result[1], **change}
+                        return result
+                    child.mutate = mutate
+                    with self.assertRaises(Error) as caught:
+                        child.run_handback()
+                    self.assertEqual(caught.exception.code, "node_retirement_unverified")
+                    self.assertTrue(child.node_deleted)
+                    self.assertFalse(child.key_deleted)
+                    self.assertEqual(child.h._load()["stage"], "node_delete_pending")
+                finally:
+                    child.doCleanups()
+
+    def test_authenticated_retirement_projection_is_read_only_and_refuses_stale_state(self):
+        import copy
+        import http.client
+        import threading
+        from dataclasses import replace
+        from nodus_dc.api import Server
+
+        self.run_handback()
+        original_inventory = self.service.backend.inventory
+        def inventory():
+            snapshot = original_inventory()
+            return replace(snapshot, resources=tuple(
+                replace(row, details={**row.details, "boot_id": "synthetic-current-boot"})
+                if row.kind == "host" else row for row in snapshot.resources))
+        self.service.backend.inventory = inventory
+        server = Server(("127.0.0.1", 0), self.service, "local-" + "x" * 40)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def get(token=None):
+            client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            try:
+                headers = {"Authorization": "Bearer " + token} if token else {}
+                client.request("GET", "/v1/leases/" + self.lease["id"] + "/terminal-retirement", headers=headers)
+                response = client.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                client.close()
+        def dump():
+            with self.service.store.connection() as db:
+                return list(db.iterdump())
+        try:
+            before, calls, stops = dump(), len(self.calls), self.agent.stops
+            self.assertEqual(get()[0], 401)
+            self.assertEqual(get("wrong-local-token")[0], 401)
+            status, value = get(server.local_token)
+            self.assertEqual(status, 200)
+            journal = self.h._load()
+            self.assertEqual(value, {"schema": "nodus-terminal-retirement-v1", "lease_id": self.lease["id"],
+                "generation": self.lease["generation"], "stage": "ready", "native_access_ready": True,
+                "reconnect_supported": False, "node_uid": self.node_uid, "credential_uid": self.key_uid,
+                "retirement": journal["evidence"]["node_retirement_proof"], "host_id": "host-a",
+                "boot_id": "synthetic-current-boot"})
+            self.assertEqual(before, dump())
+            self.assertEqual((calls, stops), (len(self.calls), self.agent.stops))
+            # Only explicit safe fields escape, never settings, token paths, or hashes.
+            self.assertNotIn(str(self.path), json.dumps(value))
+            mutations = [lambda j: j.update(generation=j["generation"] + 1),
+                         lambda j: j.update(stage="node_retired"),
+                         lambda j: j["evidence"].pop("node_retirement_proof"),
+                         lambda j: j["evidence"]["node_retirement_proof"].update(uid="wrong"),
+                         lambda j: j["evidence"]["rejection"].update(monotonic_wait_seconds=0),
+                         lambda j: j["evidence"]["final_device_cleanup"].update(generation=0)]
+            for mutate in mutations:
+                changed = copy.deepcopy(journal)
+                mutate(changed)
+                with self.service.store.connection() as db:
+                    db.execute("UPDATE meta SET value=? WHERE key=?", (json.dumps(changed), JOURNAL_KEY))
+                before = dump()
+                self.assertEqual(get(server.local_token)[0], 409)
+                self.assertEqual(before, dump())
+            with self.service.store.connection() as db:
+                db.execute("UPDATE meta SET value=? WHERE key=?", (json.dumps(journal), JOURNAL_KEY))
+            self.clock.now = self.lease["expires_at"]
+            self.assertEqual(get(server.local_token)[0], 409)
+            self.clock.now = 1000
+            self.service.backend.inventory = original_inventory  # Missing current boot must refuse.
+            self.assertEqual(get(server.local_token)[0], 409)
+            def late_inventory():
+                self.clock.now = self.lease["expires_at"]
+                return inventory()
+            self.service.backend.inventory = late_inventory
+            self.assertEqual(get(server.local_token)[0], 409)
+            self.clock.now = 1000
+            self.service.backend.inventory = inventory
+            with self.service.store.connection() as db:
+                db.execute("UPDATE leases SET runtime=? WHERE id=?", (json.dumps({"execution_kind": "native_handoff"}), self.lease["id"]))
+            self.assertEqual(get(server.local_token)[0], 409)
+            with self.service.store.connection() as db:
+                db.execute("DELETE FROM meta WHERE key=?", (JOURNAL_KEY,))
+            self.assertEqual(get(server.local_token)[0], 409)  # Local-only handoff has no journal.
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+
+    def test_resume_legacy_node_retired_obtains_proof_before_revoking_key(self):
+        for case in ("valid", "missing", "wrong_uid", "invalid_saved"):
+            with self.subTest(case=case):
+                child = HandbackTests()
+                child.setUp()
+                try:
+                    # Produce the old ever-enabled node_retired shape through the
+                    # owning journal helpers and the exact conditional DELETE.
+                    with child.h.connection._locked(), child.service.authority():
+                        journal = child.h._prepare(child.lease["id"], child.lease["generation"],
+                                                   "return-owner", "host-retirement")
+                        journal = child.h._save(journal, "node_delete_pending")
+                        status, ack = child.h._call(journal, "DELETE", journal["node_path"] + "?propagationPolicy=Background",
+                            {"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background",
+                             "preconditions": {"uid": child.node_uid, "resourceVersion": "123"}})
+                        self.assertEqual(status, 200)
+                        evidence = {"node_delete": ack}
+                        if case == "invalid_saved":
+                            evidence["node_retirement_proof"] = {"retired": False}
+                        child.h._save(journal, "node_retired", **evidence)
+                    child.h = child.new_handback()  # Upgrade/restart reads persisted state.
+                    def mutate(method, path, result):
+                        if "/retirement?" in path:
+                            if case == "missing":
+                                return 404, None
+                            if case == "wrong_uid":
+                                return 200, {**result[1], "uid": "bnod_stale"}
+                        return result
+                    child.mutate = mutate
+                    before = len(child.calls)
+                    if case == "valid":
+                        self.assertTrue(child.run_handback()["native_access_ready"])
+                        self.assertEqual(child.h._load()["evidence"]["node_retirement_proof"]["credentialGeneration"], 4)
+                        self.assertTrue(child.key_deleted)
+                    else:
+                        with self.assertRaises(Error) as caught:
+                            child.run_handback()
+                        self.assertEqual(caught.exception.code, "node_retirement_unverified")
+                        self.assertFalse(child.key_deleted)
+                        self.assertTrue(child.token_path.exists())
+                        self.assertEqual(child.h._load()["stage"], "node_retired")
+                    resumed = child.calls[before:]
+                    self.assertFalse(any(method == "DELETE" and "/nodes/" in path for method, path, _ in resumed))
+                    self.assertEqual(sum("/retirement?" in path for _, path, _ in resumed), int(case != "invalid_saved"))
+                finally:
+                    child.doCleanups()
 
     def test_connection_identity_requires_exact_effective_scopes(self):
         transport = lambda *args: self.transport(*args)[1]
