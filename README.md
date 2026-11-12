@@ -96,7 +96,7 @@ The companion platform node installer must receive `--local-authority-url unix:/
 
 Choose the credential path **before this installation's first connection**:
 
-- For ordinary metrics and sharing-status reads, use a host API key with `pools:read` (the **Data center connection** preset) and omit `--terminal-native-return` from the first command below. This does not establish terminal-return eligibility.
+- For ordinary metrics and sharing-status reads, use a host API key with `pools:read` and omit `--terminal-native-return` from the first command below. This does not establish terminal-return eligibility.
 - If you need terminal native return, follow the [terminal return guide](docs/terminal-native-return.md) **before connecting for the first time**. It requires a separate dedicated key with the guide's exact five organization scopes and continuous credential tracking from that first connection. The ordinary `pools:read` preset is insufficient; adding the flag or replacing the key later does not restore missing tracking history.
 
 The first connect command below shows the terminal-return path. Use its dedicated
