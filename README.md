@@ -2,10 +2,10 @@
 
 Local GPU inventory, explicit allocations, controlled hardware partitioning and opt-in capacity participation. The local runtime works offline without a Nodus account. This is a development release; CPU verification is not hardware qualification.
 
-Dev9 adds local availability to the dashboard and status API. It accounts for
-held allocations and GPU/partition relationships, and hides availability when
-observations are stale or the browser loses a trustworthy clock. See the
-[dev10 change record](docs/release-dev10.md) for verification and limits.
+Dev11 improves the local dashboard's keyboard access, refresh feedback and error
+announcements. Refreshes run one at a time with a bounded browser wait; existing
+availability and stale-data rules are unchanged. See the
+[dev11 change record](docs/release-dev11.md) for verification and limits.
 
 ## Current implementation
 
@@ -25,7 +25,7 @@ AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM pass
 
 For an existing GPU cluster, use `python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9 and dev10 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9, dev10 and dev11 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
@@ -33,7 +33,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev10-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev11-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.

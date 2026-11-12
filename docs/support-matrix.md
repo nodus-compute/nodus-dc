@@ -4,6 +4,8 @@ There are currently **zero fully hardware-qualified production configurations**.
 
 Dev10 corrects platform permission freshness and keeps the dev9 GPU allocation, serving, dashboard and installer implementations unchanged. The [dev10 change record](release-dev10.md) describes this source applicability; it is not a new hardware run or a complete dev10 qualification. All failed or incomplete hardware paths below retain their original outcomes.
 
+Dev11 improves local dashboard interaction and accessibility. The other 16 runtime modules and installer are byte-identical to dev10. Its [change record](release-dev11.md) scopes the local browser and offline installation checks; this UI release adds no GPU execution or hardware qualification. Historical observations retain their original release and environment bindings.
+
 | Component | Implemented / pinned path | Qualification status |
 | --- | --- | --- |
 | Python | 3.11+ syntax/API; stdlib runtime/build; CPU suite run on 3.12.14/macOS arm64 | CPU lifecycle checks and published dev4 installation on Ubuntu 24.04/Python 3.12.3 passed; final release qualification remains separate |
