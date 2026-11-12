@@ -1,6 +1,6 @@
-# vLLM and SGLang on dev7, dev8, dev9, dev10 and dev11
+# vLLM and SGLang on dev7 through dev12
 
-Use the pinned serving recipes with the installed `0.1.0.dev7`, `0.1.0.dev8`, `0.1.0.dev9`, `0.1.0.dev10` or `0.1.0.dev11` package. They
+Use the pinned serving recipes with the installed `0.1.0.dev7`, `0.1.0.dev8`, `0.1.0.dev9`, `0.1.0.dev10`, `0.1.0.dev11` or `0.1.0.dev12` package. They
 generate workload JSON for the normal allocation commands; generation does not
 reserve a GPU, pull an image, launch a container, or enable capacity lending.
 The [hardware report](hardware-evidence-dev7.md) and
@@ -20,6 +20,8 @@ qualify a later complete release.
 Dev11 changes only the dashboard and version module in the runtime wheel. Its
 serving implementation is byte-identical to dev10, and its recipe generator
 adds dev11 to the accepted versions without changing descriptor generation.
+Dev12 corrects these command paths and engine-specific examples; it adds dev12
+to the recipe version guard without changing runtime behavior or descriptors.
 
 ## Generate and start a workload
 
@@ -31,7 +33,20 @@ memory and performance measurements. These recipes use BF16, one tensor-parallel
 worker, context length 2048, eager execution, memory fraction 0.45, and the served
 model name `nodus-qualification`.
 
-From this source checkout, with the package installed:
+From this source checkout, with the package installed, choose one engine.
+The commands use the installed interpreter and CLI directly; no global package
+or shell PATH change is required. Replace `/srv/models/qwen` with your preloaded
+model snapshot directory.
+
+For vLLM:
+
+```sh
+/opt/nodus-dc/current/bin/python examples/serving_profile.py \
+  --engine vllm --model-directory /srv/models/qwen \
+  --numerical-profile deterministic-v1 --host-port 18000 > vllm.json
+```
+
+For SGLang instead:
 
 ```sh
 /opt/nodus-dc/current/bin/python examples/serving_profile.py \
@@ -39,7 +54,7 @@ From this source checkout, with the package installed:
   --numerical-profile deterministic-v1 --host-port 18000 > sglang.json
 ```
 
-Choose `--engine vllm` for vLLM. The generated descriptor pins the engine image
+The generated descriptor pins the engine image
 digest, mounts the model read-only, and publishes inference only on host loopback.
 The `loopback` network uses Docker bridge networking and permits outbound access;
 offline model flags do not implement an outbound firewall. `--network none`
@@ -52,32 +67,62 @@ the exact GPU UUID from inventory, reserve it, and use the returned lease ID and
 generation:
 
 ```sh
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
   reserve --resource GPU-EXACT-UUID --mode exclusive_gpu \
   --ttl-seconds 3600 --request-key my-serving-job
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
-  start LEASE_ID --generation GENERATION --workload sglang.json
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
+  start LEASE_ID --generation GENERATION --workload vllm.json
 ```
 
-Wait for the engine to become ready before calling `ServingClient.activate()`.
-Keep one client in the application process that owns managed request admission:
+For SGLang, use `--workload sglang.json` in the start command. Run only the
+client block that matches the descriptor you started. Both examples use port
+18000, so release the first workload before starting the other on that port.
 
-```python
+Wait for the engine to become ready before calling `ServingClient.activate()`.
+Keep one client in the application process that owns managed request admission.
+For vLLM:
+
+```sh
+/opt/nodus-dc/current/bin/python - <<'PY'
+from nodus_dc.serving import ServingClient
+
+client = ServingClient('vllm', 'http://127.0.0.1:18000')
+client.activate()
+result = client.complete('The capital of France is', max_tokens=16)
+print(result)
+client.drain()
+client.release_memory()
+client.resume()
+PY
+```
+
+For SGLang:
+
+```sh
+/opt/nodus-dc/current/bin/python - <<'PY'
 from nodus_dc.serving import ServingClient
 
 client = ServingClient('sglang', 'http://127.0.0.1:18000')
 client.activate()
 result = client.complete('The capital of France is', max_tokens=16)
+print(result)
 client.drain()
 client.release_memory()
 client.resume()
+PY
 ```
 
 Independent clients bypass that client's request counter. Route all managed
 requests through its admission gate. Engine pause/sleep controls inference and
 memory; it does not release a GPU or allow another tenant onto it. To end the
-workload, use the normal `release LEASE_ID --generation GENERATION` command. A
-successful engine response alone is not proof of clean hardware handback.
+workload, release the same returned lease and generation through the installed CLI:
+
+```sh
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone \
+  release LEASE_ID --generation GENERATION
+```
+
+A successful engine response alone is not proof of clean hardware handback.
 
 ## Numerical profiles
 
@@ -98,7 +143,7 @@ the statistical assumptions in the hardware report. The default shared profiles
 failed numerical targets. No two-GPU-to-one inference benefit is qualified yet; this recipe does
 not automatically enable sharing or mark any configuration hardware-qualified.
 
-The generator requires an explicit profile and the dev7, dev8, dev9, dev10 or dev11 package.
+The generator requires an explicit profile and the dev7, dev8, dev9, dev10, dev11 or dev12 package.
 It does not alter the installed serving module or its default behavior. For
 Kubernetes use the [scheduler integration](../kubernetes/README.md); a Docker
 descriptor is not a Kubernetes allocation and must not be used to bypass the

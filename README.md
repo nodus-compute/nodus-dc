@@ -2,10 +2,9 @@
 
 Local GPU inventory, explicit allocations, controlled hardware partitioning and opt-in capacity participation. The local runtime works offline without a Nodus account. This is a development release; CPU verification is not hardware qualification.
 
-Dev11 improves the local dashboard's keyboard access, refresh feedback and error
-announcements. Refreshes run one at a time with a bounded browser wait; existing
-availability and stale-data rules are unchanged. See the
-[dev11 change record](docs/release-dev11.md) for verification and limits.
+Dev12 corrects the first-run command paths and gives matching vLLM and SGLang
+descriptor and client examples. Runtime behavior is unchanged from dev11. See
+the [dev12 change record](docs/release-dev12.md) for verification and limits.
 
 ## Current implementation
 
@@ -25,7 +24,7 @@ AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM pass
 
 For an existing GPU cluster, use `python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9, dev10 and dev11 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9, dev10, dev11 and dev12 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
@@ -33,8 +32,11 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev11-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev12-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
+
+The installer keeps the CLI and Python interpreter under `/opt/nodus-dc/current/bin`;
+it does not add them to your shell PATH. The commands below use that installed path.
 
 Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
 
@@ -50,9 +52,9 @@ Open `http://127.0.0.1:7441/` and enter the local token from the daemon's printe
 `inventory` returns exact resource IDs and supported modes. Every allocation consumes the entire selected resource. Reserved, starting, draining, verifying and quarantined leases all retain capacity.
 
 ```sh
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone reserve --resource GPU-EXACT-UUID --mode exclusive_gpu --ttl-seconds 3600 --request-key job-1
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone start LEASE_ID --generation 1 --workload examples/workload.json
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone release LEASE_ID --generation 1
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone reserve --resource GPU-EXACT-UUID --mode exclusive_gpu --ttl-seconds 3600 --request-key job-1
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone start LEASE_ID --generation 1 --workload examples/workload.json
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone release LEASE_ID --generation 1
 ```
 
 Use the returned generation, not the illustrative `1`. Resource IDs and image digests in examples are placeholders. Workloads are digest-pinned Docker images with an argv command, optional executable entrypoint, read-only model mounts, no network by default, optional ports bound only to loopback, and bounded shared memory. Loopback mode uses Docker bridge networking and therefore can permit outbound network access; it does not promise egress isolation. Customer sandbox policy belongs in a separately qualified backend.
@@ -93,10 +95,10 @@ Connect for metrics first with `--participation disabled`. This mode verifies th
 The companion platform node installer must receive `--local-authority-url unix:///run/nodus-dc/bridge.sock --local-authority-token-file /var/lib/nodus-dc/bridge.token`. Use the same bridge file for the local daemon. The privileged local API has a separate socket at `/run/nodus-dc/local.sock`; HTTP is read-only. Production sockets require root-owned private paths and OS peer UID checks. The cloud API credential is a different private token file. `connection review` displays current exact-node terms without accepting them. `connection connect --participation enabled` verifies the enrolled node UUID from `/var/lib/nodus/node.json`, checks accepted terms/compensation and grants only an explicit availability window of at most 24 hours. Passing `--accept-terms-digest` explicitly accepts that exact reviewed digest and requires a human owner/admin session credential. An on-host API key cannot accept terms; use the console to accept them, then omit this flag to connect with the host's read credential.
 
 ```sh
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone connection connect --participation disabled --terminal-native-return --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token --bridge-token-file /var/lib/nodus-dc/bridge.token
-nodus-dc --state-dir /var/lib/nodus-dc connection review --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token
-nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone connection connect --participation enabled --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token --bridge-token-file /var/lib/nodus-dc/bridge.token --available-until UNIX_TIMESTAMP --required-compensation CashUSD --allow-image YOUR_APPROVED_IMAGE@sha256:EXACT_DIGEST
-nodus-dc --state-dir /var/lib/nodus-dc connection disconnect
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone connection connect --participation disabled --terminal-native-return --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token --bridge-token-file /var/lib/nodus-dc/bridge.token
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc connection review --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone connection connect --participation enabled --platform-url https://YOUR_PLATFORM --namespace YOUR_NAMESPACE --pool YOUR_POOL --node YOUR_ENROLLED_NODE_UUID --token-file /secure/platform.token --bridge-token-file /var/lib/nodus-dc/bridge.token --available-until UNIX_TIMESTAMP --required-compensation CashUSD --allow-image YOUR_APPROVED_IMAGE@sha256:EXACT_DIGEST
+/opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc connection disconnect
 ```
 
 Enabling participation is a separate explicit step after reviewing and accepting the exact capacity terms. The enabled mode remains the default for existing commands with sharing arguments. `--terminal-native-return` requires the dedicated first-connection key described in the [terminal return guide](docs/terminal-native-return.md); omit it only when terminal return is not needed. Switching back to observation drains current external admission and preserves any prior consent and participation history.

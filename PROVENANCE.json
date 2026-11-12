@@ -1,9 +1,9 @@
 {
   "product": "nodus-datacenter",
-  "version": "0.1.0.dev11",
+  "version": "0.1.0.dev12",
   "code_origin": "New Nodus implementation. No third-party research source is included in this distribution.",
   "new_code_license": "Apache-2.0",
-  "qualification": "UNQUALIFIED development prerelease; zero fully hardware-qualified production configurations. Dev11 improves read-only local dashboard keyboard access, refresh feedback, error announcements and bounded browser waits. Only the dashboard and package-version module change relative to dev10; the other 16 runtime modules and installer are byte-identical. Local browser and offline installation checks establish their stated CPU/UI scope only. Prior actual installation, inference and lifecycle results retain their original release and environment bindings; no new GPU execution, blanket hardware qualification, connected commercial-work or cash-settlement claim is made. Historical failures remain unchanged. Framework inference on MIG, full Kubernetes acceptance, inference-consolidation benefit and the complete native customer-return journey remain incomplete; native-to-lending reprovisioning remains unsupported.",
+  "qualification": "UNQUALIFIED development prerelease; zero fully hardware-qualified production configurations. Dev12 corrects first-run executable paths and pairs each serving descriptor with the matching vLLM or SGLang client. All 17 non-version runtime modules and the installer are byte-identical to dev11. Local package and example checks establish CPU/documentation scope only. Prior actual installation, inference and lifecycle results retain their original release and environment bindings; no new GPU execution, blanket hardware qualification, connected commercial-work or cash-settlement claim is made. Historical failures remain unchanged. Framework inference on MIG, full Kubernetes acceptance, inference-consolidation benefit and the complete native customer-return journey remain incomplete; native-to-lending reprovisioning remains unsupported.",
   "runtime_python_dependencies": [],
   "upstream_interfaces": [
     "https://docs.nvidia.com/datacenter/tesla/mig-user-guide/getting-started-with-mig.html",
@@ -11,6 +11,6 @@
     "https://docs.nvidia.com/deploy/mps/appendix-tools-and-interface-reference.html",
     "https://docs.nvidia.com/deploy/nvidia-smi/"
   ],
-  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev10",
+  "previous_public_source": "https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev11",
   "serving_client_sha256": "cb7633aa62d5f4813ce466490748916b61d440d7e248df4be0a25b98bf6523de"
 }
