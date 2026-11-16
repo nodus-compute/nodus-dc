@@ -126,16 +126,21 @@ def _scope(snapshot, resource_id):
     return host, parent, child, sorted(geometry, key=lambda row: row["gi"])
 
 
-def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
-    """Resolve one MIG instance to exact kernel devices; never grant a whole GPU.
-
-    Busy sibling telemetry is deliberately absent from the identity digest.
-    Observed boot, driver, geometry or device changes invalidate the digest.
-    Identical recycled metadata needs a separate durable configuration fence.
-    """
+def observe_driver(snapshot: Snapshot, parent_id: str, *, devices=None):
+    """Observe loaded driver identity without requiring any MIG children."""
     devices = devices or LinuxDevices()
     try:
-        host, parent, child, geometry = _scope(snapshot, resource_id)
+        if not isinstance(snapshot, Snapshot):
+            raise ValueError("typed inventory is required")
+        rows = {row.id: row for row in snapshot.resources}
+        if len(rows) != len(snapshot.resources) or snapshot.warnings:
+            raise ValueError("inventory is incomplete or ambiguous")
+        host, parent = rows[snapshot.host_id], rows[parent_id]
+        if (host.kind != "host" or host.parent is not None or parent.kind != "gpu"
+                or parent.parent != host.id or not host.healthy or not parent.healthy
+                or parent.device_uuid != parent.id
+                or not re.fullmatch(r"GPU-[A-Za-z0-9_-]{4,160}", parent.id)):
+            raise ValueError("healthy physical parent and host identity are required")
         boot = devices.text("/proc/sys/kernel/random/boot_id").strip()
         if (not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot)
                 or host.details.get("boot_id") != boot):
@@ -151,6 +156,27 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
         driver_banner = devices.text("/proc/driver/nvidia/version").strip()
         if not driver_banner or version not in driver_banner:
             raise ValueError("loaded driver banner does not match the inventory")
+
+        if devices.text("/proc/sys/kernel/random/boot_id").strip() != boot:
+            raise ValueError("boot identity changed during observation")
+        return {"boot_id": boot, "driver_version": version, "driver_source_version": source_version,
+                "driver_banner_digest": digest(driver_banner)}
+    except (KeyError, TypeError, AttributeError, ValueError, OSError) as exc:
+        raise Error("partition_binding_unavailable", f"exact driver identity unavailable: {exc}", 503) from None
+
+
+def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
+    """Resolve one MIG instance to exact kernel devices; never grant a whole GPU.
+
+    Busy sibling telemetry is deliberately absent from the identity digest.
+    Observed boot, driver, geometry or device changes invalidate the digest.
+    Identical recycled metadata needs a separate durable configuration fence.
+    """
+    devices = devices or LinuxDevices()
+    try:
+        host, parent, child, geometry = _scope(snapshot, resource_id)
+        driver = observe_driver(snapshot, parent.id, devices=devices)
+        boot = driver["boot_id"]
 
         # NVIDIA capability gpuN uses the physical device minor, not NVML index.
         pci = parent.details.get("pci_bus_id", "")
@@ -215,8 +241,7 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
                   "parent_uuid": parent.device_uuid, "partition_uuid": child.device_uuid,
                   "pci_bus_id": bdf, "gpu_instance_id": gi, "compute_instance_id": ci,
                   "profile": child.details["profile"], "memory_bytes": child.details["memory_capacity_bytes"],
-                  "parent_geometry": geometry, "driver_version": version,
-                  "driver_source_version": source_version, "driver_banner_digest": digest(driver_banner),
+                  "parent_geometry": geometry, **driver,
                   "devices": nodes}
         return {**result, "binding_digest": digest(result)}
     except (KeyError, TypeError, AttributeError, ValueError, OSError) as exc:
