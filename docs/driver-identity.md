@@ -13,6 +13,21 @@ to a [NUL-terminated formatter](https://github.com/torvalds/linux/blob/v6.8/scri
 and therefore emits 23 characters. Boot identity, inventory/module version,
 driver banner and exact device checks remain required.
 
+The read-only preflight also requires the kernel's character-device registrations.
+It accepts either the older unified `nvidia-frontend` registration or the separate
+`nvidia` and `nvidiactl` registrations with equal observed major numbers, plus
+`nvidia-uvm` and `nvidia-caps`. Duplicate, mixed and incomplete layouts are refused;
+device files never substitute for a missing registration. NVIDIA documents these
+layouts in its [535.129.03 frontend](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/535.129.03/kernel-open/nvidia/nv-frontend.c#L346)
+and [580.105.08 initialization](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/580.105.08/kernel-open/nvidia/nv.c#L900).
+Full binding still checks each character device's exact major and minor.
+
+Only `/proc/driver/nvidia-caps/mig-minors` has a 128 KiB read limit: the
+[580.105.08 static tables](https://github.com/NVIDIA/open-gpu-kernel-modules/blob/580.105.08/kernel-open/nvidia/nv-caps.c#L67)
+emit 4,322 lines totaling 109,408 bytes, including absent GPUs. Other metadata
+retains its 64 KiB limit. Oversized or ambiguous mappings remain refused. No
+module is loaded and no device file is created by these observations.
+
 If hardware changes but final observation fails, both the lease and configuration
 are quarantined. The original plan remains recorded as uncertain, so ordinary
 release cannot clear ownership from a process listing alone. Existing explicit

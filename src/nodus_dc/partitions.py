@@ -184,6 +184,10 @@ class PartitionAuthority:
                 or abs(self.service.clock() - snapshot.observed_at) > 30):
             raise Error("stale_inventory", "fresh inventory is required before MIG configuration", 503)
         mig_binding.observe_driver(snapshot, lease["resources"][0], devices=self.devices)
+        try:
+            mig_binding.character_device_majors(self.devices or mig_binding.LinuxDevices())
+        except (KeyError, TypeError, AttributeError, ValueError, OSError) as exc:
+            raise Error("partition_binding_unavailable", f"exact driver registration unavailable: {exc}", 503) from None
 
     def begin_configuration(self, db, lease, operation):
         if self.service.store.fence is None:

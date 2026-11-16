@@ -121,6 +121,38 @@ class Partitions(unittest.TestCase):
         self.assert_error("uncertain_launch", lambda: restarted.release(lease["id"], generation=lease["generation"], request_key="no-reset"))
         self.assertEqual(self.backend.cleanup_calls, prior_cleanup_calls)
 
+    def test_bad_registration_preflight_never_mutates_configuration(self):
+        lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="registration-preflight")
+        valid = "195 nvidia\n195 nvidiactl\n511 nvidia-uvm\n508 nvidia-caps\n"
+        malformed = [
+            valid.replace("195 nvidiactl\n", ""),
+            valid.replace("195 nvidiactl", "196 nvidiactl"),
+            valid + "195 nvidia-frontend\n",
+            valid + "195 nvidia\n",
+            valid + "511 nvidia-uvm\n",
+            valid.replace("511 nvidia-uvm\n", ""),
+            valid.replace("508 nvidia-caps\n", ""),
+            valid.replace("195 nvidia\n", "195 unknown-nvidia\n"),
+            "195 nvidia-frontend\n195 nvidia-frontend\n511 nvidia-uvm\n508 nvidia-caps\n",
+            "195 nvidia-frontend\n195 nvidiactl\n511 nvidia-uvm\n508 nvidia-caps\n",
+        ]
+        with self.service.store.connection() as db:
+            original = tuple(db.execute("SELECT * FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone())
+            event_count = db.execute("SELECT count(*) FROM events").fetchone()[0]
+        for index, content in enumerate(malformed):
+            with self.subTest(layout=index):
+                self.p.devices.files["/proc/devices"] = "Character devices:\n" + content + "\nBlock devices:\n8 sd\n"
+                with patch.object(self.backend, "configure_mig", wraps=self.backend.configure_mig) as mutate:
+                    self.assert_error("partition_binding_unavailable", lambda: self.service.configure(
+                        lease["id"], generation=lease["generation"], request_key=f"bad-registration-{index}", plan={"enabled":True,"profiles":["3g.20gb"]}))
+                    mutate.assert_not_called()
+                current = self.service.get(lease["id"])
+                self.assertEqual((current["state"], current["runtime"], current["workload"]), ("reserved", None, None))
+                self.assertEqual(current["baseline"], lease["baseline"])
+                with self.service.store.connection() as db:
+                    self.assertEqual(tuple(db.execute("SELECT * FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone()), original)
+                    self.assertEqual(db.execute("SELECT count(*) FROM events").fetchone()[0], event_count)
+
     def test_configuration_expiry_during_driver_preflight_never_mutates(self):
         lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1001, request_key="preflight-expiry")
         read = self.p.devices.text
@@ -142,6 +174,7 @@ class Partitions(unittest.TestCase):
         self.backend.rows = disabled_rows()
         lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="captured-driver")
         self.p.devices.files["/sys/module/nvidia/srcversion"] = "12B00758E1DCB3540DF2F3A"
+        self.p.devices.files["/proc/devices"] = "Character devices:\n195 nvidia\n195 nvidiactl\n511 nvidia-uvm\n508 nvidia-caps\n\nBlock devices:\n8 sd\n"
         configure = self.backend.configure_mig
         def change(held, plan):
             self.backend.rows = configured if plan["enabled"] else disabled_rows()

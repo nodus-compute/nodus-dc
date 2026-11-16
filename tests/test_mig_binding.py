@@ -93,6 +93,66 @@ class BindingTests(unittest.TestCase):
         self.backend.snapshot = replace(self.backend.snapshot, resources=tuple(rows), observed_at=1001)
         self.assertEqual(self.binding(), before)
 
+    def test_documented_registration_layouts_preserve_exact_binding(self):
+        original = self.binding()
+        self.devices.files["/proc/devices"] = "Character devices:\n195 nvidia\n195 nvidiactl\n508 nvidia-caps\n511 nvidia-uvm\n\nBlock devices:\n8 sd\n"
+        self.assertEqual(self.binding(), original)
+        self.devices.nodes["/dev/nvidiactl"] = (196, 255)
+        with self.assertRaises(Error) as caught:
+            self.binding()
+        self.assertEqual(caught.exception.code, "partition_binding_unavailable")
+
+    def test_full_source_derived_mig_table_uses_bounded_real_reader(self):
+        # NVIDIA 580.105.08 nv-caps.c exports every table entry, even absent GPUs.
+        # This is source-derived data, not a captured /proc/devices observation.
+        lines, number = ["config 1\n", "monitor 2\n"], 3
+        for gpu in range(32):
+            for gi in range(15):
+                prefix = f"gpu{gpu}/gi{gi}"
+                lines.append(f"{prefix}/access {number}\n"); number += 1
+                for ci in range(8):
+                    lines.append(f"{prefix}/ci{ci}/access {number}\n"); number += 1
+        mapping = "".join(lines)
+        self.assertEqual((len(lines), len(mapping.encode())), (4322, 109408))
+        rows = list(self.backend.snapshot.resources)
+        rows[1] = replace(rows[1], details={**rows[1].details, "pci_bus_id":"00000000:06:00.0"})
+        for i, gi in ((2, 1), (3, 2)):
+            rows[i] = replace(rows[i], details={**rows[i].details, "gpu_instance_id":gi})
+        self.backend.snapshot = replace(self.backend.snapshot, resources=tuple(rows))
+        self.lease["baseline"] = [r.record() for r in rows]
+        self.devices.files["/proc/driver/nvidia/gpus/0000:06:00.0/information"] = "GPU UUID: GPU-aaaa\nDevice Minor: 0\n"
+        self.devices.files["/proc/devices"] = "Character devices:\n195 nvidia\n195 nvidiactl\n234 nvidia-uvm\n237 nvidia-caps\n\nBlock devices:\n8 sd\n"
+        self.devices.nodes = {"/dev/nvidia0":(195,0), "/dev/nvidiactl":(195,255), "/dev/nvidia-uvm":(234,0)}
+        for gi, minor in ((1,12), (2,21)):
+            for suffix, value in (("access",minor), ("ci0/access",minor+1)):
+                self.devices.files[f"/proc/driver/nvidia/capabilities/gpu0/mig/gi{gi}/{suffix}"] = f"DeviceFileMinor: {value}\n"
+                self.devices.nodes[f"/dev/nvidia-caps/nvidia-cap{value}"] = (237,value)
+        path = "/proc/driver/nvidia-caps/mig-minors"
+        original_text = self.devices.text
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory)/"source-derived-mig-minors"
+            captured.write_text(mapping)
+            real_open = Path.open
+            def read_open(requested, *args, **kwargs):
+                return real_open(captured if str(requested) == path else requested, *args, **kwargs)
+            with patch.object(Path, "open", read_open), patch.object(self.devices, "text", side_effect=lambda p: LinuxDevices().text(p) if p == path else original_text(p)):
+                first = self.binding()["binding"]["devices"]
+                self.assertEqual([(r["major"],r["minor"]) for r in first], [(195,0),(195,255),(234,0),(237,12),(237,13)])
+                other = observe(self.backend.snapshot, "MIG-bbbb", devices=self.devices)
+                self.assertEqual([r["minor"] for r in other["devices"][-2:]], [21,22])
+                captured.write_text(mapping + "gpu0/gi1/access 12\n")
+                with self.assertRaisesRegex(Error, "duplicate MIG capability mapping"):
+                    self.binding()
+                captured.write_text(mapping.replace("gpu0/gi14/access 129\n", "gpu0/gi14/access 12\n"))
+                with self.assertRaisesRegex(Error, "not uniquely scoped"):
+                    self.binding()
+                captured.write_text("x" * 131073)
+                with self.assertRaisesRegex(Error, "observation limit"):
+                    self.binding()
+            captured.write_text("x" * 65537)
+            with self.assertRaisesRegex(ValueError, "observation limit"):
+                LinuxDevices().text(captured)
+
     def test_captured_linux_module_source_version_preserves_exact_identity(self):
         # Recorded independently on two A100 / Linux 6.8 / 580.105.08 hosts.
         captured = "12B00758E1DCB3540DF2F3A"

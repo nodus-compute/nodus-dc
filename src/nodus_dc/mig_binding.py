@@ -59,9 +59,12 @@ class LinuxDevices:
     """Read the kernel's current device metadata without creating device nodes."""
 
     def text(self, path):
+        # NVIDIA 580 exports all 32 GPUs' 4,322 MIG mappings (109,408 bytes),
+        # including absent devices. Other metadata keeps its original bound.
+        limit = 131072 if path == "/proc/driver/nvidia-caps/mig-minors" else 65536
         with Path(path).open() as stream:
-            value = stream.read(65537)
-        if len(value) > 65536:
+            value = stream.read(limit + 1)
+        if len(value) > limit:
             raise ValueError("device metadata exceeds the observation limit")
         return value
 
@@ -92,6 +95,32 @@ def _number(value):
     if result > 2**32 - 1:
         raise ValueError("device number exceeds the supported range")
     return result
+
+
+def character_device_majors(devices):
+    """Resolve only NVIDIA's documented unified or split registrations."""
+    majors, section = {}, None
+    names = {"nvidia-frontend", "nvidia", "nvidiactl", "nvidia-uvm", "nvidia-caps"}
+    for line in devices.text("/proc/devices").splitlines():
+        if line.endswith("devices:"):
+            section = line
+        elif line.strip() and section == "Character devices:":
+            number, name = line.split()
+            if name in names:
+                if name in majors:
+                    raise ValueError("duplicate driver device major")
+                majors[name] = _number(number)
+    if not {"nvidia-uvm", "nvidia-caps"} <= majors.keys():
+        raise ValueError("required NVIDIA character-device drivers are missing")
+    layout = majors.keys() & {"nvidia-frontend", "nvidia", "nvidiactl"}
+    if layout == {"nvidia-frontend"}:
+        frontend = majors["nvidia-frontend"]
+    elif layout == {"nvidia", "nvidiactl"} and majors["nvidia"] == majors["nvidiactl"]:
+        frontend = majors["nvidia"]
+    else:
+        raise ValueError("NVIDIA character-device registration layout is incomplete or ambiguous")
+    # Internal normalization preserves existing binding fields and digests.
+    return {"nvidia-frontend": frontend, "nvidia-uvm": majors["nvidia-uvm"], "nvidia-caps": majors["nvidia-caps"]}
 
 
 def _scope(snapshot, resource_id):
@@ -189,18 +218,7 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
             raise ValueError("PCI and GPU UUID identities disagree")
         minor = _number(physical["Device Minor"])
 
-        majors, section = {}, None
-        for line in devices.text("/proc/devices").splitlines():
-            if line.endswith("devices:"):
-                section = line
-            elif line.strip() and section == "Character devices:":
-                number, name = line.split()
-                if name in {"nvidia-frontend", "nvidia-uvm", "nvidia-caps"}:
-                    if name in majors:
-                        raise ValueError("duplicate driver device major")
-                    majors[name] = _number(number)
-        if set(majors) != {"nvidia-frontend", "nvidia-uvm", "nvidia-caps"}:
-            raise ValueError("required NVIDIA character-device drivers are missing")
+        majors = character_device_majors(devices)
 
         mapping = {}
         for line in devices.text("/proc/driver/nvidia-caps/mig-minors").splitlines():
