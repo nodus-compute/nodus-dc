@@ -43,10 +43,15 @@ class Backend(BaseBackend):
 
 class Executor:
     """Declared fake at the runtime/enforcement seam; it qualifies no real tuple."""
-    def __init__(self, clock): self.clock=clock; self.continuous=True; self.clean=True; self.verified=[]
+    def __init__(self, clock):
+        self.clock=clock; self.continuous=True; self.clean=True; self.verified=[]
+        self.accounted=True; self.accounting=[]
     def qualification(self, binding):
         return {"qualified":True,"continuous_configuration_authority":self.continuous,"runtime_sha256":"b"*64,"accelerator":"a100-40gb"}
     def host_capacity(self): return {"cpu_millis":4000,"memory_bytes":8*1024**3,"scratch_bytes":8*1024**3}
+    def verify_host_accounting(self, capacity, held, scope):
+        self.accounting.append((capacity, held, scope))
+        return self.accounted
     def prepare_reservation(self, lease, resources): return {"enforcement_ready":True,"synthetic":True}
     def verify_reservation(self, lease, reservation): return True
     def check_execution(self, lease, request): return True
@@ -86,6 +91,56 @@ class Partitions(unittest.TestCase):
     def assert_error(self,code,callback):
         with self.assertRaises(Error) as exc: callback()
         self.assertEqual(exc.exception.code,code)
+
+    def test_shared_host_budget_report_and_atomic_claim_refuse_unaccounted_work(self):
+        resources = {"cpu_millis":1000,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2}
+        local = self.service.reserve(resources=[A], mode="hardware_partition", expires_at=1400,
+                                     request_key="budget-local", host_resources=resources)
+        server = BridgeUnixServer(str(self.root/"budget.sock"), self.service, "fixture-"+"x"*40, owner_uid=os.geteuid())
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        def request(body):
+            connection = UnixHTTPConnection(server.path)
+            try:
+                connection.request("POST", "/v2/bridge/partitions/offers", json.dumps(body).encode(),
+                                   {"Authorization":"Bearer "+server.bridge_token})
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally: connection.close()
+        try:
+            status, report = request({"include_host_budget":True})
+            self.assertEqual(status, 200)
+            self.assertEqual(report["host_budget"], {"capacity":self.executor.host_capacity(), "local_reserved":resources})
+            self.assertEqual([o["partition"]["resource_id"] for o in report["offers"]], [B])
+            self.assertEqual(set(request({})[1]), {"offers"})
+            self.assertEqual(request({"include_host_budget":False})[0], 400)
+            capacity, held, scope = self.executor.accounting[-1]
+            self.assertEqual((capacity, [(r["lease"]["id"],r["resources"]) for r in held]),
+                             (self.executor.host_capacity(), [(local["id"],resources)]))
+            self.assertEqual(scope["authority_incarnation"], report["offers"][0]["partition"]["authority_incarnation"])
+            self.assertEqual(scope["configurations"][0]["generation"], report["offers"][0]["partition"]["configuration_generation"])
+            frozen = self.request()
+            self.executor.accounted = False  # unmanaged work or lost enforced ownership boundary
+            self.assertEqual(request({"include_host_budget":True}), (200,{"offers":[],"host_budget":None}))
+            self.assert_error("host_resources_unaccounted", lambda:self.p.claim(**frozen))
+            self.assertFalse(self.p.inspect(**frozen)["held"])
+            self.executor.accounted = True
+            with patch.object(self.executor, "verify_host_accounting", None):
+                self.assertEqual(request({"include_host_budget":True}), (200,{"offers":[],"host_budget":None}))
+                self.assertEqual(request({}), (200,{"offers":[]}))
+                self.assert_error("host_resources_unaccounted", lambda:self.p.claim(**frozen))
+            borrowed = self.p.claim(**frozen)["lease"]
+            self.assertEqual(request({"include_host_budget":True})[1]["host_budget"]["local_reserved"], resources)
+            self.assertEqual(sorted((r["lease"]["owner"],r["resources"]) for r in self.executor.accounting[-1][1]),
+                             [("external",borrowed["resources"]),("local",resources)])
+            self.executor.accounted = False
+            self.assertFalse(self.p.check(**borrowed)["authorized"])
+            self.assertTrue(self.p.inspect(**borrowed)["held"])
+            self.assertEqual(self.p.reclaim(**borrowed)["lease"], borrowed)
+            self.assertTrue(self.p.complete(lease=borrowed,cleanup_verified=True)["released"])
+            self.assertEqual(self.service.get(local["id"])["state"], "reserved")
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
 
     def test_complete_multi_gpu_offer_report_is_bounded_without_truncation(self):
         host, parent, child = self.backend.rows[:3]
