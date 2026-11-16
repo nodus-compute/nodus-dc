@@ -35,7 +35,7 @@ For standalone inference, follow the [versioned vLLM and SGLang recipes](serving
 
 ## Offline build and install
 
-Python 3.11+ is required. Runtime/build have no third-party Python dependencies. Build uses only the standard library and produces deterministic wheel/sdist archives:
+Python 3.11+ is required. Runtime/build have no third-party Python dependencies. From an unpacked source archive or repository checkout, build deterministic wheel/sdist archives using only the standard library:
 
 ```sh
 python3 build_backend.py

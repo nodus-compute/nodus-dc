@@ -15,14 +15,24 @@ end-to-end qualification are still in progress; see the [support matrix](docs/su
 Use a Linux GPU host with a supported NVIDIA driver, Docker and NVIDIA Container
 Toolkit. Run as the trusted host operator with GPU and Docker permissions.
 
-Download a [release](https://github.com/nodus-compute/nodus-dc/releases), or build
-this checkout without third-party Python dependencies:
+Download these three files from [dev14](https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev14)
+into one empty directory:
+
+- [GPU management package](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/nodus_datacenter-0.1.0.dev14-py3-none-any.whl)
+- [Installer (`install.py`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/install.py)
+- [Checksums (`SHA256SUMS`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/SHA256SUMS)
+
+Open a Linux terminal in that directory. The paths below normally require a root
+shell. Verify the downloaded files, then install and start the dashboard:
 
 ```sh
-python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev14-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+sha256sum --check --ignore-missing SHA256SUMS &&
+python3 install.py install --wheel nodus_datacenter-0.1.0.dev14-py3-none-any.whl \
+  --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc &&
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc serve
 ```
+
+To build from source, follow [offline build and install](docs/operator-workflows.md#offline-build-and-install).
 
 Open **http://127.0.0.1:7441/** and enter the token from the file path printed by
 the daemon. For a remote host, forward port 7441 over SSH. The token stays in
