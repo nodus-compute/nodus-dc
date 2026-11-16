@@ -1,7 +1,10 @@
 # Partition lending: experimental implementation
 
-This branch is not released. Connected lending still reserves a whole host. It
-does not yet lend an idle MIG instance alongside an operator workload.
+The package includes experimental device observation, local partition authority
+and a private permission protocol. Their production execution providers remain
+unset. Connected lending still reserves a whole host; it does not yet lend an
+idle MIG instance alongside an operator workload. See the
+[private partition contract](partition-authority-v2.md) for the implemented seams.
 
 The first implemented prerequisite is read-only device evidence. The internal
 `Service.partition_binding(lease_id, generation=...)` seam holds the existing
@@ -30,7 +33,8 @@ This digest is evidence, not an attestation or a capability token. Driver
 metadata identifies a build, not a particular module-load incarnation. Identical
 recycled identifiers cannot be distinguished by this observation: admission
 also needs a durable monotonic configuration generation under retained authority.
-The current observer does not implement that generation. It neither
+The partition authority now records that generation separately; the observer
+alone does not establish continuous configuration ownership. It neither
 protects against host root nor proves driver/runtime compatibility. The future
 executor must match a separately qualified runtime/driver tuple and revalidate
 this identity under authority immediately before using any grant. The current
@@ -41,13 +45,13 @@ Nodus runtime does not have a qualified MIG execution path.
 1. Port and qualify the assigned-MIG gVisor implementation against Nodus's exact
    runtime pin, preserving its existing patches and driver checks. Test hostile
    sibling access and teardown on real hardware.
-2. Negotiate an explicit partition protocol across the platform, node and local
-   authority. Bind claim, admission, renewal, cleanup and replay to the exact
-   partition evidence, local generation, policy revision and execution limits.
-   A legacy whole-host caller must never receive a partition claim.
-3. Reserve the partition transactionally with CPU, RAM and scratch limits; allow
-   disjoint operator leases while preventing parent reconfiguration. Implement
-   scoped teardown that cannot reset the shared parent GPU.
+2. Complete and qualify the node execution path using the existing private v2
+   protocol. Preserve exact partition evidence, local generation, policy revision
+   and execution limits throughout admission, cleanup and replay. A legacy
+   whole-host caller must never receive a partition claim.
+3. Install qualified resource enforcement and scoped teardown for the existing
+   transactional GPU/CPU/RAM/scratch reservations. Verify that disjoint operator
+   leases remain protected and teardown never resets the shared parent GPU.
 4. Advertise and price the exact leased partition, attribute actual work, and
    reconcile borrower charges and operator compensation from the frozen rate.
 5. Verify one complete cycle: operator training on A; borrower inference on B;
