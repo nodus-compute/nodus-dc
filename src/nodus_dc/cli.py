@@ -58,9 +58,12 @@ def parser():
     reserve.add_argument("--mode", choices=["exclusive_host", "exclusive_gpu", "hardware_partition", "gpu_configuration", "trusted_mps"], required=True)
     reserve.add_argument("--ttl-seconds", type=int, required=True)
     reserve.add_argument("--request-key", default=None)
+    reserve.add_argument("--cpu-millis", type=int, help="experimental enforced host CPU reservation")
+    reserve.add_argument("--memory-bytes", type=int, help="experimental enforced host RAM limit")
+    reserve.add_argument("--scratch-bytes", type=int, help="memory-backed scratch within the RAM limit")
     reserve.add_argument("--required-privacy", choices=REQUIREMENTS, default="trusted_host",
                          help="host_confidential refuses admission without an attested execution backend")
-    for command in ("start", "drain", "release", "configure", "recover", "native-handoff", "native-return"):
+    for command in ("start", "drain", "release", "configure", "adopt-partitions", "recover", "native-handoff", "native-return"):
         q = sub.add_parser(command)
         q.add_argument("lease_id")
         q.add_argument("--generation", type=int, required=True)
@@ -130,19 +133,24 @@ def main(argv=None):
                               args.command == "connection" and args.connection_action == "disconnect")
         request_key = getattr(args, "request_key", None) or str(uuid.uuid4())
         if args.command in {"inventory", "status", "reconcile"}:
-            result = getattr(service, args.command)()
+            result = getattr(service, args.command.replace("-", "_"))()
         elif args.command == "reserve":
+            host_resources = None
+            if any(v is not None for v in (args.cpu_millis,args.memory_bytes,args.scratch_bytes)):
+                if any(v is None for v in (args.cpu_millis,args.memory_bytes,args.scratch_bytes)):
+                    raise Error("invalid_request", "host budget requires CPU, memory and scratch values together", 400)
+                host_resources = {"cpu_millis":args.cpu_millis,"memory_bytes":args.memory_bytes,"scratch_bytes":args.scratch_bytes}
             result = service.reserve(resources=args.resource, mode=args.mode,
                                      expires_at=time.time() + args.ttl_seconds, request_key=request_key,
-                                     required_privacy=args.required_privacy)
+                                     required_privacy=args.required_privacy, host_resources=host_resources)
         elif args.command == "start":
             workload = json.load(sys.stdin) if args.workload == "-" else json.loads(Path(args.workload).read_text())
             result = service.start(args.lease_id, generation=args.generation, request_key=request_key, workload=workload)
         elif args.command == "configure":
             result = service.configure(args.lease_id, generation=args.generation, request_key=request_key,
                                        plan=json.loads(Path(args.plan).read_text()))
-        elif args.command in {"drain", "release", "recover"}:
-            result = getattr(service, args.command)(args.lease_id, generation=args.generation, request_key=request_key)
+        elif args.command in {"drain", "release", "recover", "adopt-partitions"}:
+            result = getattr(service, args.command.replace("-", "_"))(args.lease_id, generation=args.generation, request_key=request_key)
         elif args.command == "native-return":
             if args.allocation_authority != "standalone":
                 raise Error("observe_only", "native return requires standalone allocation authority", 403)

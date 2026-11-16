@@ -73,8 +73,16 @@ class Commands:
         if args[:2] == ["docker", "create"]:
             labels = {args[i+1].split("=", 1)[0]: args[i+1].split("=", 1)[1]
                       for i, a in enumerate(args) if a == "--label"}
+            host = {"DeviceRequests": []}
+            if "--cpu-quota" in args:
+                host.update({field:int(args[args.index(option)+1]) for field,option in
+                    (("CpuQuota","--cpu-quota"),("CpuPeriod","--cpu-period"),("Memory","--memory"),
+                     ("MemorySwap","--memory-swap"),("PidsLimit","--pids-limit"))})
+                host.update(ReadonlyRootfs=True, IpcMode="private", ShmSize=int(args[args.index("--shm-size")+1]),
+                            Tmpfs={"/tmp":args[args.index("--tmpfs")+1].split(":",1)[1]})
+                if getattr(self,"wrong_memory_limit",False): host["Memory"]=0
             self.containers = [{"Id": "b"*64, "Config": {"Labels": labels}, "State": {"Running": True},
-                                "HostConfig": {"DeviceRequests": []}}]
+                                "HostConfig": host}]
             return "b" * 64
         if args[:2] in [["docker", "start"], ["docker", "stop"]]:
             return ""
@@ -134,6 +142,24 @@ class BackendTests(unittest.TestCase):
         return {"id": "lease-a", "generation": 1, "mode": mode, "resources": ["GPU-aaaa"],
                 "baseline": [r.record() for r in self.backend.inventory().resources],
                 "workload": {"image": IMAGE, "command": ["python", "model.py"], "entrypoint": "/usr/bin/env"}}
+
+    def test_budgeted_launch_encodes_hard_cpu_memory_and_tmpfs_limits(self):
+        lease=self.lease(); lease["host_resources"]={"cpu_millis":1250,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2}
+        self.backend.start(lease)
+        command=next(c for c in self.cmd.calls if c[:2]==["docker","create"])
+        self.assertEqual(command[command.index("--cpu-quota")+1],"125000")
+        self.assertEqual(command[command.index("--memory")+1],str(2*1024**3))
+        self.assertEqual(command[command.index("--memory-swap")+1],str(2*1024**3))
+        self.assertEqual(command[command.index("--tmpfs")+1],"/tmp:rw,exec,nosuid,nodev,size=67108864")
+        self.assertEqual(command[command.index("--shm-size")+1],str(64*1024**2))
+        self.assertEqual(command.count("--tmpfs"),1)
+
+    def test_missing_resolved_host_limit_never_starts_created_container(self):
+        lease=self.lease(); lease["host_resources"]={"cpu_millis":1000,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2}
+        self.cmd.wrong_memory_limit=True
+        with self.assertRaises(Error) as caught: self.backend.start(lease)
+        self.assertEqual(caught.exception.code,"host_resources_unenforced")
+        self.assertFalse(any(command[:2]==["docker","start"] for command in self.cmd.calls))
 
     def test_observe_mode_cannot_allocate_even_empty_hardware(self):
         self.backend.allocation_authority = "observe"

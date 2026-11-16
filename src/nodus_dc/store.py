@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS bridge_policy(
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), enabled INTEGER NOT NULL,
  policy_revision INTEGER NOT NULL, consent_reference TEXT NOT NULL,
  authorization_id TEXT NOT NULL, expires_at REAL NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS partition_configurations(
+ parent_uuid TEXT PRIMARY KEY, generation INTEGER NOT NULL, state TEXT NOT NULL,
+ boot_id TEXT, binding TEXT, operation_id TEXT NOT NULL, error TEXT, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS partition_claims(
+ platform_lease_id TEXT NOT NULL, platform_epoch INTEGER NOT NULL,
+ request TEXT NOT NULL, request_hash TEXT NOT NULL, lease_id TEXT, generation INTEGER NOT NULL,
+ retired INTEGER NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+ PRIMARY KEY(platform_lease_id,platform_epoch));
+CREATE TABLE IF NOT EXISTS host_reservations(
+ lease_id TEXT PRIMARY KEY REFERENCES leases(id), cpu_millis INTEGER NOT NULL,
+ memory_bytes INTEGER NOT NULL, scratch_bytes INTEGER NOT NULL, enforcement TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS platform_claims(
  platform_lease_id TEXT NOT NULL, platform_epoch INTEGER NOT NULL,
  lease_id TEXT, generation INTEGER, policy_revision INTEGER,
@@ -45,6 +56,7 @@ CREATE TABLE IF NOT EXISTS platform_claims(
 
 class Store:
     def __init__(self, path: str | Path):
+        self.fence = None
         self.path = str(Path(path).expanduser().resolve())
         parent = Path(self.path).parent
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -53,7 +65,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-            if version not in {"1", "2", "3"}:
+            if version not in {"1", "2", "3", "4"}:
                 raise Error("schema_version", f"unsupported state schema {version}", 503)
         os.chmod(self.path, 0o600)
 
@@ -79,7 +91,13 @@ class Store:
                 if now + 1 < last:
                     raise Error("clock_regression", "host clock moved backwards; admissions are held", 503)
                 db.execute("UPDATE meta SET value=? WHERE key='last_wall_time'", (str(max(now, last)),))
+                if self.fence is not None:
+                    self.fence.verify(db)
+                elif db.execute("SELECT 1 FROM meta WHERE key='authority_fence'").fetchone():
+                    raise Error("authority_fence_unavailable", "the independent authority registry is required", 503)
                 yield db
+                if self.fence is not None:
+                    self.fence.advance(db)
                 db.commit()
             except BaseException:
                 db.rollback()

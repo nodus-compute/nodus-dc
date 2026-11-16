@@ -262,14 +262,14 @@ class Handler(BaseHTTPRequestHandler):
         if not expected or not hmac.compare_digest(supplied, "Bearer " + expected):
             raise Error("unauthorized", "a valid scoped bearer credential is required", 401)
 
-    def body(self):
+    def body(self, limit=1024 * 1024):
         if self.headers.get("Transfer-Encoding"):
             raise Error("invalid_body", "transfer encoding is unsupported", 400)
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raise Error("invalid_body", "invalid content length", 400) from None
-        if not 0 <= length <= 1024 * 1024:
+        if not 0 <= length <= limit:
             raise Error("invalid_body", "request body exceeds the limit", 413)
         try:
             value = json.loads(self.rfile.read(length) or b"{}", object_pairs_hook=_object,
@@ -282,7 +282,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def route(self, method):
         path = urlsplit(self.path).path
-        bridge = path.startswith("/v1/bridge/")
+        bridge = path.startswith(("/v1/bridge/", "/v2/bridge/"))
         if self.server.bridge_only and not bridge:
             raise Error("not_found", "the bridge socket exposes only bridge authority routes", 404)
         if bridge and not self.server.bridge_only:
@@ -305,7 +305,12 @@ class Handler(BaseHTTPRequestHandler):
                 from .handback import terminal_retirement
                 return terminal_retirement(service, parts[3])
         if method == "POST":
-            body = self.body()
+            body = self.body(limit=65536 if path.startswith("/v2/bridge/") else 1024*1024)
+            if path.startswith("/v2/bridge/partitions/"):
+                operation = path.removeprefix("/v2/bridge/partitions/")
+                methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete")}
+                if operation not in methods: raise Error("not_found", "partition operation does not exist", 404)
+                return methods[operation](**body)
             direct = {"/v1/reserve": service.reserve, "/v1/reconcile": service.reconcile,
                       "/v1/bridge/status": service.bridge_status,
                       "/v1/bridge/policy": service.bridge_policy,
@@ -319,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split("/")
             if len(parts) == 5 and parts[1:3] == ["v1", "leases"]:
                 operations = {"start": service.start, "drain": service.drain, "release": service.release,
-                              "configure": service.configure, "recover": service.recover, "native-handoff": service.native_handoff}
+                              "configure": service.configure, "adopt-partitions": service.adopt_partitions, "recover": service.recover, "native-handoff": service.native_handoff}
                 if parts[4] in operations:
                     return operations[parts[4]](parts[3], **body)
         raise Error("not_found", "API route does not exist", 404)

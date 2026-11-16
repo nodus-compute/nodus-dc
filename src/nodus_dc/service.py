@@ -30,6 +30,12 @@ class Service:
         self.clock = clock
         self.bridge_enabled = bridge_enabled
         self.bridge_health_error = None
+        fence_path = backend.partition_fence_path() if hasattr(backend, "partition_fence_path") else None
+        if fence_path is not None:
+            from .authority_fence import AuthorityFence
+            self.store.fence = AuthorityFence(fence_path, store.path)
+        from .partitions import PartitionAuthority
+        self.partitions = PartitionAuthority(self)
         self.bridge_authorization_check = None
         self.lock_path = str(Path(store.path).with_name("host.lock"))
 
@@ -49,6 +55,13 @@ class Service:
                 os.close(physical)
 
     def _inventory(self):
+        try:
+            return self._inventory_observed()
+        except Exception:
+            self.partitions.invalidate_all("configuration_observation_unavailable")
+            raise
+
+    def _inventory_observed(self):
         snapshot = self.backend.inventory()
         if not isinstance(snapshot, Snapshot):
             raise Error("invalid_inventory", "backend did not provide a typed inventory", 503)
@@ -87,6 +100,7 @@ class Service:
                            (row["id"], row["parent"], row["kind"], canonical(row), record["revision"], now))
             db.execute("INSERT INTO meta VALUES('inventory',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (canonical(record),))
+        self.partitions.observe_inventory(snapshot)
         return record
 
     def inventory(self):
@@ -163,7 +177,7 @@ class Service:
                         and not db.execute("SELECT 1 FROM leases WHERE owner='external'").fetchone())
                     db.execute("INSERT INTO meta VALUES('participation_history',?)",
                                ("never_enabled" if pristine else "unknown",))
-                db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+                db.execute("UPDATE meta SET value='3' WHERE key='schema_version' AND CAST(value AS INTEGER)<3")
             seen = db.execute("SELECT 1 FROM meta WHERE key='connected_mode_seen'").fetchone()
             history = json.loads(prior[0]) if prior else {
                 "eligible": credential_binding is not None and not seen, "binding": credential_binding,
@@ -225,7 +239,7 @@ class Service:
             raise Error("stale_policy", "operator policy revision changed")
         return dict(row)
 
-    def _reserve(self, resources, mode, expires_at, request_key, *, owner="local", authorization=None):
+    def _reserve(self, resources, mode, expires_at, request_key, *, owner="local", authorization=None, host_resources=None):
         if not isinstance(resources, list) or not resources or any(not isinstance(r, str) for r in resources):
             raise Error("invalid_request", "resources must be a nonempty list of identifiers", 400)
         if len(set(resources)) != len(resources):
@@ -237,6 +251,7 @@ class Service:
             raise Error("unsupported_mode", "allocation mode is unsupported; weaker isolation will not be substituted", 400)
         payload = {"resources": resources, "mode": mode, "expires_at": expires_at,
                    "owner": owner, "authorization": authorization}
+        if host_resources is not None: payload["host_resources"] = host_resources
         request_hash = digest(payload)
         now = self.clock()
         with self.store.transaction(now) as db:
@@ -274,6 +289,8 @@ class Service:
             for other in live:
                 if overlap(set(resources), set(other["resources"]), parents):
                     raise Error("allocation_conflict", f"resource remains held by lease {other['id']}")
+            if host_resources is None and db.execute("SELECT 1 FROM host_reservations r JOIN leases l ON l.id=r.lease_id WHERE l.state!='released' LIMIT 1").fetchone():
+                raise Error("host_resources_required", "concurrent ownership requires a declared enforced host budget", 409)
             lease_id = str(uuid.uuid4())
             generation = Store.generation(db)
             baseline = [json.loads(row["record"]) for r, row in records.items()
@@ -283,6 +300,8 @@ class Service:
                        (lease_id, generation, owner, mode, "reserved", canonical(resources), now, now, expires_at,
                         request_key, request_hash, canonical(authorization) if authorization else None, canonical(baseline)))
             lease = Store.lease(db, lease_id)
+            if host_resources is not None:
+                self.partitions.reserve_local(db, lease, host_resources)
             if owner == "external":
                 db.execute("INSERT INTO platform_claims VALUES(?,?,?,?,?,0,?,?)",
                            (authorization["platform_lease_id"], authorization["platform_epoch"], lease_id,
@@ -290,11 +309,12 @@ class Service:
             Store.event(db, now, lease, "reserve", payload)
             return lease
 
-    def reserve(self, *, resources, mode, expires_at, request_key, required_privacy="trusted_host"):
+    def reserve(self, *, resources, mode, expires_at, request_key, required_privacy="trusted_host", host_resources=None):
         privacy.require(required_privacy)
         with self.authority():
             self._inventory()
-            return self._reserve(resources, mode, expires_at, request_key)
+            if host_resources is not None: self.partitions.ensure_durable()
+            return self._reserve(resources, mode, expires_at, request_key, host_resources=host_resources)
 
     def start(self, lease_id, *, generation, request_key, workload):
         if not isinstance(workload, dict):
@@ -309,6 +329,13 @@ class Service:
                     raise Error("external_execution_delegated", "external work must run through the trusted platform bridge", 403)
                 if lease["state"] != "reserved" or lease["expires_at"] <= now:
                     raise Error("lease_not_startable", "lease is expired or no longer reserved")
+                reservation = db.execute("SELECT * FROM host_reservations WHERE lease_id=?", (lease_id,)).fetchone()
+                if not reservation and db.execute("SELECT 1 FROM host_reservations r JOIN leases l ON l.id=r.lease_id WHERE l.state!='released' AND l.id!=? LIMIT 1", (lease_id,)).fetchone():
+                    raise Error("host_resources_required", "unbudgeted work cannot start alongside a budgeted owner", 409)
+                if reservation:
+                    lease["host_resources"] = {k: reservation[k] for k in ("cpu_millis", "memory_bytes", "scratch_bytes")}
+                    from .host_limits import docker_arguments
+                    docker_arguments(lease["host_resources"], workload)
                 self.backend.validate_workload(workload, lease)
                 directories = outputs(workload, lease["mode"])
                 readonly = inputs(workload, lease["mode"])
@@ -324,6 +351,8 @@ class Service:
                         require_disjoint_outputs([path], protected=held_outputs)
                 lease = Store.update(db, lease, now, state="starting", workload=workload)
                 Store.event(db, now, lease, "start_intent", {"workload": workload})
+                if reservation:
+                    lease["host_resources"] = {k: reservation[k] for k in ("cpu_millis", "memory_bytes", "scratch_bytes")}
             try:
                 runtime = self.backend.start(lease)
                 if not isinstance(runtime, dict) or runtime.get("lease_id") != lease_id or runtime.get("generation") != generation:
@@ -369,6 +398,7 @@ class Service:
         from .partitioning import validate_plan
         validate_plan(plan)
         with self.authority():
+            if self.store.fence is not None: self.partitions.ensure_durable()
             with self.store.transaction(self.clock()) as db:
                 lease = Store.lease(db, lease_id)
                 if self._operation(db, lease, generation, "configure", request_key, plan):
@@ -377,6 +407,7 @@ class Service:
                         or len(lease["resources"]) != 1 or lease["state"] != "reserved"
                         or lease["expires_at"] <= self.clock()):
                     raise Error("configuration_lease_required", "configuration needs a current reserved GPU maintenance lease")
+                self.partitions.begin_configuration(db, lease, request_key)
                 lease = Store.update(db, lease, self.clock(), state="starting", workload={"mig_plan": plan}, runtime=None)
                 Store.event(db, self.clock(), lease, "configuration_intent", plan)
             try:
@@ -388,14 +419,45 @@ class Service:
             except Exception as exc:
                 with self.store.transaction(self.clock()) as db:
                     lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="quarantined", error=str(exc))
+                    self.partitions.quarantine(db, lease["resources"][0], "configuration_change_failed")
                     Store.event(db, self.clock(), lease, "configuration_failed", {"error": str(exc)})
                 raise Error("configuration_uncertain", "MIG change needs recovery; GPU remains held", 503) from exc
             with self.store.transaction(self.clock()) as db:
                 lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="reserved", baseline=baseline,
                                      workload=None, runtime={"lease_id": lease_id, "generation": generation,
                                      "configuration": plan}, error=None)
+                self.partitions.commit_configuration(db, lease, snapshot)
                 Store.event(db, self.clock(), lease, "configuration_verified", {"plan": plan, "baseline": baseline})
                 return lease
+
+    def adopt_partitions(self, lease_id, *, generation, request_key):
+        """Explicitly adopt a drained parent; observation alone never advances authority."""
+        with self.authority():
+            self.partitions.ensure_durable()
+            with self.store.transaction(self.clock()) as db:
+                lease = Store.lease(db, lease_id)
+                self._fence(lease, generation)
+                if (lease["owner"] != "local" or lease["mode"] != "gpu_configuration"
+                        or lease["state"] != "reserved" or len(lease["resources"]) != 1
+                        or lease["expires_at"] <= self.clock()):
+                    raise Error("configuration_lease_required", "adoption needs an unused live parent maintenance lease", 409)
+                if self._operation(db,lease,generation,"adopt_partitions",request_key,{}): return lease
+                if not self.partitions.begin_configuration(db,lease,request_key):
+                    raise Error("authority_fence_unavailable", "independent configuration registry is required", 503)
+                lease = Store.update(db,lease,self.clock(),state="starting")
+            snapshot = self.backend.inventory()
+            self._inventory()
+            try:
+                with self.store.transaction(self.clock()) as db:
+                    if lease["expires_at"] <= self.clock(): raise Error("lease_expired", "maintenance authority expired during observation", 409)
+                    self.partitions.commit_configuration(db,lease,snapshot)
+                    Store.update(db,Store.lease(db,lease_id),self.clock(),state="reserved")
+            except Exception:
+                with self.store.transaction(self.clock()) as db:
+                    self.partitions.quarantine(db,lease["resources"][0],"configuration_adoption_failed")
+                    Store.update(db,Store.lease(db,lease_id),self.clock(),state="quarantined",error="configuration_adoption_failed")
+                raise
+            return self.get(lease_id)
 
     def recover(self, lease_id, *, generation, request_key):
         """Fence uncertain old commands by a verified host boot transition.
@@ -460,6 +522,9 @@ class Service:
                 plan = (lease["workload"] or {}).get("mig_plan")
                 if plan is None:
                     raise Error("missing_recovery_plan", "no journaled MIG recovery plan exists")
+                if self.store.fence is not None: self.partitions.ensure_durable()
+                with self.store.transaction(self.clock()) as db:
+                    self.partitions.begin_configuration(db, lease, request_key)
                 snapshot = self.backend.configure_mig(lease, plan)
                 rows = [r.record() for r in snapshot.resources]
                 parents = {r["id"]: r["parent"] for r in rows}
@@ -469,6 +534,8 @@ class Service:
             with self.store.transaction(self.clock()) as db:
                 lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="draining", baseline=baseline,
                                      runtime={"lease_id": lease_id, "generation": generation, "recovery_boot_id": new_boot})
+                if lease["mode"] == "gpu_configuration":
+                    self.partitions.commit_configuration(db,lease,snapshot)
                 Store.event(db, self.clock(), lease, "recovery_execution_fenced", {"previous_boot_id": old_boot, "boot_id": new_boot})
             return self._finish_local(lease)
 
@@ -598,7 +665,7 @@ class Service:
                 # The same commit records exposure before publishing any enabled policy.
                 # Disabled/current state can never prove absence of past participation.
                 db.execute("INSERT OR REPLACE INTO meta VALUES('participation_history','ever_enabled')")
-                db.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+                db.execute("UPDATE meta SET value='3' WHERE key='schema_version' AND CAST(value AS INTEGER)<3")
             old = db.execute("SELECT * FROM bridge_policy WHERE singleton=1").fetchone()
             values = (int(enabled), policy_revision, consent_reference, authorization_id, expires_at)
             if old and policy_revision <= old["policy_revision"]:
@@ -642,6 +709,11 @@ class Service:
         return platform_lease_id, platform_epoch
 
     @staticmethod
+    def _v1_protocol(db, identity):
+        if db.execute("SELECT 1 FROM partition_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone():
+            raise Error("platform_protocol_conflict", "platform tuple belongs to the v2 partition protocol", 409)
+
+    @staticmethod
     def _claim_response(row, lease=None):
         return {"lease_id": row["lease_id"], "generation": row["generation"] or 0,
                 "platform_lease_id": row["platform_lease_id"], "platform_epoch": row["platform_epoch"],
@@ -676,6 +748,7 @@ class Service:
         if not self.bridge_enabled:
             raise Error("bridge_disabled", "trusted platform bridge is not configured", 403)
         with self.store.connection() as db:
+            self._v1_protocol(db, identity)
             row = db.execute("SELECT * FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone()
             if row is None:
                 return {"held": False, "generation": 0, "retired": False, "platform_lease_id": identity[0],
@@ -700,6 +773,7 @@ class Service:
             raise Error("bridge_disabled", "trusted platform bridge is not configured", 403)
         with self.authority():
             with self.store.connection() as db:
+                self._v1_protocol(db, identity)
                 row = db.execute("SELECT * FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone()
                 if row:
                     if row["policy_revision"] is not None and row["policy_revision"] != policy_revision:
@@ -732,6 +806,7 @@ class Service:
         if not self.bridge_enabled:
             raise Error("bridge_disabled", "trusted platform bridge is not configured", 403)
         with self.store.connection() as db:
+            self._v1_protocol(db, identity)
             row = db.execute("SELECT * FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone()
         if row is None or row["retired"] or not row["lease_id"]:
             return {"authorized": False, "reason": "claim_absent_or_retired"}
@@ -752,6 +827,7 @@ class Service:
         if not self.bridge_enabled:
             raise Error("bridge_disabled", "trusted platform bridge is not configured", 403)
         with self.authority(), self.store.transaction(self.clock()) as db:
+            self._v1_protocol(db, identity)
             row = db.execute("SELECT * FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone()
             if row is None:
                 db.execute("INSERT INTO platform_claims VALUES(?,?,NULL,NULL,NULL,1,?,?)", (*identity, self.clock(), self.clock()))
@@ -777,6 +853,7 @@ class Service:
             raise Error("incomplete_cleanup", "bridge did not confirm exact workload termination and cleanup")
         with self.authority():
             with self.store.transaction(self.clock()) as db:
+                self._v1_protocol(db, identity)
                 row = db.execute("SELECT * FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", identity).fetchone()
                 if row is None:
                     db.execute("INSERT INTO platform_claims VALUES(?,?,NULL,NULL,NULL,1,?,?)", (*identity, self.clock(), self.clock()))
