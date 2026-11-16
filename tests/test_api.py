@@ -78,6 +78,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("/v1/bridge/status", token=self.bridge.bridge_token)[0], 200)
         self.assertEqual(self.call("/v1/bridge/status", token=self.bridge.bridge_token, transport="tcp")[0], 403)
 
+    def test_v2_is_bridge_only_and_rejects_unknown_fields(self):
+        path = "/v2/bridge/partitions/offers"
+        self.assertEqual(self.call(path,token=self.server.local_token,transport="unix")[0],401)
+        self.assertEqual(self.call(path,token=self.bridge.bridge_token,transport="local_unix")[0],403)
+        self.assertEqual(self.call(path,token=self.bridge.bridge_token,transport="tcp")[0],403)
+        self.assertEqual(self.call(path,{"unexpected":True},token=self.bridge.bridge_token,transport="unix")[0],400)
+        self.assertEqual(self.call(path,raw='{"x":0,"x":1}',token=self.bridge.bridge_token,transport="unix")[0],400)
+        connection=UnixHTTPConnection(self.bridge.path)
+        connection.putrequest("POST",path)
+        connection.putheader("Content-Length","65537")
+        connection.putheader("Authorization","Bearer "+self.bridge.bridge_token)
+        connection.endheaders()
+        response=connection.getresponse(); self.assertEqual(response.status,413); response.read(); connection.close()
+        self.assertEqual(self.call(path,token=self.bridge.bridge_token,transport="unix"),(200,{"offers":[]}))
+
     def test_daemon_maintenance_runs_expiry_without_inventory_scan(self):
         service = self.server.service
         lease = service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu", expires_at=1001, request_key="expiry")

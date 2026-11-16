@@ -216,6 +216,13 @@ class Connection:
                 self.service.record_connection_attempt(None)
 
     @staticmethod
+    def _sharing_generation(response):
+        generation = response.get("generation")
+        if type(generation) is not int or not 0 < generation <= 2**63-1:
+            raise Error("sharing_generation_unverified", "platform sharing generation is missing or invalid", 503)
+        return generation
+
+    @staticmethod
     def _accepted(response, node, compensation):
         consent = response.get("consent") or {}
         terms = consent.get("terms") or {}
@@ -342,6 +349,7 @@ class Connection:
             self._verify_identity(settings)
             record = {**settings, "connected": True, "active": False, "reason": "connecting", "participation": "enabled",
                       "consent_id": consent["id"], "terms_digest": consent["termsDigest"],
+                      "sharing_generation": self._sharing_generation(response),
                       "compensation": required_compensation, "available_until": until,
                       "allowed_images": allowed_images,
                       "authorization_id": "connection-" + uuid.uuid4().hex,
@@ -394,6 +402,7 @@ class Connection:
                     if consent["id"] != record["consent_id"] or consent["termsDigest"] != record["terms_digest"]:
                         raise Error("terms_changed", "new consent requires another explicit connection", 409)
                     self._verify_identity(record)
+                    record["sharing_generation"] = self._sharing_generation(response)
                     record["permission_verified_at"] = permission_verified_at
                     record["permission_timestamp_basis"] = {"kind": PERMISSION_TIMESTAMP_BASIS, "at": permission_verified_at}
                     enabled, reason = True, "authorized"

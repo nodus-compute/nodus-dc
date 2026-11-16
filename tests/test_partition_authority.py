@@ -1,0 +1,237 @@
+"""SQLite/Service seam with declared synthetic devices and enforcement, never GPU proof."""
+import copy
+import json
+import os
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+from nodus_dc.errors import Error
+from nodus_dc.model import CleanupProof
+from nodus_dc.service import Service
+from nodus_dc.store import Store
+from tests.test_authority import Backend as BaseBackend, Clock
+from tests.test_mig_binding import Devices, inventory
+
+GPU = "GPU-11111111-1111-4111-8111-111111111111"
+A = "MIG-22222222-2222-4222-8222-222222222222"
+B = "MIG-33333333-3333-4333-8333-333333333333"
+IMAGE = "example/model@sha256:" + "a"*64
+
+
+class Backend(BaseBackend):
+    def __init__(self, clock, root):
+        super().__init__(clock); self.root=root
+        mapping={"GPU-aaaa":GPU,"MIG-aaaa":A,"MIG-bbbb":B}
+        self.rows=tuple(replace(r,id=mapping.get(r.id,r.id),parent=mapping.get(r.parent,r.parent),
+            device_uuid=mapping.get(r.device_uuid,r.device_uuid),busy=False,
+            modes=("exclusive_host",) if r.kind=="host" else (("gpu_configuration",) if r.kind=="gpu" else ("hardware_partition",))) for r in inventory().resources)
+    def partition_fence_path(self): return self.root/"registry"/"fence.json"
+    def inventory(self): return replace(inventory(),observed_at=self.clock(),resources=self.rows)
+    def configure_mig(self, lease, plan):
+        with Store(self.root/"state.db").connection() as db:
+            row=db.execute("SELECT state,generation FROM partition_configurations WHERE parent_uuid=?",(GPU,)).fetchone()
+            assert row["state"]=="changing" and row["generation"]>0
+        if getattr(self,"fail_configuration",False): raise RuntimeError("synthetic partial mutation")
+        return self.inventory()
+
+
+class Executor:
+    """Declared fake at the runtime/enforcement seam; it qualifies no real tuple."""
+    def __init__(self, clock): self.clock=clock; self.continuous=True; self.clean=True; self.verified=[]
+    def qualification(self, binding):
+        return {"qualified":True,"continuous_configuration_authority":self.continuous,"runtime_sha256":"b"*64,"accelerator":"a100-40gb"}
+    def host_capacity(self): return {"cpu_millis":4000,"memory_bytes":8*1024**3,"scratch_bytes":8*1024**3}
+    def prepare_reservation(self, lease, resources): return {"enforcement_ready":True,"synthetic":True}
+    def verify_reservation(self, lease, reservation): return True
+    def check_execution(self, lease, request): return True
+    def verify_clean(self, lease, request):
+        self.verified.append(tuple(lease["resources"]))
+        return CleanupProof(self.clean,self.clock(),lease["id"],lease["generation"],tuple(lease["resources"]),{"synthetic":True})
+
+
+class Partitions(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(prefix=".nodus-partition-",dir=Path.home().resolve())
+        self.root=Path(self.tmp.name); self.clock=Clock(); self.backend=Backend(self.clock,self.root)
+        self.service=Service(Store(self.root/"state.db"),self.backend,clock=self.clock,bridge_enabled=True)
+        self.p=self.service.partitions; self.p.devices=Devices()
+        self.p.devices.files["/proc/driver/nvidia/gpus/0000:07:00.0/information"] = f"GPU UUID: {GPU}\nDevice Minor: 3\n"
+        for suffix,minor in (("access",69),("ci0/access",70)):
+            self.p.devices.files["/proc/driver/nvidia/capabilities/gpu3/mig/gi8/"+suffix]=f"DeviceFileMinor: {minor}\n"
+            self.p.devices.nodes[f"/dev/nvidia-caps/nvidia-cap{minor}"]=(508,minor)
+        self.executor=Executor(self.clock); self.p.executor=self.executor
+        self.agreement={"node_id":"node-1","consent_id":"partition-consent-1","generation":7,"terms_sha256":"c"*64}
+        self.p.agreement_provider=lambda:dict(self.agreement)
+        self.service.bridge_policy(enabled=True,policy_revision=1,consent_reference="partition-explicit",authorization_id="auth-1",expires_at=2000)
+        self.adopt("initial")
+    def tearDown(self): self.tmp.cleanup()
+    def adopt(self, key):
+        lease=self.service.reserve(resources=[GPU],mode="gpu_configuration",expires_at=1500,request_key="maintenance-"+key)
+        self.service.adopt_partitions(lease["id"],generation=lease["generation"],request_key="adopt-"+key)
+        self.service.release(lease["id"],generation=lease["generation"],request_key="release-"+key)
+    def request(self, resource=B, name="borrowed"):
+        offer=next(o for o in self.p.offers()["offers"] if o["partition"]["resource_id"]==resource)
+        return {"platform_lease_id":name,"platform_epoch":1,"generation":0,"offer":offer,"workload":{"workload_image":IMAGE,"workload_kind":"Job"},
+                "resources":{"cpu_millis":2000,"memory_bytes":3*1024**3,"scratch_bytes":128*1024**2},"expires_at_unix_millis":1100000}
+    def assert_error(self,code,callback):
+        with self.assertRaises(Error) as exc: callback()
+        self.assertEqual(exc.exception.code,code)
+
+    def test_claim_sibling_budget_cleanup_and_payload_tombstone(self):
+        local=self.service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="local",
+            host_resources={"cpu_millis":1000,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2})
+        self.service.start(local["id"],generation=local["generation"],request_key="start-local",workload={"test_workload":True})
+        request=self.request(); held=self.p.claim(**request)["lease"]
+        self.assertTrue(self.p.check(**held)["authorized"])
+        for operation, extra in ((self.service.bridge_reclaim, {}), (self.service.bridge_complete, {"cleanup_verified":True}),
+                                 (self.service.bridge_inspect, {}), (self.service.bridge_check, {"generation":held["generation"]})):
+            self.assert_error("platform_protocol_conflict",lambda op=operation,kw=extra:op(platform_lease_id="borrowed",platform_epoch=1,**kw))
+        self.assertTrue(self.p.check(**held)["authorized"])
+        self.assertEqual(self.p.claim(**request)["lease"],held)
+        changed=copy.deepcopy(request); changed["resources"]["cpu_millis"]+=1
+        self.assert_error("idempotency_conflict",lambda:self.p.reclaim(**changed))
+        self.assertEqual(self.p.offers(),{"offers":[]})  # first release allows one borrower per host
+        self.assert_error("allocation_conflict",lambda:self.service.reserve(resources=["host-a"],mode="exclusive_host",expires_at=1500,request_key="host"))
+        retired=self.p.reclaim(**request)["lease"]; self.assertEqual(retired,held)
+        self.assertTrue(self.p.inspect(**request)["held"])
+        self.assert_error("stale_generation",lambda:self.p.complete(lease=request,cleanup_verified=True))
+        self.executor.clean=False
+        self.assertFalse(self.p.complete(lease=held,cleanup_verified=True)["released"])
+        self.assertEqual(self.service.get(local["id"])["state"],"active")
+        self.executor.clean=True
+        self.assertTrue(self.p.complete(lease=held,cleanup_verified=True)["released"])
+        self.assertEqual(self.executor.verified,[(B,),(B,)])
+        self.assertEqual(self.service.get(local["id"])["state"],"active")
+        self.assertTrue(self.p.offers()["offers"])
+
+    def test_reverse_unbudgeted_sibling_admission_is_refused(self):
+        held=self.p.claim(**self.request())["lease"]
+        self.assert_error("host_resources_required",lambda:self.service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="unbudgeted-after-b"))
+        self.assertTrue(self.p.check(**held)["authorized"])
+        self.assertEqual(self.backend.running,{})
+        self.assertTrue(self.p.inspect(**held)["held"])
+
+    def test_unknown_reclaim_is_exact_and_prevents_delayed_or_v1_claim(self):
+        request=self.request(); self.assertEqual(self.p.reclaim(**request)["lease"],request)
+        self.assertFalse(self.p.inspect(**request)["held"])
+        self.assert_error("platform_claim_retired",lambda:self.p.claim(**request))
+        changed=copy.deepcopy(request); changed["workload"]["workload_image"]="example/other@sha256:"+"d"*64
+        self.assert_error("idempotency_conflict",lambda:self.p.complete(lease=changed,cleanup_verified=True))
+        self.assertTrue(self.p.complete(lease=request,cleanup_verified=True)["released"])
+        self.assert_error("platform_protocol_conflict",lambda:self.service.bridge_claim(platform_lease_id="borrowed",platform_epoch=1,policy_revision=1,idempotency_key="v1"))
+        self.assertEqual(self.executor.verified,[])
+
+    def test_expiry_consent_generation_and_unqualified_gate(self):
+        request=self.request(); held=self.p.claim(**request)["lease"]
+        self.agreement["generation"]+=1
+        self.assertFalse(self.p.check(**held)["authorized"])
+        self.agreement["generation"]-=1; self.clock.now=1101
+        self.assertFalse(self.p.check(**held)["authorized"])
+        self.clock.now=1102; self.p.executor=None
+        self.assertEqual(self.p.offers(),{"offers":[]})
+
+    def test_runtime_check_cannot_outlive_lease_expiry(self):
+        held=self.p.claim(**self.request())["lease"]
+        def slow_check(*_):
+            self.clock.now=1101
+            return True
+        self.executor.check_execution=slow_check
+        self.assertFalse(self.p.check(**held)["authorized"])
+        self.assertTrue(self.p.inspect(**held)["held"])
+
+    def test_unaccounted_sibling_and_changed_configuration_stay_fenced(self):
+        local=self.service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="unbudgeted")
+        self.assertEqual(self.p.offers(),{"offers":[]})
+        self.service.release(local["id"],generation=local["generation"],request_key="release-unbudgeted")
+        old=self.request(); rows=self.backend.rows
+        self.backend.rows=tuple(replace(r,details={**r.details,"profile":"2g.10gb"}) if r.id==B else r for r in rows)
+        self.service.inventory(); self.backend.rows=rows
+        self.assertEqual(self.p.offers(),{"offers":[]})
+        self.adopt("readopt")
+        new=self.request()
+        self.assertGreater(new["offer"]["partition"]["configuration_generation"],old["offer"]["partition"]["configuration_generation"])
+        self.assert_error("stale_partition_offer",lambda:self.p.claim(**old))
+
+    def test_database_rollback_fails_closed_with_live_claim(self):
+        backup=self.root/"older.db"
+        import sqlite3
+        with self.service.store.connection() as db, sqlite3.connect(backup) as target: db.backup(target)
+        held=self.p.claim(**self.request())["lease"]
+        os.replace(backup,self.root/"state.db")
+        for suffix in ("-wal","-shm"): Path(str(self.root/"state.db")+suffix).unlink(missing_ok=True)
+        self.assert_error("authority_continuity_lost",lambda:self.p.check(**held))
+
+    def test_monitor_gap_invalidates_generation_and_tombstone_survives_restart(self):
+        request=self.request(); self.p.reclaim(**request)
+        restarted=Service(Store(self.root/"state.db"),self.backend,clock=self.clock,bridge_enabled=True)
+        self.assertFalse(restarted.partitions.inspect(**request)["held"])
+        self.executor.continuous=False; self.service.inventory(); self.executor.continuous=True
+        self.assertEqual(self.p.offers(),{"offers":[]})
+
+    def test_initial_rejection_does_not_poison_independent_registry(self):
+        fresh=self.root/"fresh"; fresh.mkdir(mode=0o700)
+        backend=Backend(self.clock,fresh)
+        service=Service(Store(fresh/"state.db"),backend,clock=self.clock,bridge_enabled=True)
+        service.bridge_policy(enabled=True,policy_revision=1,consent_reference="v1-only",authorization_id="fresh",expires_at=2000)
+        self.assert_error("partition_terms_unavailable",lambda:service.partitions.claim(**self.request()))
+        self.assert_error("partition_executor_unqualified",lambda:service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="budgeted",host_resources={"cpu_millis":1,"memory_bytes":1024,"scratch_bytes":0}))
+        local=service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="ordinary")
+        self.assertEqual(local["state"],"reserved")
+
+    def test_activation_crash_and_observation_failure_cannot_revive_authority(self):
+        fresh=self.root/"crashed"; fresh.mkdir(mode=0o700)
+        service=Service(Store(fresh/"state.db"),Backend(self.clock,fresh),clock=self.clock)
+        with self.assertRaises(RuntimeError):
+            with service.store.transaction(self.clock()) as db:
+                service.store.fence.activate(db)
+                raise RuntimeError("synthetic crash before SQLite commit")
+        self.assert_error("authority_continuity_lost",service.inventory)
+        old=self.request(); original=self.backend.inventory
+        self.backend.inventory=lambda:(_ for _ in ()).throw(Error("observation_failed","synthetic failure",503))
+        self.assert_error("observation_failed",self.service.inventory)
+        self.backend.inventory=original
+        self.assertEqual(self.p.offers(),{"offers":[]})
+        self.assert_error("stale_partition_offer",lambda:self.p.claim(**old))
+        self.adopt("observation-return")
+        original_qualification=self.executor.qualification
+        self.executor.qualification=lambda _:(_ for _ in ()).throw(RuntimeError("monitor unavailable"))
+        self.service.inventory()
+        self.executor.qualification=original_qualification
+        self.assertEqual(self.p.offers(),{"offers":[]})
+
+    def test_repeated_qualification_failure_cannot_revive_offer_or_claim(self):
+        original=self.executor.qualification
+        for operation in ("offers", "claim", "check"):
+            with self.subTest(operation=operation):
+                request=self.request(name="repeat-"+operation)
+                held=self.p.claim(**request)["lease"] if operation=="check" else None
+                calls={}
+                def lose_after_observation(binding):
+                    key=binding["partition_uuid"]; calls[key]=calls.get(key,0)+1
+                    if calls[key]>1: raise RuntimeError("monitor lost after inventory transaction")
+                    return original(binding)
+                self.executor.qualification=lose_after_observation
+                action=(self.p.offers if operation=="offers" else
+                        lambda:self.p.claim(**request)) if operation!="check" else lambda:self.p.check(**held)
+                self.assert_error("partition_continuity_lost",action)
+                self.assertTrue(any(count==2 for count in calls.values()))
+                self.executor.qualification=original
+                self.assertEqual(self.p.offers(),{"offers":[]})
+                if held:
+                    self.assertFalse(self.p.check(**held)["authorized"])
+                    self.assertTrue(self.p.inspect(**held)["held"])
+                else:
+                    self.assert_error("stale_partition_offer",lambda:self.p.claim(**request))
+                    self.adopt("after-"+operation)
+
+    def test_managed_change_journals_generation_before_driver_mutation(self):
+        lease=self.service.reserve(resources=[GPU],mode="gpu_configuration",expires_at=1500,request_key="configure")
+        self.backend.fail_configuration=True
+        self.assert_error("configuration_uncertain",lambda:self.service.configure(lease["id"],generation=lease["generation"],request_key="change",plan={"enabled":True,"profiles":["3g.20gb","3g.20gb"]}))
+        with self.service.store.connection() as db:
+            row=db.execute("SELECT state,generation FROM partition_configurations").fetchone()
+            self.assertEqual(row["state"],"quarantined"); self.assertGreater(row["generation"],1)
+
+if __name__ == "__main__": unittest.main()

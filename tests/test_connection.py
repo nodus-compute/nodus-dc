@@ -65,6 +65,10 @@ class ConnectionTests(unittest.TestCase):
         result = self.connection.connect(**self.settings)
         self.assertTrue(result["active"])
         self.assertEqual(result["terms_digest"], DIGEST)
+        self.assertEqual(json.loads(self.connection.path.read_text())["sharing_generation"],1)
+        self.platform.response["generation"]=2
+        self.connection.sync()
+        self.assertEqual(json.loads(self.connection.path.read_text())["sharing_generation"],2)
         self.assertNotIn("token_file", result)
         self.assertNotIn(self.token.read_text(), self.connection.path.read_text())
         self.assertEqual(os.stat(self.connection.path).st_mode & 0o777, 0o600)

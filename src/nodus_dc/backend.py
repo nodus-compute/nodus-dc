@@ -314,6 +314,11 @@ class NvidiaDockerBackend:
         return host.healthy and not host.busy and all(r.details.get("mig_mode") != "Enabled"
                                                      for r in snapshot.resources if r.kind == "gpu")
 
+    def partition_fence_path(self):
+        if self.allocation_authority != "standalone":
+            return None
+        return Path("/var/lib/nodus-dc-authority/fence.json")
+
     def bind_authority(self, state_path):
         """Prevent accidentally starting competing databases on the same host.
 
@@ -429,9 +434,14 @@ class NvidiaDockerBackend:
                 "device_uuids": devices, "started_at": self.clock()}
 
     def _launch_container(self, lease, workload, devices, *, suffix="", extra=()):
+        limits = lease.get("host_resources")
+        if limits is not None:
+            from .host_limits import docker_arguments
+            limit_args = docker_arguments(limits, workload)
+        else:
+            limit_args = ["--tmpfs", "/tmp:rw,exec,nosuid,size=8g", "--shm-size", str(workload.get("shm_bytes", 1024**3))]
         args = ["docker", "create", "--name", f"nodus-dc-{lease['generation']}{suffix}", "--init", "--read-only",
-                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,exec,nosuid,size=8g",
-                "--shm-size", str(workload.get("shm_bytes", 1024**3)),
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", *limit_args,
                 "--label", LABEL + ".lease=" + lease["id"],
                 "--label", LABEL + ".generation=" + str(lease["generation"]),
                 "--label", LABEL + ".resources=" + canonical(lease["resources"]),
@@ -454,6 +464,12 @@ class NvidiaDockerBackend:
         container_id = self.command(args, timeout=30).strip()
         if not re.fullmatch(r"[0-9a-f]{64}", container_id):
             raise Error("invalid_container_identity", "Docker did not return an exact container ID", 503)
+        if limits is not None:
+            from .host_limits import verify_container
+            inspected = json.loads(self.command(["docker", "inspect", container_id], timeout=15))
+            if len(inspected) != 1 or inspected[0].get("Id") != container_id:
+                raise Error("host_resources_unenforced", "created container identity cannot be verified", 503)
+            verify_container(inspected[0], limits, workload)
         self.command(["docker", "start", container_id], timeout=60)
         return container_id
 
