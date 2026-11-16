@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from nodus_dc.api import Server
@@ -103,7 +104,8 @@ class DiagnosticsTests(unittest.TestCase):
         original = self.service.status
         def expired():
             value = original()
-            value["availability"]["fresh_for_seconds"] = 0
+            value["availability"]["fresh_for_seconds"] = 0.02
+            threading.Event().wait(0.05)
             return value
         self.service.status = expired
         result = self.inspect()
@@ -111,20 +113,42 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["inventory_state"], "stale")
         self.assertEqual((result["available_gpus"], result["available_partitions"]), (0, 0))
 
-    def test_total_deadline_cancels_a_stalled_response(self):
+    def test_total_deadline_cancels_a_slow_drip_response(self):
         release = threading.Event()
-        original = self.service.status
-        def stalled():
-            release.wait(2)
-            return original()
-        self.service.status = stalled
+        class SlowResponse(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                if self.path == "/health":
+                    self.wfile.write(b'{"ok": true, "maintenance_error": null, "connection_error": null}')
+                    return
+                try:
+                    # Each byte arrives before the inactivity timeout. Only
+                    # a total deadline interrupts this response promptly.
+                    for byte in b'{"padding": "' + b'x' * 50 + b'"}':
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        if release.wait(0.02):
+                            break
+                except OSError:
+                    pass
+
+        slow = HTTPServer(("127.0.0.1", 0), SlowResponse)
+        thread = threading.Thread(target=slow.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
         started = time.monotonic()
         try:
             with self.assertRaises(Error):
-                inspect_daemon(port=self.server.server_port, token_path=self.token, timeout=0.1)
-            self.assertLess(time.monotonic() - started, 1)
+                inspect_daemon(port=slow.server_port, token_path=self.token, timeout=0.15)
+            self.assertLess(time.monotonic() - started, 0.8)
         finally:
             release.set()
+            slow.shutdown()
+            slow.server_close()
+            thread.join()
 
 
 if __name__ == "__main__":
