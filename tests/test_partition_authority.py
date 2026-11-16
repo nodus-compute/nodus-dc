@@ -101,6 +101,7 @@ class Partitions(unittest.TestCase):
 
     def test_final_observation_failure_quarantines_without_releasing_uncertain_change(self):
         lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="post-observation")
+        prior_cleanup_calls = self.backend.cleanup_calls
         configure = self.backend.configure_mig
         def change_then_lose_identity(held, plan):
             result = configure(held, plan)
@@ -118,7 +119,7 @@ class Partitions(unittest.TestCase):
         with restarted.store.connection() as db:
             self.assertEqual(db.execute("SELECT state FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone()[0], "quarantined")
         self.assert_error("uncertain_launch", lambda: restarted.release(lease["id"], generation=lease["generation"], request_key="no-reset"))
-        self.assertEqual(self.backend.cleanup_calls, 0)
+        self.assertEqual(self.backend.cleanup_calls, prior_cleanup_calls)
 
     def test_configuration_expiry_during_driver_preflight_never_mutates(self):
         lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1001, request_key="preflight-expiry")
