@@ -76,6 +76,7 @@ allocation authority; reclaim keeps resources held until cleanup is verified.
   qualification remain incomplete. The dashboard does not certify those paths.
 
 Read the [support matrix](docs/support-matrix.md), [privacy and isolation model](docs/threat-model.md),
-[API reference](docs/api.md), and [dev14 changes](docs/release-dev14.md) for details.
+[API reference](docs/api.md), and [published dev14 changes](docs/release-dev14.md) for details.
+The source tree is the [dev15 candidate](docs/release-dev15.md); its package has not been published.
 
 Apache-2.0. CPU checks: `PYTHONPATH=src python3 -m unittest discover -s tests`.
