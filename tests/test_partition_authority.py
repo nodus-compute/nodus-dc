@@ -94,7 +94,7 @@ class Partitions(unittest.TestCase):
             self.assert_error("platform_protocol_conflict",lambda op=operation,kw=extra:op(platform_lease_id="borrowed",platform_epoch=1,**kw))
         self.assertTrue(self.p.check(**held)["authorized"])
         self.assertEqual(self.p.claim(**request)["lease"],held)
-        changed=copy.deepcopy(request); changed["resources"]["cpu_millis"]+=1
+        changed=copy.deepcopy(request); changed["resources"]["cpu_millis"]-=1
         self.assert_error("idempotency_conflict",lambda:self.p.reclaim(**changed))
         self.assertEqual(self.p.offers(),{"offers":[]})  # first release allows one borrower per host
         self.assert_error("allocation_conflict",lambda:self.service.reserve(resources=["host-a"],mode="exclusive_host",expires_at=1500,request_key="host"))

@@ -58,7 +58,7 @@ class PartitionPolicyJourney(unittest.TestCase):
     def call(self, operation, body, *, token=TOKEN, partitions=False):
         connection = UnixHTTPConnection(self.server.path)
         path = "/v2/bridge/"+("partitions/" if partitions else "partition-policy/")+operation
-        connection.request("POST",path,json.dumps(body,ensure_ascii=False),{"Authorization":"Bearer "+token,"Content-Type":"application/json"})
+        connection.request("POST",path,json.dumps(body,ensure_ascii=False).encode("utf-8"),{"Authorization":"Bearer "+token,"Content-Type":"application/json"})
         response = connection.getresponse(); data=response.read(); connection.close()
         self.assertLessEqual(len(data),65536)
         return response.status,json.loads(data)
