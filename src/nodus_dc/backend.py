@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .errors import Error
 from .model import CleanupProof, Resource, Snapshot, canonical
+from .workload_io import output_directory, paths_overlap
 
 LABEL = "ai.nodus.datacenter"
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[0-9a-f]{64}\Z")
@@ -355,7 +356,7 @@ class NvidiaDockerBackend:
         if lease["mode"] == "trusted_mps":
             from .sharing import validate_pool
             return validate_pool(self, workload, lease)
-        allowed = {"image", "command", "mounts", "ports", "network", "shm_bytes", "entrypoint"}
+        allowed = {"image", "command", "mounts", "ports", "network", "shm_bytes", "entrypoint", "output_directory"}
         if set(workload) - allowed or not IMAGE.fullmatch(str(workload.get("image", ""))):
             raise Error("invalid_workload", "workload requires a digest-pinned image and supported fields", 400)
         command = workload.get("command", [])
@@ -371,6 +372,7 @@ class NvidiaDockerBackend:
             if (not isinstance(port, dict) or set(port) != {"host", "container"}
                     or any(type(v) is not int or not 1024 <= v <= 65535 for v in port.values())):
                 raise Error("invalid_workload", "ports must specify high host/container port numbers", 400)
+        output = output_directory(workload["output_directory"]) if "output_directory" in workload else None
         for mount in workload.get("mounts", []):
             if not isinstance(mount, dict) or set(mount) != {"source", "target"}:
                 raise Error("invalid_workload", "mounts require source and target", 400)
@@ -379,6 +381,8 @@ class NvidiaDockerBackend:
                 raise Error("invalid_workload", "model mounts must be existing dedicated directories", 400)
             if any("\0" in str(p) or "," in str(p) for p in (source, target)):
                 raise Error("invalid_workload", "invalid mount path", 400)
+            if output is not None and (paths_overlap(output, source) or paths_overlap("/outputs", target)):
+                raise Error("invalid_output_directory", "checkpoint output must not overlap read-only input mounts", 400)
         shm = workload.get("shm_bytes", 1024**3)
         if type(shm) is not int or not 64 * 1024**2 <= shm <= 64 * 1024**3:
             raise Error("invalid_workload", "shm_bytes must be between 64 MiB and 64 GiB", 400)
@@ -436,6 +440,11 @@ class NvidiaDockerBackend:
                 "--env", "HF_HUB_OFFLINE=1", "--env", "HF_HOME=/tmp/huggingface", "--env", "HOME=/tmp"]
         for mount in workload.get("mounts", []):
             args += ["--mount", f"type=bind,src={Path(mount['source']).resolve()},dst={mount['target']},readonly"]
+        if "output_directory" in workload:
+            # Revalidate immediately before Docker's bind. Cleanup intentionally
+            # removes only containers; checkpoints are operator-owned data.
+            output = output_directory(workload["output_directory"])
+            args += ["--mount", f"type=bind,src={output},dst=/outputs"]
         for port in workload.get("ports", []):
             args += ["--publish", f"127.0.0.1:{port['host']}:{port['container']}"]
         if "entrypoint" in workload:

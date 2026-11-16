@@ -2,6 +2,8 @@
 
 All API requests use JSON. The dashboard and read-only GET APIs use loopback HTTP. Every mutating local API uses `unix:///run/nodus-dc/local.sock`; every bridge API uses the separate `unix:///run/nodus-dc/bridge.sock`. Production listeners require root, a root-owned 0700 parent, a 0600 socket, no symlink or group/world-writable ancestor, and OS peer UID verification. Bridge clients must verify the same path and peer identity before sending credentials. Loopback bearer authentication alone does not authenticate a server and is rejected for privileged calls.
 
+Local workload descriptors optionally accept `output_directory`, an existing canonical operator-owned mode-0700 directory mounted writable at `/outputs`. Input mounts remain read-only. Overlapping checkpoint outputs of held jobs, input paths and authority state are rejected before launch; the path is revalidated before Docker creation. Checkpoint files survive release and uninstall. This local operator grant is separate from external workload consent. See [training](training.md) for the checkpoint contract and its trust boundary.
+
 Except HTTP `/health` and the HTML shell, routes require `Authorization: Bearer <token>`. Tokens are separate owned regular files, mode 0600, at least 32 characters. Local and bridge token values must differ. The browser uses the local read token; it cannot invoke privileged APIs without a root-peer Unix connection. Do not paste the bridge token into a browser. Bodies reject duplicate keys, unknown fields and nonfinite numbers. There is no permissive CORS policy.
 
 Local token routes (GET also available over HTTP; POST only on the local Unix socket):

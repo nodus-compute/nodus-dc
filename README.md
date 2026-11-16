@@ -80,6 +80,8 @@ For a cooperating application group, start the daemon with `--enable-trusted-mps
 
 ## Recovery and upgrades
 
+For independent training jobs, use the [local training adapter](docs/training.md). It generates offline workloads with read-only code/data and an explicitly authorized persistent checkpoint directory at `/outputs`. Each job retains its ordinary whole-GPU or MIG lease; checkpointing never releases GPU ownership. Hardware qualification and performance claims remain separate.
+
 Interrupted starts stay held because an earlier Docker request could still execute. `recover LEASE_ID --generation N` requires a new Linux boot ID, then removes exact owned containers and independently checks cleanup. It never accepts an operator's unsupported “clean” assertion. MIG recovery replays the durable desired plan after that execution fence. Driver/configuration drift or missing device identities keeps capacity quarantined. Preserve the SQLite database, its WAL and authority registry across upgrades; restoring an old database while work may exist is unsupported.
 
 For a quarantined hardware-partition lease whose MIG UUID disappears after a

@@ -15,6 +15,7 @@ from .model import (API_VERSION, HOLDING, LOCAL_MODES, CleanupProof, Snapshot,
                     canonical, digest, finite_time, key, overlap)
 from .store import Store
 from . import privacy
+from .workload_io import inputs, outputs, require_disjoint_outputs
 
 # Explicit installer capability: this implementation can retire a disappeared
 # MIG identity only after an actual boot fence and physical-parent cleanup proof.
@@ -289,6 +290,14 @@ class Service:
                 if lease["state"] != "reserved" or lease["expires_at"] <= now:
                     raise Error("lease_not_startable", "lease is expired or no longer reserved")
                 self.backend.validate_workload(workload, lease)
+                directories = outputs(workload, lease["mode"])
+                if directories:
+                    protected = [Path(self.store.path).parent, Path(__file__).resolve().parent]
+                    for row in db.execute("SELECT * FROM leases WHERE state!='released' AND id!=?", (lease_id,)):
+                        other = Store.decode(row)
+                        protected.extend(outputs(other["workload"], other["mode"]))
+                        protected.extend(inputs(other["workload"], other["mode"]))
+                    require_disjoint_outputs(directories, protected=protected)
                 lease = Store.update(db, lease, now, state="starting", workload=workload)
                 Store.event(db, now, lease, "start_intent", {"workload": workload})
             try:
