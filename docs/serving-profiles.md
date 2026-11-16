@@ -50,13 +50,25 @@ For vLLM:
   --numerical-profile deterministic-v1 --host-port 18000 > vllm.json
 ```
 
-For SGLang instead:
+For SGLang on the recorded Hopper/FA3 configuration instead:
 
 ```sh
 /opt/nodus-dc/current/bin/python examples/serving_profile.py \
   --engine sglang --model-directory /srv/models/qwen \
   --numerical-profile deterministic-v1 --host-port 18000 > sglang.json
 ```
+
+For SGLang on an A100, use the separate Triton candidate from this source checkout:
+
+```sh
+/opt/nodus-dc/current/bin/python examples/serving_profile.py \
+  --engine sglang --model-directory /srv/models/qwen \
+  --numerical-profile deterministic-triton-v1 --host-port 18000 > sglang.json
+```
+
+This new recipe is not included in the original dev14 source archive. It uses
+the unchanged dev14 runtime wheel and pinned SGLang image. Its CLI and descriptor
+admission are checked locally; A100 deterministic GPU qualification is pending.
 
 The generated descriptor pins the engine image
 digest, mounts the model read-only, and publishes inference only on host loopback.
@@ -148,12 +160,35 @@ A successful engine response alone is not proof of clean hardware handback.
 `deterministic-v1` adds `VLLM_BATCH_INVARIANT=1` for vLLM, or
 `--enable-deterministic-inference --attention-backend fa3` for SGLang. It leaves
 the pinned image, model settings, allocation and memory limits unchanged.
+`deterministic-triton-v1` is SGLang-only and instead selects
+`--enable-deterministic-inference --attention-backend triton`, so A100 users do
+not inherit the Hopper FA3 backend. It rejects `--engine vllm`. All profiles keep
+the same BF16, seed, eager mode, memory fraction and model settings. No profile
+auto-detects a GPU or changes its allocation.
 Use the same numerical profile for dedicated reference and shared measurements.
-The name identifies a tested configuration; it does not promise exact outputs on
-every model, GPU, driver or attention backend.
+The name identifies a configuration; it does not promise exact outputs on every
+model, GPU, driver or attention backend. `default-v1` does not promise determinism.
 
-On the recorded H100 configuration, both deterministic profiles matched their
-dedicated serial references under trusted MPS sharing. SGLang also passed its
+The pinned SGLang [deterministic inference documentation](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/docs/docs/advanced_features/deterministic_inference.mdx)
+lists Triton with radix cache support. Its [argument resolution](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/python/sglang/srt/arg_groups/overrides.py)
+selects PyTorch sampling when deterministic inference is enabled. Before a
+hardware comparison, confirm the resolved engine arguments show deterministic
+inference enabled, Triton attention and PyTorch sampling; radix cache stays on.
+
+The November 16 A100 observation with Triton and deterministic inference disabled
+completed all eight requests but matched repeated text for only three of four
+prompts. That failure remains a failure. This new profile has not yet been run on
+a GPU and does not establish a fix, a latency improvement or consolidation gains.
+For the controlled comparison, keep the image, model revision, partition, requests
+and sibling load fixed; change only the deterministic flag between explicit
+Triton control and candidate. Require exact repeated text and completion-token
+counts across fresh engine starts, successful requests and normal lease cleanup.
+Evaluate performance separately; do not require the two profiles to return the
+same text or change the acceptance rules after seeing results.
+
+On the recorded H100 configuration, vLLM `deterministic-v1` and SGLang
+`deterministic-v1` (FA3) matched their dedicated serial references under trusted
+MPS sharing. SGLang also passed its
 separate full primary test. vLLM's full primary test failed the fixed performance
 targets despite correct outputs; a later preregistered, longer offline comparison
 passed its declared correctness, throughput, latency and CPU checks, subject to
