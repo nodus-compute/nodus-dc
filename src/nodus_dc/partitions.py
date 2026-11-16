@@ -24,6 +24,13 @@ class _ContinuityFailure(Exception):
     """Escape request rollback before committing configuration invalidation."""
 
 
+class _PolicyExpiry(Error):
+    """Persist session closure even if the surrounding admission rolls back."""
+    def __init__(self, commit):
+        super().__init__("partition_policy_expired", "expired partition stream requires a new authenticated handshake", 403)
+        self.commit = commit
+
+
 def fields(value, names):
     if not isinstance(value, dict) or set(value) != set(names.split()):
         raise Error("invalid_request", "v2 requires every declared field and rejects unknown fields", 400)
@@ -96,7 +103,7 @@ class PartitionAuthority:
     def __init__(self, service):
         self.service = service
         self.executor = None
-        self.agreement_provider = None
+        self.policy_provider = None
         self.devices = None
 
     def ensure_durable(self):
@@ -127,6 +134,9 @@ class PartitionAuthority:
         try:
             with self.service.store.transaction(self.service.clock()) as db:
                 yield db
+        except _PolicyExpiry as exc:
+            exc.commit()
+            raise
         except _ContinuityFailure:
             # The failed admission transaction has rolled back before this
             # revocation commits. Identical later observations cannot revive it.
@@ -136,6 +146,24 @@ class PartitionAuthority:
     def _active(self):
         if not self.service.bridge_enabled:
             raise Error("bridge_disabled", "partition bridge is not configured", 403)
+
+    def _policy(self, db, *, request=None):
+        if self.policy_provider is None:
+            raise Error("partition_policy_unavailable", "independent current partition policy is required", 403)
+        return self.policy_provider(db, expected_revision=request["offer"]["policy_revision"] if request else None,
+                                    workload=request["workload"] if request else None)
+
+    @staticmethod
+    def _shape(policy, accelerator, profile, memory, capacity):
+        # The strict wire permits one offer per CI. Pick the first approved exact
+        # bundle which fits; never derive a fractional price or overstate capacity.
+        for row in policy["shapes"]:
+            shape = row["shape"]
+            budget = {"cpu_millis":shape["cpuMillis"], "memory_bytes":shape["memoryBytes"], "scratch_bytes":shape["scratchBytes"]}
+            if (shape["accelerator"] == accelerator and shape["profile"] == profile and shape["gpuMemoryBytes"] == memory
+                    and all(budget[k] <= capacity[k] for k in budget)):
+                return budget
+        return None
 
     def _observation(self, snapshot, parent):
         resources = {r.id: r for r in snapshot.resources}
@@ -239,10 +267,8 @@ class PartitionAuthority:
                    (lease["id"], resources["cpu_millis"], resources["memory_bytes"], resources["scratch_bytes"], canonical(proof)))
 
     def _offer_rows(self, db):
-        policy = self.service._policy(db)
-        if self.agreement_provider is None:
-            raise Error("partition_terms_unavailable", "explicit current partition terms are required", 403)
-        agreement = self.agreement_provider()
+        policy = self._policy(db)
+        agreement = policy["agreement"]
         if not isinstance(agreement, dict): raise Error("partition_terms_unavailable", "partition terms are not authorized", 403)
         capacity = self._capacity(db)
         if capacity["cpu_millis"] <= 0 or capacity["memory_bytes"] <= 0: return []
@@ -264,6 +290,8 @@ class PartitionAuthority:
                 if (not isinstance(qualification, dict) or qualification.get("qualified") is not True
                         or qualification.get("continuous_configuration_authority") is not True): continue
                 runtime = qualification["runtime_sha256"]; sha(runtime)
+                bundle = self._shape(policy, qualification["accelerator"], binding["profile"], binding["memory_bytes"], capacity)
+                if bundle is None: continue
                 result.append({"partition": {"resource_id": binding["partition_uuid"], "authority_incarnation": anchor["incarnation"],
                     "configuration_generation": row["generation"], "boot_id": row["boot_id"], "parent_uuid": row["parent_uuid"],
                     "mig_uuid": binding["partition_uuid"], "gpu_instance": binding["gpu_instance_id"],
@@ -271,8 +299,8 @@ class PartitionAuthority:
                     "policy_revision": policy["policy_revision"], "agreement": agreement,
                     "accelerator": qualification["accelerator"], "profile": binding["profile"],
                     "gpu_memory_bytes": binding["memory_bytes"], "driver_version": binding["driver_version"],
-                    "runtime_sha256": runtime, "capacity": capacity,
-                    "available_until_unix_millis": int(policy["expires_at"]*1000)})
+                    "runtime_sha256": runtime, "capacity": bundle,
+                    "available_until_unix_millis": policy["available_until_unix_millis"]})
         return result
 
     def offers(self, **request):
@@ -282,7 +310,7 @@ class PartitionAuthority:
             try:
                 with self._admission_transaction() as db: offers = self._offer_rows(db)
             except Error as exc:
-                if exc.code in {"partition_executor_unqualified", "partition_terms_unavailable", "host_resources_unaccounted", "host_resources_unenforced", "external_not_authorized"}:
+                if exc.code in {"partition_executor_unqualified", "partition_terms_unavailable", "partition_policy_unavailable", "partition_policy_expired", "host_resources_unaccounted", "host_resources_unenforced", "external_not_authorized"}:
                     return {"offers": []}
                 raise
             return {"offers": offers[:32]}
@@ -319,9 +347,13 @@ class PartitionAuthority:
                     if not prior["generation"]: raise Error("platform_claim_retired", "tuple retired before acquisition", 409)
                     return {"lease": self._echo(prior)}
                 self.service._expires(request["expires_at_unix_millis"]/1000)
-                self.service._check_bridge_authorization(workload_image=request["workload"]["workload_image"], workload_kind=request["workload"]["workload_kind"])
-                if request["offer"] not in self._offer_rows(db):
+                self._policy(db, request=request)
+                current = self._offer_rows(db)
+                if not any(o["available_until_unix_millis"] >= request["offer"]["available_until_unix_millis"]
+                        and {**o,"available_until_unix_millis":request["offer"]["available_until_unix_millis"]} == request["offer"] for o in current):
                     raise Error("stale_partition_offer", "partition offer or current independent authority changed", 409)
+                if request["resources"] != request["offer"]["capacity"]:
+                    raise Error("partition_shape_mismatch", "claim must reserve the exact approved resource bundle", 403)
                 if db.execute("SELECT 1 FROM platform_claims WHERE platform_lease_id=? AND platform_epoch=?", self._identity(request)).fetchone():
                     raise Error("platform_claim_exists", "tuple belongs to the whole-host protocol", 409)
                 generation = Store.generation(db); lease_id = str(uuid.uuid4()); now = self.service.clock()
@@ -339,8 +371,8 @@ class PartitionAuthority:
                 if not isinstance(proof,dict) or proof.get("enforcement_ready") is not True:
                     raise Error("host_resources_unenforced", "partition host limits cannot be enforced", 503)
                 self.service._expires(request["expires_at_unix_millis"]/1000)
-                self.service._policy(db,expected_revision=request["offer"]["policy_revision"])
-                if self.agreement_provider()!=request["offer"]["agreement"]:
+                policy = self._policy(db,request=request)
+                if policy["agreement"]!=request["offer"]["agreement"]:
                     raise Error("partition_terms_changed", "partition agreement changed during admission", 409)
                 db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",(lease_id,*[request["resources"][k] for k in ("cpu_millis","memory_bytes","scratch_bytes")],canonical(proof)))
                 db.execute("INSERT INTO partition_claims VALUES(?,?,?,?,?,?,0,?,?)",(*self._identity(request),canonical(normalized),digest(normalized),lease_id,generation,now,now))
@@ -384,11 +416,10 @@ class PartitionAuthority:
                 if row and not row["retired"] and row["lease_id"]:
                     lease=Store.lease(db,row["lease_id"])
                     try:
-                        self.service._policy(db,expected_revision=request["offer"]["policy_revision"])
-                        self.service._check_bridge_authorization(workload_image=request["workload"]["workload_image"],workload_kind=request["workload"]["workload_kind"])
+                        policy = self._policy(db,request=request)
                         config=db.execute("SELECT * FROM partition_configurations WHERE parent_uuid=?",(request["offer"]["partition"]["parent_uuid"],)).fetchone()
                         matching = config and config["state"]=="committed" and config["generation"]==request["offer"]["partition"]["configuration_generation"]
-                        current_agreement=self.agreement_provider() if self.agreement_provider else None
+                        current_agreement=policy["agreement"]
                         anchor=self.service.store.fence.verify(db) if self.service.store.fence else None
                         matching=bool(matching and anchor and anchor["incarnation"]==request["offer"]["partition"]["authority_incarnation"]
                             and config["boot_id"]==request["offer"]["partition"]["boot_id"])
@@ -401,6 +432,9 @@ class PartitionAuthority:
                             and digest({"device":binding,"runtime_sha256":qualification["runtime_sha256"]})==request["offer"]["partition"]["binding_sha256"])
                         capacity=self._capacity(db)
                         matching=matching and all(v>=0 for v in capacity.values())
+                        matching=matching and request["resources"]==request["offer"]["capacity"] and self._shape(
+                            policy,request["offer"]["accelerator"],request["offer"]["profile"],
+                            request["offer"]["gpu_memory_bytes"],request["resources"])==request["resources"]
                         reservation=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(lease["id"],)).fetchone()
                         authorized=bool(matching and current_agreement==request["offer"]["agreement"] and self.executor
                             and lease["expires_at"]>self.service.clock() and lease["state"] in {"reserved","active"}
@@ -408,8 +442,8 @@ class PartitionAuthority:
                             and self.executor.check_execution(lease,request) is True)
                         if authorized:
                             # A slow runtime check cannot extend a finite grant.
-                            self.service._policy(db,expected_revision=request["offer"]["policy_revision"])
-                            authorized=bool(self.agreement_provider()==request["offer"]["agreement"]
+                            policy = self._policy(db,request=request)
+                            authorized=bool(policy["agreement"]==request["offer"]["agreement"]
                                             and lease["expires_at"]>self.service.clock())
                     except Error as exc:
                         authorized=False

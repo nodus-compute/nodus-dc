@@ -63,10 +63,14 @@ class Partitions(unittest.TestCase):
             self.p.devices.nodes[f"/dev/nvidia-caps/nvidia-cap{minor}"]=(508,minor)
         self.executor=Executor(self.clock); self.p.executor=self.executor
         self.agreement={"node_id":"node-1","consent_id":"partition-consent-1","generation":7,"terms_sha256":"c"*64}
-        self.p.agreement_provider=lambda:dict(self.agreement)
-        self.service.bridge_policy(enabled=True,policy_revision=1,consent_reference="partition-explicit",authorization_id="auth-1",expires_at=2000)
+        # Independent declared synthetic policy; whole-host policy remains absent.
+        self.p.policy_provider=self.synthetic_policy
         self.adopt("initial")
     def tearDown(self): self.tmp.cleanup()
+    def synthetic_policy(self, db, *, expected_revision=None, workload=None):
+        return {"policy_revision":1,"available_until_unix_millis":2000000,"agreement":dict(self.agreement),"shapes":[{"shape":{
+            "accelerator":"a100-40gb","profile":"3g.20gb","gpuMemoryBytes":21072183296,
+            "cpuMillis":2000,"memoryBytes":3*1024**3,"scratchBytes":128*1024**2},"hourlyUSD":"1.00"}]}
     def adopt(self, key):
         lease=self.service.reserve(resources=[GPU],mode="gpu_configuration",expires_at=1500,request_key="maintenance-"+key)
         self.service.adopt_partitions(lease["id"],generation=lease["generation"],request_key="adopt-"+key)
@@ -175,7 +179,7 @@ class Partitions(unittest.TestCase):
         backend=Backend(self.clock,fresh)
         service=Service(Store(fresh/"state.db"),backend,clock=self.clock,bridge_enabled=True)
         service.bridge_policy(enabled=True,policy_revision=1,consent_reference="v1-only",authorization_id="fresh",expires_at=2000)
-        self.assert_error("partition_terms_unavailable",lambda:service.partitions.claim(**self.request()))
+        self.assert_error("partition_policy_unavailable",lambda:service.partitions.claim(**self.request()))
         self.assert_error("partition_executor_unqualified",lambda:service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="budgeted",host_resources={"cpu_millis":1,"memory_bytes":1024,"scratch_bytes":0}))
         local=service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="ordinary")
         self.assertEqual(local["state"],"reserved")

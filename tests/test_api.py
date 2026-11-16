@@ -92,6 +92,10 @@ class ApiTests(unittest.TestCase):
         connection.endheaders()
         response=connection.getresponse(); self.assertEqual(response.status,413); response.read(); connection.close()
         self.assertEqual(self.call(path,token=self.bridge.bridge_token,transport="unix"),(200,{"offers":[]}))
+        policy = "/v2/bridge/partition-policy/context"
+        self.assertEqual(self.call(policy,token=self.bridge.bridge_token,transport="unix")[0],503)
+        self.assertEqual(self.call(policy,token=self.server.local_token,transport="unix")[0],401)
+        self.assertEqual(self.call(policy,token=self.bridge.bridge_token,transport="tcp")[0],403)
 
     def test_daemon_maintenance_runs_expiry_without_inventory_scan(self):
         service = self.server.service

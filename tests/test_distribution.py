@@ -24,11 +24,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class DistributionTests(unittest.TestCase):
     def test_schema4_refuses_published_dev14_without_changing_ownership(self):
-        legacy_path = os.environ.get("NODUS_PARTITION_LEGACY_WHEEL")
+        self.schema_downgrade("NODUS_PARTITION_LEGACY_WHEEL",
+            "8ef7558a94a52f9ecb1319fa18431b727c7f9021e5d9134b99edb0f520efc625", "4")
+
+    def test_schema5_refuses_published_dev15_without_changing_policy_or_ownership(self):
+        self.schema_downgrade("NODUS_POLICY_LEGACY_WHEEL",
+            "ea5d0929d5039cac947a2f28d90c038b9720fb978e07b985a880fd2d3ccdda05", "5")
+
+    def schema_downgrade(self, variable, legacy_sha, schema):
+        legacy_path = os.environ.get(variable)
         if not legacy_path:
-            self.skipTest("offline published dev14 wheel required for schema4 downgrade verification")
+            self.skipTest("offline published wheel required for schema"+schema+" downgrade verification: "+variable)
         legacy = Path(legacy_path).resolve()
-        legacy_sha = "8ef7558a94a52f9ecb1319fa18431b727c7f9021e5d9134b99edb0f520efc625"
         self.assertEqual(hashlib.sha256(legacy.read_bytes()).hexdigest(), legacy_sha)
         spec = importlib.util.spec_from_file_location("build_partition_compatibility", ROOT / "build_backend.py")
         builder = importlib.util.module_from_spec(spec)
@@ -55,7 +62,17 @@ class DistributionTests(unittest.TestCase):
                 service.partitions.ensure_durable()
                 held = service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu",
                                        expires_at=1100, request_key="schema4-held")
-                self.assertEqual(keeper.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "4")
+                if schema == "5":
+                    from nodus_dc.partition_policy import PartitionPolicy
+                    from tests.test_partition_policy import grant, NODE
+                    from tests.test_mig_binding import BOOT
+                    policy=PartitionPolicy(service,identity=lambda:{"node_id":NODE,"host_epoch":0},
+                        local_images=lambda:None,boot_id=BOOT,boottime_ns=lambda:10_000_000_000)
+                    service.bridge_enabled=True
+                    policy.update(action="grant",context=policy.context,node_id=NODE,host_epoch=0,stream_epoch=1,
+                        grant=grant(),freshness={"echoed_boottime_ns":10_000_000_000,"valid_for_ns":30_000_000_000,
+                                                 "available_until_unix_millis":2000000})
+                self.assertEqual(keeper.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], schema)
                 self.assertGreater((state / "authority.sqlite3-wal").stat().st_size, 32)
                 before = list(keeper.iterdump())
                 fence = registry.read_bytes()

@@ -82,7 +82,7 @@ class AuthorityFence:
             current = {"database": self.database, "incarnation": str(uuid.uuid4()), "sequence": 0}
             self.write(current)
             db.execute("INSERT INTO meta VALUES('authority_fence',?)", (canonical(current),))
-            db.execute("UPDATE meta SET value='4' WHERE key='schema_version'")
+            db.execute("UPDATE meta SET value=CASE WHEN CAST(value AS INTEGER)<4 THEN '4' ELSE value END WHERE key='schema_version'")
         return current
 
     def advance(self, db):
