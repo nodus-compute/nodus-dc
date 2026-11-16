@@ -58,10 +58,17 @@ class PartitionPolicyJourney(unittest.TestCase):
     def call(self, operation, body, *, token=TOKEN, partitions=False):
         connection = UnixHTTPConnection(self.server.path)
         path = "/v2/bridge/"+("partitions/" if partitions else "partition-policy/")+operation
-        connection.request("POST",path,json.dumps(body,ensure_ascii=False).encode("utf-8"),{"Authorization":"Bearer "+token,"Content-Type":"application/json"})
-        response = connection.getresponse(); data=response.read(); connection.close()
-        self.assertLessEqual(len(data),65536)
-        return response.status,json.loads(data)
+        try:
+            try:
+                connection.request("POST",path,json.dumps(body,ensure_ascii=False).encode("utf-8"),{"Authorization":"Bearer "+token,"Content-Type":"application/json"})
+            except BrokenPipeError:
+                # Authentication may reject before reading the request body.
+                pass
+            response = connection.getresponse(); data=response.read()
+            self.assertLessEqual(len(data),65536)
+            return response.status,json.loads(data)
+        finally:
+            connection.close()
 
     def update(self, action="grant", *, epoch=1, **changes):
         body = {"action":action,"context":self.ctx,"node_id":NODE,"host_epoch":0,"stream_epoch":epoch}

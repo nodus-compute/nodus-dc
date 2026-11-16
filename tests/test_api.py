@@ -63,11 +63,17 @@ class ApiTests(unittest.TestCase):
         if token:
             headers["Authorization"] = "Bearer "+token
         body = raw if raw is not None else json.dumps(value or {})
-        c.request("POST", path, body, headers)
-        r = c.getresponse()
-        result = r.status, json.loads(r.read())
-        c.close()
-        return result
+        try:
+            try:
+                c.request("POST", path, body, headers)
+            except BrokenPipeError:
+                # An early scope/auth refusal can close before the body is sent.
+                # The actual response must still parse and satisfy the caller.
+                pass
+            r = c.getresponse()
+            return r.status, json.loads(r.read())
+        finally:
+            c.close()
 
     def test_bridge_scope_is_distinct_from_local_scope(self):
         self.assertEqual(self.call("/v1/bridge/status", token=self.server.local_token)[0], 401)
