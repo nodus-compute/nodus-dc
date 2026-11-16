@@ -144,7 +144,9 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
         source_version = devices.text("/sys/module/nvidia/srcversion").strip()
         if (not version or version != snapshot.driver_version
                 or version != parent.details.get("driver_version")
-                or not re.fullmatch(r"[A-Fa-f0-9]{24}", source_version)):
+                # Linux modpost can emit 23 hex digits after reserving its NUL.
+                # Preserve the exact observed build metadata in the binding.
+                or not re.fullmatch(r"[A-Fa-f0-9]{23,24}", source_version)):
             raise ValueError("loaded driver identity is unavailable or inconsistent")
         driver_banner = devices.text("/proc/driver/nvidia/version").strip()
         if not driver_banner or version not in driver_banner:
