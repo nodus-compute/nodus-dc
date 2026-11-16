@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS partition_claims(
 CREATE TABLE IF NOT EXISTS host_reservations(
  lease_id TEXT PRIMARY KEY REFERENCES leases(id), cpu_millis INTEGER NOT NULL,
  memory_bytes INTEGER NOT NULL, scratch_bytes INTEGER NOT NULL, enforcement TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS partition_policy_grants(
+ node_id TEXT NOT NULL, host_epoch INTEGER NOT NULL, generation INTEGER NOT NULL,
+ agreement TEXT NOT NULL, grant_payload TEXT, retired INTEGER NOT NULL,
+ PRIMARY KEY(node_id,host_epoch,generation));
 CREATE TABLE IF NOT EXISTS platform_claims(
  platform_lease_id TEXT NOT NULL, platform_epoch INTEGER NOT NULL,
  lease_id TEXT, generation INTEGER, policy_revision INTEGER,
@@ -65,7 +69,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-            if version not in {"1", "2", "3", "4"}:
+            if version not in {"1", "2", "3", "4", "5"}:
                 raise Error("schema_version", f"unsupported state schema {version}", 503)
         os.chmod(self.path, 0o600)
 

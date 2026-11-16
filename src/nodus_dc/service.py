@@ -36,6 +36,7 @@ class Service:
             self.store.fence = AuthorityFence(fence_path, store.path)
         from .partitions import PartitionAuthority
         self.partitions = PartitionAuthority(self)
+        self.partition_policy = None  # Explicit enrollment/provider installation is not production-qualified.
         self.bridge_authorization_check = None
         self.lock_path = str(Path(store.path).with_name("host.lock"))
 
