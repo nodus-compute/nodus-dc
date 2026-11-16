@@ -6,7 +6,7 @@ Preload a digest-pinned Linux image containing the required PyTorch version and 
 
 ```sh
 sudo install -d -m 0700 /srv/nodus-checkpoints/job-a
-python3 -m nodus_dc.training \
+sudo /opt/nodus-dc/current/bin/python -m nodus_dc.training \
   --image YOUR_PRELOADED_IMAGE@sha256:EXACT_DIGEST \
   --code-directory /srv/training-code \
   --script train.py \
@@ -20,7 +20,7 @@ nodus-dc --state-dir /var/lib/nodus-dc --allocation-authority standalone start \
   RETURNED_LEASE_ID --generation RETURNED_GENERATION --workload train.json
 ```
 
-Run descriptor generation as the same operator UID as the daemon. Use `exclusive_gpu` for a physical GPU. The code appears read-only at `/code`, optional data read-only at `/data`, and the explicitly authorized output directory writable at `/outputs`. Networking is disabled. The root filesystem remains read-only and the ordinary capability restrictions still apply. Programs must write checkpoints to `/outputs`; they own checkpoint frequency, format and resume behavior. For PyTorch, save the model and optimizer state, progress and any random generator or data-loader state needed by your training algorithm. Loading a checkpoint does not restore an external sampler or distributed job automatically.
+Run descriptor generation and allocation as the same operator UID as the daemon (normally root). The image's configured effective UID must also be able to write the output directory, normally UID 0 for a root-owned mode-0700 directory. The package does not change image users or loosen directory permissions. Use `exclusive_gpu` for a physical GPU. The code appears read-only at `/code`, optional data read-only at `/data`, and the explicitly authorized output directory writable at `/outputs`. Networking is disabled. The root filesystem remains read-only and the ordinary capability restrictions still apply. Programs must write checkpoints to `/outputs`; they own checkpoint frequency, format and resume behavior. For PyTorch, save the model and optimizer state, progress and any random generator or data-loader state needed by your training algorithm. Loading a checkpoint does not restore an external sampler or distributed job automatically.
 
 The authority refuses overlapping output directories among held jobs, including quarantined jobs and clients of one MPS pool. It also refuses writable overlap with input mounts or local authority state. Successful release removes owned containers and verifies GPU cleanup; it deliberately retains checkpoint files. A later independent lease may explicitly reuse a released job's directory to resume. Never share one output directory between concurrent jobs or delete it before checking the retained results. Files are trusted operator data; this feature does not encrypt them, set a disk quota, or protect them from host administrators. Monitor free storage. A full disk or failed checkpoint must be handled by the training program.
 

@@ -5,6 +5,7 @@ import fcntl
 import json
 import math
 import os
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -293,7 +294,7 @@ class Service:
                 directories = outputs(workload, lease["mode"])
                 readonly = inputs(workload, lease["mode"])
                 if directories or readonly:
-                    protected = [Path(self.store.path).parent, Path(__file__).resolve().parent]
+                    protected = [Path(self.store.path).parent, Path(__file__).resolve().parent, Path(sys.prefix).resolve()]
                     held_outputs = []
                     for row in db.execute("SELECT * FROM leases WHERE state!='released' AND id!=?", (lease_id,)):
                         other = Store.decode(row)
