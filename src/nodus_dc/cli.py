@@ -30,6 +30,9 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     for command in ("inventory", "status", "reconcile"):
         sub.add_parser(command)
+    doctor = sub.add_parser("doctor", help="read live daemon health and capacity without changing state")
+    doctor.add_argument("--port", type=int, default=7441)
+    doctor.add_argument("--local-token-file", help="daemon's local read token; defaults to STATE_DIR/local.token")
     connection = sub.add_parser("connection")
     actions = connection.add_subparsers(dest="connection_action", required=True)
     for action in ("review", "connect", "sync", "disconnect"):
@@ -110,6 +113,11 @@ def main(argv=None):
     args = parser().parse_args(argv)
     state = Path(args.state_dir).expanduser().resolve()
     try:
+        if args.command == "doctor":
+            from .diagnostics import inspect_daemon
+            result = inspect_daemon(port=args.port, token_path=args.local_token_file or state / "local.token")
+            print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+            return 0 if result["ok"] else 1
         bridge_token = token_file(args.bridge_token_file) if getattr(args, "bridge_token_file", None) else None
         if args.command == "serve" and (bridge_token or args.allocation_authority == "standalone") and os.geteuid() != 0:
             raise Error("bridge_owner_required", "production allocation/bridge listeners must run as root", 403)
