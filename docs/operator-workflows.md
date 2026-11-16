@@ -2,9 +2,10 @@
 
 Local GPU inventory, explicit allocations, controlled hardware partitioning and opt-in capacity participation. The local runtime works offline without a Nodus account. This is a development release; CPU verification is not hardware qualification.
 
-Dev14 adds live daemon diagnostics, persistent training checkpoint directories,
-and explicit workload privacy requirements. See the
-[dev14 change record](release-dev14.md) for verification and limits.
+The package includes live daemon diagnostics, persistent training checkpoint directories,
+and explicit workload privacy requirements. Dev15 adds private partition authority
+and durable ownership fences; connected partition execution remains unavailable.
+See the [dev15 change record](release-dev15.md) for verification and limits.
 
 ## Current implementation
 
@@ -31,15 +32,15 @@ silently fall back to ordinary Docker, MIG or MPS execution. See the
 
 For an existing GPU cluster, use `/opt/nodus-dc/current/bin/python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](../kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev14 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev15 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
 Python 3.11+ is required. Runtime/build have no third-party Python dependencies. From an unpacked source archive or repository checkout, build deterministic wheel/sdist archives using only the standard library:
 
 ```sh
-python3 build_backend.py
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev14-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 build_backend.py &&
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev15-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 The installer keeps the CLI and Python interpreter under `/opt/nodus-dc/current/bin`;

@@ -15,19 +15,19 @@ end-to-end qualification are still in progress; see the [support matrix](docs/su
 Use a Linux GPU host with a supported NVIDIA driver, Docker and NVIDIA Container
 Toolkit. Run as the trusted host operator with GPU and Docker permissions.
 
-Download these three files from [dev14](https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev14)
+Download these three files from [dev15](https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev15)
 into one empty directory:
 
-- [GPU management package](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/nodus_datacenter-0.1.0.dev14-py3-none-any.whl)
-- [Installer (`install.py`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/install.py)
-- [Checksums (`SHA256SUMS`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev14/SHA256SUMS)
+- [GPU management package](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev15/nodus_datacenter-0.1.0.dev15-py3-none-any.whl)
+- [Installer (`install.py`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev15/install.py)
+- [Checksums (`SHA256SUMS`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev15/SHA256SUMS)
 
 Open a Linux terminal in that directory. The paths below normally require a root
 shell. Verify the downloaded files, then install and start the dashboard:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS &&
-python3 install.py install --wheel nodus_datacenter-0.1.0.dev14-py3-none-any.whl \
+python3 install.py install --wheel nodus_datacenter-0.1.0.dev15-py3-none-any.whl \
   --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc &&
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc serve
 ```
@@ -76,6 +76,6 @@ allocation authority; reclaim keeps resources held until cleanup is verified.
   qualification remain incomplete. The dashboard does not certify those paths.
 
 Read the [support matrix](docs/support-matrix.md), [privacy and isolation model](docs/threat-model.md),
-[API reference](docs/api.md), and [dev14 changes](docs/release-dev14.md) for details.
+[API reference](docs/api.md), and [dev15 changes](docs/release-dev15.md) for details.
 
 Apache-2.0. CPU checks: `PYTHONPATH=src python3 -m unittest discover -s tests`.

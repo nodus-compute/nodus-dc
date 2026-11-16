@@ -14,6 +14,7 @@ import time
 import unittest
 
 from nodus_dc import __version__
+from nodus_dc.authority_fence import AuthorityFence
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend, Clock
@@ -22,6 +23,64 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DistributionTests(unittest.TestCase):
+    def test_schema4_refuses_published_dev14_without_changing_ownership(self):
+        legacy_path = os.environ.get("NODUS_PARTITION_LEGACY_WHEEL")
+        if not legacy_path:
+            self.skipTest("offline published dev14 wheel required for schema4 downgrade verification")
+        legacy = Path(legacy_path).resolve()
+        legacy_sha = "8ef7558a94a52f9ecb1319fa18431b727c7f9021e5d9134b99edb0f520efc625"
+        self.assertEqual(hashlib.sha256(legacy.read_bytes()).hexdigest(), legacy_sha)
+        spec = importlib.util.spec_from_file_location("build_partition_compatibility", ROOT / "build_backend.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        # The real registry requires private, non-writable ancestry, unlike /tmp.
+        with tempfile.TemporaryDirectory(prefix=".nodus-downgrade-", dir=Path.home().resolve()) as folder:
+            base = Path(folder)
+            wheel = base / "wheels" / builder.build_wheel(base / "wheels")
+            prefix, state = base / "install", base / "state"
+            command = [sys.executable, str(ROOT / "tools/install.py")]
+            common = ["--prefix", str(prefix), "--state-dir", str(state)]
+            for candidate in (legacy, wheel):
+                installed = subprocess.run([*command, "install", *common, "--wheel", str(candidate)],
+                                           capture_output=True, text=True, timeout=90)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+            clock = Clock()
+            service = Service(Store(state / "authority.sqlite3"), Backend(clock), clock=clock)
+            registry = base / "registry" / "fence.json"
+            service.store.fence = AuthorityFence(registry, service.store.path)
+            keeper = sqlite3.connect(service.store.path)
+            try:
+                keeper.execute("PRAGMA journal_mode=WAL")
+                keeper.execute("PRAGMA wal_autocheckpoint=0")
+                service.partitions.ensure_durable()
+                held = service.reserve(resources=["GPU-aaaa"], mode="exclusive_gpu",
+                                       expires_at=1100, request_key="schema4-held")
+                self.assertEqual(keeper.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0], "4")
+                self.assertGreater((state / "authority.sqlite3-wal").stat().st_size, 32)
+                before = list(keeper.iterdump())
+                fence = registry.read_bytes()
+                current = os.readlink(prefix / "current")
+                manifest = (prefix / "installation.json").read_bytes()
+                attempts = [
+                    ["activate", *common, "--release", legacy_sha[:20]],
+                    ["install", *common, "--wheel", str(legacy)],
+                    ["install", "--prefix", str(base / "new-install"), "--state-dir", str(state),
+                     "--wheel", str(legacy)],
+                ]
+                for args in attempts:
+                    with self.subTest(action=args[:2]):
+                        refused = subprocess.run([*command, *args], capture_output=True, text=True, timeout=90)
+                        self.assertNotEqual(refused.returncode, 0)
+                        self.assertIn("candidate cannot open the current authority state", refused.stderr)
+                        self.assertEqual(os.readlink(prefix / "current"), current)
+                        self.assertEqual((prefix / "installation.json").read_bytes(), manifest)
+                        self.assertEqual(list(keeper.iterdump()), before)
+                        self.assertEqual(registry.read_bytes(), fence)
+                        self.assertEqual(service.get(held["id"])["state"], "reserved")
+                self.assertFalse((base / "new-install").exists())
+            finally:
+                keeper.close()
+
     def test_locked_sqlite_compatibility_snapshot_has_deadline(self):
         spec = importlib.util.spec_from_file_location("installer_deadline", ROOT / "tools/install.py")
         installer = importlib.util.module_from_spec(spec)
