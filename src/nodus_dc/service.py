@@ -116,6 +116,23 @@ class Service:
         with self.store.connection() as db:
             return Store.lease(db, lease_id)
 
+    def partition_binding(self, lease_id, *, generation):
+        """Read exact MIG device evidence under the existing allocation lock.
+
+        This internal experimental seam grants no external execution authority.
+        Runtime qualification and scoped bridge admission remain separate gates.
+        """
+        from .mig_binding import observe_lease
+        with self.authority():
+            lease = self.get(lease_id)
+            self._fence(lease, generation)
+            if lease["expires_at"] <= self.clock():
+                raise Error("lease_expired", "expired ownership cannot supply device binding evidence", 409)
+            evidence = observe_lease(self.backend, lease)
+            if lease["expires_at"] <= self.clock():
+                raise Error("lease_expired", "ownership expired while observing the device binding", 409)
+            return evidence
+
     def bridge_policy_state(self):
         with self.store.connection() as db:
             row = db.execute("SELECT policy_revision,enabled,authorization_id,consent_reference,expires_at "
