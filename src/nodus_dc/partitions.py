@@ -326,7 +326,11 @@ class PartitionAuthority:
                 if exc.code in {"partition_executor_unqualified", "partition_terms_unavailable", "partition_policy_unavailable", "partition_policy_expired", "host_resources_unaccounted", "host_resources_unenforced", "external_not_authorized"}:
                     return {"offers": []}
                 raise
-            return {"offers": offers[:32]}
+            report = {"offers": offers}
+            # Match the Unix API serializer; never silently omit eligible partitions.
+            if len(offers) > 64 or len(json.dumps(report, sort_keys=True, allow_nan=False).encode()) > 65536:
+                raise Error("partition_offer_report_too_large", "complete partition offer report exceeds its wire limit", 503)
+            return report
 
     @staticmethod
     def _identity(request): return request["platform_lease_id"], request["platform_epoch"]

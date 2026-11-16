@@ -25,6 +25,8 @@ Use the normal reserve/release workflow to obtain and hand back that parent main
 
 All methods are POSTs under `/v2/bridge/partitions/` on the existing private bridge Unix socket. Local credentials, the local management socket and loopback HTTP cannot use it. Duplicate, missing, unknown and nonfinite fields are refused; v2 bodies are limited to 64 KiB. There is no v1 fallback.
 
+An `offers` response contains at most 64 complete offers, allowing an eight-GPU host with seven instances per GPU when the complete serialized response also fits 64 KiB. A count or byte overflow refuses the whole report with `partition_offer_report_too_large`; it never truncates the list. This observation limit grants no execution permission and leaves the one-borrower-per-host and production-provider gates unchanged.
+
 The wire matches `nodus-platform/internal/node/authority/partitions.go`. Its nested Workload reuses the existing `workload_image` and `workload_kind` JSON names. Every response echoes the full immutable request; only an unknown local generation may resolve to the recorded positive generation.
 
 | Operation | Result |
