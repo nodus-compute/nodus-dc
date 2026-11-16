@@ -9,6 +9,8 @@ import re
 import sys
 
 from .serving import engine_command, profile, ServingError
+from . import privacy
+from .errors import Error
 
 
 MODEL_ID = 'Qwen/Qwen2.5-0.5B-Instruct'
@@ -25,7 +27,7 @@ def _name(value, label):
 
 def render(engine, *, name, namespace, model_pvc, resource_key='nvidia.com/gpu',
            model_manifest_sha256, runtime_class=None, memory_fraction=0.45,
-           version=None):
+           version=None, required_privacy='trusted_host'):
     """One GPU-resource unit, one pinned model, no public or cluster service.
 
     The operator must verify the read-only PVC is the annotated exact snapshot.
@@ -33,6 +35,10 @@ def render(engine, *, name, namespace, model_pvc, resource_key='nvidia.com/gpu',
     nvidia.com/gpu can mean full GPU, MIG-single, or time-sliced access.
     NetworkPolicy requires an enforcing CNI and is not a security attestation.
     """
+    try:
+        privacy.require(required_privacy)
+    except Error as exc:
+        raise ServingError(str(exc)) from None
     spec = profile(engine, version)
     for value, label in ((name, 'name'), (namespace, 'namespace'), (model_pvc, 'model_pvc')):
         _name(value, label)
@@ -52,6 +58,7 @@ def render(engine, *, name, namespace, model_pvc, resource_key='nvidia.com/gpu',
         'nodus.dev/model-revision': MODEL_REVISION,
         'nodus.dev/model-manifest-sha256': model_manifest_sha256,
         'nodus.dev/resource-semantics': 'defined-by-existing-device-plugin-configuration',
+        'nodus.dev/required-privacy': required_privacy,
     }
     pod_spec = {
         'automountServiceAccountToken': False,
@@ -109,6 +116,8 @@ def main(argv=None):
     cmd.add_argument('--model-manifest-sha256', required=True)
     cmd.add_argument('--resource-key', default='nvidia.com/gpu')
     cmd.add_argument('--runtime-class')
+    cmd.add_argument('--required-privacy', choices=privacy.REQUIREMENTS, default='trusted_host',
+                     help='a RuntimeClass name alone does not establish host-confidential execution')
     cmd.add_argument('--memory-fraction', type=float, default=0.45)
     args = vars(parser.parse_args(argv))
     args.pop('command')

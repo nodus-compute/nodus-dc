@@ -22,6 +22,13 @@ the [dev13 change record](docs/release-dev13.md) for verification and limits.
 
 AMD, Intel, vGPU licensing, CUDA interception, hostile multi-tenant MPS, VM passthrough, live migration and fractional external lending are not implemented by this package. Model sleep is not permission to lend a GPU.
 
+Workloads currently trust the host operator. `status` reports this under `privacy`.
+Use `reserve --required-privacy host_confidential` when host confidentiality is
+mandatory: the current backend refuses that request before allocation. The same
+requirement is available on bridge claims and Kubernetes rendering. It cannot
+silently fall back to ordinary Docker, MIG or MPS execution. See the
+[confidentiality requirements and remaining implementation](docs/threat-model.md#workload-confidentiality).
+
 For an existing GPU cluster, use `/opt/nodus-dc/current/bin/python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
 For standalone inference, follow the [versioned vLLM and SGLang recipes](docs/serving-profiles.md). The generator supports the installed dev7, dev8, dev9, dev10, dev11, dev12 and dev13 packages and requires an explicit numerical profile. [Dev7 hardware observations](docs/hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.

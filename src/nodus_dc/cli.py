@@ -18,6 +18,7 @@ from .backend import NvidiaDockerBackend
 from .errors import Error
 from .service import Service
 from .store import Store
+from .privacy import REQUIREMENTS
 
 
 def parser():
@@ -57,6 +58,8 @@ def parser():
     reserve.add_argument("--mode", choices=["exclusive_host", "exclusive_gpu", "hardware_partition", "gpu_configuration", "trusted_mps"], required=True)
     reserve.add_argument("--ttl-seconds", type=int, required=True)
     reserve.add_argument("--request-key", default=None)
+    reserve.add_argument("--required-privacy", choices=REQUIREMENTS, default="trusted_host",
+                         help="host_confidential refuses admission without an attested execution backend")
     for command in ("start", "drain", "release", "configure", "recover", "native-handoff", "native-return"):
         q = sub.add_parser(command)
         q.add_argument("lease_id")
@@ -130,7 +133,8 @@ def main(argv=None):
             result = getattr(service, args.command)()
         elif args.command == "reserve":
             result = service.reserve(resources=args.resource, mode=args.mode,
-                                     expires_at=time.time() + args.ttl_seconds, request_key=request_key)
+                                     expires_at=time.time() + args.ttl_seconds, request_key=request_key,
+                                     required_privacy=args.required_privacy)
         elif args.command == "start":
             workload = json.load(sys.stdin) if args.workload == "-" else json.loads(Path(args.workload).read_text())
             result = service.start(args.lease_id, generation=args.generation, request_key=request_key, workload=workload)

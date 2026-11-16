@@ -2,6 +2,39 @@
 
 This development release does not claim hostile-tenant GPU isolation. The local management plane is an operator tool. Root, Docker administrators, device-plugin administrators, the configured bridge process and the physical host are trusted. Anyone who can edit the authority database or use an independent privileged GPU launcher can bypass the managed ownership model.
 
+## Workload confidentiality
+
+This package currently runs workloads with a trusted host operator. TLS protects
+traffic on a configured encrypted connection; it does not hide decrypted inputs,
+models, memory, logs or outputs from that operator. MIG resource separation and
+cooperative MPS sharing do not establish host confidentiality.
+
+Callers can require `host_confidential` through `reserve --required-privacy`, the
+reserve/bridge-claim API, or Kubernetes rendering. The package refuses these
+requests with no allocation or generated Pod. `trusted_host` remains the explicit
+default for existing workloads. Status reports this boundary under `privacy`.
+No hardware name, inventory flag, image label or RuntimeClass name overrides it.
+
+A future confidential backend must verify fresh CPU and every assigned GPU's
+attestation, approved guest/workload measurements, production security modes and
+certificate/reference validity, then release workload keys only to the bound
+approved guest. It also needs protected inputs/outputs/storage and a qualified
+GPU reset/reassignment lifecycle. These are missing implementation and hardware
+qualification requirements, not assurances supplied by the current API.
+[NVIDIA's CVM threat model](https://docs.nvidia.com/confidential-computing/virtual-machines/v1.0.0/threat-model)
+requires whole-GPU assignment and excludes MIG/MPS in its documented CC
+configurations. Fractional packing and confidentiality therefore need separate
+qualified execution paths; there is no automatic downgrade to ordinary sharing.
+
+The upstream integration candidate is
+[Confidential Containers with NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/25.10/confidential-containers-deploy.html):
+Kata supplies the guest boundary and Trustee appraises CPU/GPU evidence before
+releasing secrets. Its documented early-access status and platform constraints
+require evaluation before production adoption. Nodus does not yet deploy or
+qualify this stack.
+
+## Existing boundaries
+
 | Asset / boundary | Implemented control | Residual risk / required qualification |
 | --- | --- | --- |
 | Physical GPU ownership | Canonical host-to-database registry, interprocess flock, SQLite immediate transactions, ancestor/descendant conflicts | All managed admission paths must use this authority; independent administrator workloads remain outside it |

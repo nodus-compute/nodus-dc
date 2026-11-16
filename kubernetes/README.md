@@ -2,6 +2,12 @@
 
 This integration renders pinned vLLM or SGLang Pods using the cluster's existing NVIDIA device plugin or GPU Operator. The Kubernetes scheduler and kubelet own allocations. Nodus does not claim the same devices in SQLite, create a second device plugin, edit GPU Operator configuration, repartition nodes, or make a platform capacity offer. Run the local inventory component in `--allocation-authority kubernetes` observe-only mode on these hosts.
 
+The generated Pod records `nodus.dev/required-privacy: trusted_host`. A RuntimeClass
+name does not attest the runtime or protect plaintext model PVCs from the host.
+Passing `--required-privacy host_confidential` refuses rendering, including for a
+confidential-sounding RuntimeClass. The package's attested execution and key-release
+integration remains unimplemented; see [workload confidentiality](../docs/threat-model.md#workload-confidentiality).
+
 The module is implemented and locally contract-tested. Strict server-side dry-runs have also been checked against a disposable Kubernetes API server. A valid manifest is not a qualified GPU runtime tuple. Engine startup as the non-root user, model access, CNI enforcement, actual inference, contention, and Pod removal/clean handback require a real cluster qualification receipt before describing a tuple as supported for production.
 
 ## Prerequisites and allocation semantics

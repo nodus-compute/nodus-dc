@@ -115,6 +115,43 @@ class ApiTests(unittest.TestCase):
                                   raw='{"platform_lease_id":"a","platform_lease_id":"b","platform_epoch":1}')[0], 400)
         self.assertEqual(self.server.service.status()["leases"], [])
 
+    def test_privacy_requirement_refuses_new_and_replayed_nonconfidential_admissions(self):
+        service = self.server.service
+        body = {"resources": ["GPU-aaaa"], "mode": "exclusive_gpu", "expires_at": 1500,
+                "request_key": "privacy", "required_privacy": "host_confidential"}
+        status, result = self.call("/v1/reserve", body, self.server.local_token, transport="local_unix")
+        self.assertEqual((status, result["error"]["code"]), (409, "privacy_unavailable"))
+        self.assertEqual(service.status()["leases"], [])
+        self.assertIsNone(service.status()["inventory"])
+        self.assertEqual(service.status()["privacy"]["supported_requirements"], ["trusted_host"])
+        self.assertTrue(service.status()["privacy"]["host_operator_may_access_workload"])
+        for value in (None, True, {}, "encrypted"):
+            status, result = self.call("/v1/reserve", dict(body, required_privacy=value),
+                                       self.server.local_token, transport="local_unix")
+            self.assertEqual((status, result["error"]["code"]), (400, "invalid_privacy_requirement"))
+        body["required_privacy"] = "trusted_host"
+        status, ordinary = self.call("/v1/reserve", body, self.server.local_token, transport="local_unix")
+        self.assertEqual(status, 200)
+        body["required_privacy"] = "host_confidential"
+        self.assertEqual(self.call("/v1/reserve", body, self.server.local_token, transport="local_unix")[0], 409)
+        self.assertEqual(service.get(ordinary["id"])["state"], "reserved")
+        service.release(ordinary["id"], generation=ordinary["generation"], request_key="release-ordinary")
+
+        token = self.bridge.bridge_token
+        self.assertEqual(self.call("/v1/bridge/policy", {"enabled": True, "policy_revision": 1,
+                         "consent_reference": "receipt", "authorization_id": "auth", "expires_at": 2000}, token)[0], 200)
+        claim = {"platform_lease_id": "privacy", "platform_epoch": 1, "policy_revision": 1,
+                 "idempotency_key": "privacy", "required_privacy": "host_confidential"}
+        status, result = self.call("/v1/bridge/claim", claim, token)
+        self.assertEqual((status, result["error"]["code"]), (409, "privacy_unavailable"))
+        with service.store.connection() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM platform_claims").fetchone()[0], 0)
+        claim["required_privacy"] = "trusted_host"
+        self.assertEqual(self.call("/v1/bridge/claim", claim, token)[0], 200)
+        claim["required_privacy"] = "host_confidential"
+        status, result = self.call("/v1/bridge/claim", claim, token)
+        self.assertEqual((status, result["error"]["code"]), (409, "privacy_unavailable"))
+
     def test_real_unix_bridge_lifecycle_preserves_fence(self):
         token = self.bridge.bridge_token
         self.assertEqual(self.call("/v1/bridge/policy", {"enabled":True,"policy_revision":1,

@@ -7,7 +7,7 @@ Except HTTP `/health` and the HTML shell, routes require `Authorization: Bearer 
 Local token routes (GET also available over HTTP; POST only on the local Unix socket):
 
 * `GET /v1/inventory`, `GET /v1/status`, `GET /v1/leases/{id}`.
-* `POST /v1/reserve`: `resources` array, `mode`, absolute `expires_at` within 24 hours, `request_key`.
+* `POST /v1/reserve`: `resources` array, `mode`, absolute `expires_at` within 24 hours, `request_key`, optional `required_privacy`.
 * `POST /v1/leases/{id}/start`: exact `generation`, `request_key`, `workload`.
 * `POST /v1/leases/{id}/drain` and `/release`: exact `generation`, `request_key` (drain optionally `reason`).
 * `POST /v1/leases/{id}/configure`: exact `generation`, `request_key`, `plan` with `enabled` and `profiles`.
@@ -38,13 +38,24 @@ Admission still performs the ordinary fresh resource and ownership checks.
 Capacity participation policy is displayed separately; it does not establish
 authorization for a particular external workload or a clean host handback.
 
+The `privacy` field reports the execution protection implemented by this package,
+independently of inventory health or hardware qualification. Its supported
+requirement is `trusted_host`: host administrators may access workload contents.
+`required_privacy` on reserve and bridge claim accepts `trusted_host` (the default)
+or `host_confidential`. The latter currently returns HTTP 409 `privacy_unavailable`
+before inventory, allocation, claim creation, or replay. Unknown or incorrectly
+typed values return HTTP 400 `invalid_privacy_requirement`. An existing ordinary
+reservation/claim cannot satisfy a replay that requests confidential execution.
+This is a fail-closed requirement, not a confidential execution implementation.
+See [the confidentiality boundary](threat-model.md#workload-confidentiality).
+
 Bridge token routes, all POST and only on the bridge Unix socket:
 
 | Path under `/v1/bridge/` | Body | Result |
 | --- | --- | --- |
 | `policy` | `enabled`, increasing integer `policy_revision`, verified opaque `consent_reference`, `authorization_id`, `expires_at` | Current policy; any change drains existing external lease |
 | `status` | `{}` | `available`, `policy_revision`, `reason` |
-| `claim` | `platform_lease_id`, positive `platform_epoch`, `policy_revision`, `idempotency_key`, optional `expires_at`, exact `workload_image` and `workload_kind` | Local `lease_id`, monotonic `generation`, held/retired/state |
+| `claim` | `platform_lease_id`, positive `platform_epoch`, `policy_revision`, `idempotency_key`, optional `expires_at` and `required_privacy`, exact `workload_image` and `workload_kind` | Local `lease_id`, monotonic `generation`, held/retired/state |
 | `check` | platform tuple and exact `generation` | `authorized`; required immediately before launch and during execution |
 | `inspect` | platform tuple | Held reservation even when revoked/dirty; never authorizes launch |
 | `reclaim` | platform tuple, optional exact generation | Retires tuple; absent tuple gets durable tombstone before inspection |

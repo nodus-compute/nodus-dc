@@ -1,14 +1,31 @@
 import tempfile
 import unittest
+import contextlib
+import io
+import json
 from pathlib import Path
 
-from nodus_dc.cli import parser, sync_connection
+from nodus_dc.cli import main, parser, sync_connection
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend, Clock
 
 
 class CliTests(unittest.TestCase):
+    def test_confidential_reserve_stops_before_gpu_inventory_or_allocation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stderr, stdout = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+                result = main(["--state-dir", folder, "--allocation-authority", "standalone", "reserve",
+                               "--resource", "GPU-aaaa", "--mode", "exclusive_gpu", "--ttl-seconds", "60",
+                               "--required-privacy", "host_confidential"])
+            self.assertEqual(result, 1)
+            self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "privacy_unavailable")
+            self.assertEqual(stdout.getvalue(), "")
+            with Store(Path(folder) / "authority.sqlite3").connection() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM leases").fetchone()[0], 0)
+                self.assertIsNone(db.execute("SELECT value FROM meta WHERE key='inventory'").fetchone())
+
     def test_connection_flags_bind_scope_and_explicit_window(self):
         args = parser().parse_args(["connection", "connect", "--platform-url", "https://platform.example",
                                     "--namespace", "ns", "--pool", "pool", "--node", "node", "--token-file", "cloud.token",
