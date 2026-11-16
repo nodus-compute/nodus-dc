@@ -3,17 +3,20 @@ import copy
 import json
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
 
 from nodus_dc.errors import Error
+from nodus_dc.api import BridgeUnixServer
 from nodus_dc.model import CleanupProof
 from nodus_dc.service import Service
 from nodus_dc.store import Store
 from tests.test_authority import Backend as BaseBackend, Clock
 from tests.test_mig_binding import Devices, inventory
+from tests.test_api import UnixHTTPConnection
 
 GPU = "GPU-11111111-1111-4111-8111-111111111111"
 A = "MIG-22222222-2222-4222-8222-222222222222"
@@ -72,8 +75,8 @@ class Partitions(unittest.TestCase):
         return {"policy_revision":1,"available_until_unix_millis":2000000,"agreement":dict(self.agreement),"shapes":[{"shape":{
             "accelerator":"a100-40gb","profile":"3g.20gb","gpuMemoryBytes":21072183296,
             "cpuMillis":2000,"memoryBytes":3*1024**3,"scratchBytes":128*1024**2},"hourlyUSD":"1.00"}]}
-    def adopt(self, key):
-        lease=self.service.reserve(resources=[GPU],mode="gpu_configuration",expires_at=1500,request_key="maintenance-"+key)
+    def adopt(self, key, parent=GPU):
+        lease=self.service.reserve(resources=[parent],mode="gpu_configuration",expires_at=1500,request_key="maintenance-"+key)
         self.service.adopt_partitions(lease["id"],generation=lease["generation"],request_key="adopt-"+key)
         self.service.release(lease["id"],generation=lease["generation"],request_key="release-"+key)
     def request(self, resource=B, name="borrowed"):
@@ -83,6 +86,77 @@ class Partitions(unittest.TestCase):
     def assert_error(self,code,callback):
         with self.assertRaises(Error) as exc: callback()
         self.assertEqual(exc.exception.code,code)
+
+    def test_complete_multi_gpu_offer_report_is_bounded_without_truncation(self):
+        host, parent, child = self.backend.rows[:3]
+        policy = self.synthetic_policy(None)
+        policy["shapes"][0]["shape"].update(profile="1g.5gb", gpuMemoryBytes=5268045824, cpuMillis=1000, memoryBytes=1024**3)
+        self.agreement.update(node_id="bnod_"+"a"*26, consent_id="bpcs_"+"b"*26)
+        policy["agreement"] = self.agreement
+        self.p.policy_provider = lambda db, **kwargs: policy
+
+        def fleet(counts):
+            rows, mapping, parents = [host], ["config 1\n", "monitor 2\n"], []
+            for index, count in enumerate(counts):
+                gpu = f"GPU-00000000-0000-4000-8000-{index+1:012x}"
+                pci = f"0000:{index+1:02x}:00.0"
+                parents.append(gpu)
+                rows.append(replace(parent, id=gpu, device_uuid=gpu, details={**parent.details, "pci_bus_id":pci}))
+                self.p.devices.files[f"/proc/driver/nvidia/gpus/{pci}/information"] = f"GPU UUID: {gpu}\nDevice Minor: {index}\n"
+                self.p.devices.nodes[f"/dev/nvidia{index}"] = (195,index)
+                for part in range(count):
+                    mig = f"MIG-00000000-0000-4000-8000-{index*7+part+1:012x}"
+                    gi = 7+part
+                    rows.append(replace(child, id=mig, device_uuid=mig, parent=gpu, details={**child.details,
+                        "gpu_instance_id":gi, "profile":"1g.5gb", "memory_capacity_bytes":5268045824}))
+                    for suffix, minor in (("access",3+index*135+gi*9),("ci0/access",4+index*135+gi*9)):
+                        mapping.append(f"gpu{index}/gi{gi}/{suffix} {minor}\n")
+                        self.p.devices.files[f"/proc/driver/nvidia/capabilities/gpu{index}/mig/gi{gi}/{suffix}"] = f"DeviceFileMinor: {minor}\n"
+                        self.p.devices.nodes[f"/dev/nvidia-caps/nvidia-cap{minor}"] = (508,minor)
+            self.backend.rows = tuple(rows)
+            self.p.devices.files["/proc/driver/nvidia-caps/mig-minors"] = "".join(mapping)
+            for index, gpu in enumerate(parents): self.adopt(f"fleet-{sum(counts)}-{index}", gpu)
+            return {r.id for r in rows if r.kind == "partition"}
+
+        expected = fleet([7]*8)
+        server = BridgeUnixServer(str(self.root/"offers.sock"), self.service, "fixture-"+"x"*40, owner_uid=os.geteuid())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def request():
+            connection = UnixHTTPConnection(server.path)
+            try:
+                connection.request("POST", "/v2/bridge/partitions/offers", b"{}", {"Authorization":"Bearer "+server.bridge_token})
+                response = connection.getresponse()
+                return response.status, response.read(65537)
+            finally: connection.close()
+        try:
+            status, raw = request()
+            self.assertEqual(status, 200); self.assertLessEqual(len(raw), 65536)
+            offers = json.loads(raw)["offers"]
+            self.assertEqual(len(offers), 56)
+            self.assertEqual({o["partition"]["resource_id"] for o in offers}, expected)
+            self.assertEqual(len({(o["partition"]["parent_uuid"],o["partition"]["gpu_instance"]) for o in offers}), 56)
+
+            # Individually valid identifier lengths can still overflow the complete response.
+            self.agreement.update(node_id="n"*128, consent_id="c"*128)
+            self.assertGreater(len(json.dumps({"offers":[{**o,"agreement":self.agreement} for o in offers]},sort_keys=True,allow_nan=False).encode()),65536)
+            status, raw = request()
+            self.assertEqual(status,503)
+            self.assertEqual(json.loads(raw)["error"]["code"],"partition_offer_report_too_large")
+            self.assertNotIn("offers",json.loads(raw))
+            self.agreement.update(node_id="bnod_"+"a"*26, consent_id="bpcs_"+"b"*26)
+            self.assertEqual(len(json.loads(request()[1])["offers"]),56)
+
+            fleet([7]*9+[2])
+            status, raw = request()
+            self.assertEqual(status,503)
+            self.assertEqual(json.loads(raw)["error"]["code"],"partition_offer_report_too_large")
+            with self.service.store.connection() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM partition_claims").fetchone()[0],0)
+                self.assertEqual(db.execute("SELECT count(*) FROM leases WHERE state!='released'").fetchone()[0],0)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(5)
+            self.assertFalse(thread.is_alive())
 
     def test_invalid_driver_preflight_does_not_mutate_configuration(self):
         lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="preflight")
