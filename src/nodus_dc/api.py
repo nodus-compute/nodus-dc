@@ -306,6 +306,11 @@ class Handler(BaseHTTPRequestHandler):
                 return terminal_retirement(service, parts[3])
         if method == "POST":
             body = self.body(limit=65536 if path.startswith("/v2/bridge/") else 1024*1024)
+            if path in {"/v2/bridge/partition-policy/context", "/v2/bridge/partition-policy/update"}:
+                if service.partition_policy is None:
+                    raise Error("partition_policy_unavailable", "independent partition policy provider is not installed", 503)
+                operation = service.partition_policy.read_context if path.endswith("/context") else service.partition_policy.update
+                return operation(**body)
             if path.startswith("/v2/bridge/partitions/"):
                 operation = path.removeprefix("/v2/bridge/partitions/")
                 methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete")}

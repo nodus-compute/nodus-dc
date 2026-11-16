@@ -8,7 +8,7 @@ The intended first shape is one external MIG GPU instance while local work occup
 
 An independent private registry at `/var/lib/nodus-dc-authority/fence.json` binds the database pathname, a random authority incarnation and a sequence. Every transaction after activation advances that registry before committing SQLite. Database rollback/replacement, registry loss or a crash between those writes refuses further authority operations. Do not remove either record to clear an error. Recovery requires a separately reviewed, explicitly drained recovery procedure; automatic restoration while any owner is active or uncertain is unsupported. The registry trusts the host administrator and does not defeat malicious root rollback of both stores.
 
-Schema 4 prevents older package versions from ignoring these records. Fresh initialization commits separately before ordinary fallible request validation, so an unqualified/rejected request does not strand the host. A real interrupted registry write/SQLite commit remains fenced.
+Schema 4 prevents older package versions from ignoring allocation records. The first successful independent policy update advances state to schema 5, so published dev15 and earlier packages cannot reopen policy-bearing state. Fresh initialization commits separately before ordinary fallible request validation, so an unqualified/rejected request does not strand the host. A real interrupted registry write/SQLite commit remains fenced.
 
 MIG configure records `changing` and advances a separate parent configuration generation before the first driver mutation. The existing exclusive parent maintenance lease excludes child allocations. A complete fresh observation commits the exact UUID/PCI/GI/CI/profile/capability devices and boot/driver identity. Ordinary inventory never adopts a configuration. Missing, stale, malformed or changed observation, or a continuity-monitor failure, durably quarantines it. Returning to the previous hash does not revive it.
 
@@ -39,6 +39,35 @@ The wire matches `nodus-platform/internal/node/authority/partitions.go`. Its nes
 Tombstones retain the complete normalized payload, including workload, resources, offer and expiry. An unknown tuple acquires no device ownership and authorizes no device cleanup. All v1 tuple methods reject v2 tuples, and vice versa. A held completion requires its resolved generation. Failed cleanup, expiry and quarantine retain all reservations. No v2 method calls whole-host cleanup or resets a GPU parent.
 
 Platform sharing generation is persisted separately from local policy and lease generations. An explicit current partition-agreement provider remains required; the current whole-host sharing response is never reinterpreted as partition consent.
+
+## Partition permission delivery (unregistered)
+
+`PartitionPolicy` implements the standalone half of permission delivery. The production service leaves both `service.partition_policy` and `partitions.policy_provider` unset. Context/update requests return `partition_policy_unavailable` until a trusted integration explicitly installs verified enrollment and independent local image-restriction callbacks. Installing this provider does not install a device observer or qualified executor. No new daemon, file watcher, platform credential file, or background poller is introduced.
+
+Two additional POST routes use the same private socket and bridge credential:
+
+* `/v2/bridge/partition-policy/context` accepts `{}` and returns `context: {nonce, boot_id}` plus `boottime_ns`. Both IDs are canonical nonzero UUIDs. The nonce is fresh for this process, independent of the persisted authority incarnation. The existing node agent must forward it through its authenticated Hello and receive the exact echoed context before updating policy.
+* `/v2/bridge/partition-policy/update` accepts one of the strict variants below. Unknown, missing, duplicate and nonfinite fields are rejected. Integers are signed 64-bit nonnegative values unless specified otherwise. All requests and serialized responses remain bounded to 64 KiB.
+
+Every update contains `action`, `context`, `node_id` (exact enrolled `bnod_` spelling), `host_epoch` (zero for ordinary BYOC, otherwise the exact positive reserved-host epoch), and positive `stream_epoch`.
+
+| Action | Additional required fields |
+| --- | --- |
+| `grant` | `grant: {agreement, terms_json, allowed_images}` and `freshness: {echoed_boottime_ns, valid_for_ns, available_until_unix_millis}` |
+| `withdraw` | `agreement` |
+| `session_revoke` | None |
+
+`agreement` retains exactly the existing four fields: `node_id`, canonical nonzero UUID `consent_id`, positive sharing `generation`, and lowercase `terms_sha256`. `terms_json` carries the exact UTF-8 bytes emitted by the platform's Go terms serializer. Its SHA-256 must equal the agreement digest; Python never reserializes terms to compute that digest. The parsed object must be valid `MIGPartitionV1` terms with exact priced shapes. The delivery subset permits at most 24 KiB of terms and `allowed_images` either null or at most 16 unique digest-pinned image references of at most 512 UTF-8 bytes each. The exact encoded response is checked before mutation; escape-heavy text may exceed the response limit even within those individual bounds and is refused without truncation.
+
+`allowed_images` is an additional platform restriction. It intersects the independently supplied local partition image restriction; null cannot broaden local restrictions. Only digest-pinned Jobs are supported. The immutable grant comprises agreement, exact terms string and ordered image restriction. Same-generation differing immutable data is refused. Freshness is separate: `valid_for_ns` is 1 through 30,000,000,000; checked addition produces the fixed returned deadline `echoed_boottime_ns + valid_for_ns`. Future echoes, already expired deadlines and backwards heartbeat echoes are refused. Wall-clock `available_until_unix_millis` is an additional finite cap. Rolling renewal changes neither the immutable grant nor its local policy revision, and never changes an already held lease's frozen expiry.
+
+Every update response has exactly `context`, `node_id`, `host_epoch`, `stream_epoch`, `state`, `policy_revision`, `grant`, `agreement`, and `valid_until_boottime_ns`. A grant returns state `active`, its exact grant and agreement, and the checked deadline. Withdrawal returns `withdrawn`, null grant, exact agreement, and deadline zero. Session revocation returns `session_revoked`, null grant/agreement, and deadline zero. Local policy revisions are positive; they change on replacement of permission/session or local restrictions, not ordinary renewal.
+
+Positive permission exists only in memory. SQLite plus the independent registry retain immutable generation payloads, withdrawal fences, stream closure and local revisions. A restart starts with no permission and a new nonce; the same persisted stream cannot reauthorize it. A new authenticated stream/context handshake is required. Higher sharing generations supersede earlier ones even if an intermediate withdrawal was lost. Expiry durably closes the stream and retires its claims, including when an ordinary admission transaction must roll back. A delayed refresh cannot reopen that stream or publish fresh offers: a higher authenticated stream epoch is required. The old claim stays retired/held throughout; no new grant extends its expiry.
+
+The existing six partition routes remain distinct. Offers, new claims and checks require current independent permission, exact runtime/device evidence and budget enforcement. Inspect, reclaim and complete require authenticated exact retained scope but do not require current permission. Withdrawal, expiry, session loss and uncertain replies never release hardware or host budgets. Only the original scoped cleanup proof releases a held lease; parent reset remains forbidden.
+
+The wire allows one offer per compute instance. The provider selects the first canonical approved price shape matching the accelerator, MIG profile and GPU memory that fits available host resources. Its exact CPU/RAM/scratch bundle becomes `offer.capacity`; a claim must request that complete bundle. There is no proportional price fallback or implicit alternate-shape selector. Funded platform placement and the final resource-specific price remain separate requirements.
 
 ## Shared host resources and executor boundary
 
