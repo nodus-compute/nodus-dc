@@ -6,11 +6,16 @@ from nodus_dc import __version__
 from nodus_dc.serving import ServingError, build_workload
 
 
+NUMERICAL_PROFILES = ('default-v1', 'deterministic-v1', 'deterministic-triton-v1')
+
+
 def descriptor(engine, model_directory, *, numerical_profile, network, host_port):
     if __version__ not in ('0.1.0.dev7', '0.1.0.dev8', '0.1.0.dev9', '0.1.0.dev10', '0.1.0.dev11', '0.1.0.dev12', '0.1.0.dev13', '0.1.0.dev14'):
         raise ServingError('this recipe requires nodus-datacenter 0.1.0.dev7 through 0.1.0.dev14')
-    if numerical_profile not in ('default-v1', 'deterministic-v1'):
+    if numerical_profile not in NUMERICAL_PROFILES:
         raise ServingError('unknown numerical profile')
+    if numerical_profile == 'deterministic-triton-v1' and engine != 'sglang':
+        raise ServingError('deterministic-triton-v1 requires --engine sglang')
     if network not in ('loopback', 'none'):
         raise ServingError('network must be loopback or none')
     workload = build_workload(engine, model_directory, host_port=host_port)
@@ -21,6 +26,12 @@ def descriptor(engine, model_directory, *, numerical_profile, network, host_port
             workload['command'].extend([
                 '--enable-deterministic-inference', '--attention-backend', 'fa3',
             ])
+    elif numerical_profile == 'deterministic-triton-v1':
+        # SGLang 0.5.23 supports deterministic Triton on Ampere; FA3 targets Hopper.
+        # Keep this explicit recipe separate from the historical FA3 profile.
+        workload['command'].extend([
+            '--enable-deterministic-inference', '--attention-backend', 'triton',
+        ])
     if network == 'none':
         workload['network'] = 'none'
         del workload['ports']
@@ -32,7 +43,8 @@ def main():
     parser.add_argument('--engine', choices=('vllm', 'sglang'), required=True)
     parser.add_argument('--model-directory', required=True)
     parser.add_argument('--numerical-profile',
-                        choices=('default-v1', 'deterministic-v1'), required=True)
+                        choices=NUMERICAL_PROFILES, required=True,
+                        help='deterministic-triton-v1 is SGLang-only; GPU qualification is separate')
     parser.add_argument('--network', choices=('loopback', 'none'), default='loopback')
     parser.add_argument('--host-port', type=int, default=18000)
     args = parser.parse_args()
