@@ -32,18 +32,57 @@ let credential = '',
   refreshFailed = false,
   renderedFresh = false,
   refreshSequence = 0,
-  refreshing = false;
+  refreshing = false,
+  refreshController = null;
 const REFRESH_TIMEOUT_MS = 120000;
 const element = (id) => document.getElementById(id);
 async function request(path, signal) {
   const r = await fetch(path, { signal, headers: { Authorization: 'Bearer ' + credential } });
-  const data = await r.json();
+  let data;
+  try {
+    data = await r.json();
+  } catch {
+    const error = Error('The daemon returned an unreadable response. Check it and try again.');
+    error.status = r.status;
+    throw error;
+  }
   if (!r.ok) {
-    const error = Error(data.error?.message || 'Request failed');
+    const error = Error(data?.error?.message || 'Request failed');
     error.status = r.status;
     throw error;
   }
   return data;
+}
+function validateStatus(value) {
+  const object = (x) => x !== null && typeof x === 'object' && !Array.isArray(x),
+    strings = (x) => Array.isArray(x) && x.every((v) => typeof v === 'string'),
+    count = (x) => Number.isSafeInteger(x) && x >= 0;
+  const a = value?.availability,
+    inv = value?.inventory;
+  // Check the fields consumed below before replacing a previously valid snapshot.
+  // Otherwise a rendering exception can leave an old positive count on screen.
+  if (
+    !object(value) || value.api_version !== 'nodus.datacenter.v1' ||
+    !object(a) || typeof a.state !== 'string' ||
+    !Number.isFinite(a.fresh_for_seconds) || a.fresh_for_seconds < 0 || a.fresh_for_seconds > 30 ||
+    !count(a.available_gpus) || !count(a.available_partitions) ||
+    !Array.isArray(a.resources) || !a.resources.every((x) =>
+      object(x) && typeof x.resource_id === 'string' && typeof x.reason === 'string') ||
+    !(inv === null || (object(inv) && Number.isFinite(inv.observed_at) &&
+      strings(inv.warnings) && Array.isArray(inv.resources) && inv.resources.every((x) =>
+        object(x) && typeof x.id === 'string' && typeof x.kind === 'string' &&
+        strings(x.modes) && object(x.details)))) ||
+    (a.state === 'fresh' && inv === null) ||
+    !Array.isArray(value.leases) || !value.leases.every((x) =>
+      object(x) && typeof x.id === 'string' && count(x.generation) &&
+      typeof x.owner === 'string' && strings(x.resources) &&
+      typeof x.state === 'string' && Number.isFinite(x.expires_at)) ||
+    !(value.bridge_policy === null || (object(value.bridge_policy) &&
+      [true, false, 0, 1].includes(value.bridge_policy.enabled) &&
+      Number.isFinite(value.bridge_policy.expires_at)))
+  )
+    throw Error('The daemon returned an invalid status snapshot. Check its version and try again.');
+  return value;
 }
 function node(tag, className, text) {
   const value = document.createElement(tag);
@@ -345,6 +384,7 @@ function locked() {
   element('warning-body').textContent = '';
   element('allocation-details').open = false;
   element('allocations-empty').hidden = true;
+  element('freshness').textContent = 'No observation yet';
 }
 function render() {
   if (!lastStatus) {
@@ -413,7 +453,6 @@ function busy(value) {
   refreshing = value;
   element('token').disabled = value;
   element('unlock').disabled = value;
-  element('lock').disabled = value;
   element('refresh').disabled = value || !credential;
   element('refresh').setAttribute('aria-busy', String(value));
   element('refresh-label').textContent = value ? 'Refreshing…' : 'Refresh inventory';
@@ -424,7 +463,9 @@ async function refresh() {
     controller = new AbortController(),
     focusTarget = document.activeElement;
   let timedOut = false;
+  refreshController = controller;
   busy(true);
+  element('lock').hidden = false;
   element('error').textContent = '';
   element('status').textContent = 'Reading current GPU inventory…';
   const timeout = setTimeout(() => {
@@ -433,12 +474,13 @@ async function refresh() {
   }, REFRESH_TIMEOUT_MS);
   try {
     await request('/v1/inventory', controller.signal);
+    if (sequence !== refreshSequence) return;
     const requestedAt = performance.now(),
       requestedWallAt = Date.now(),
       s = await request('/v1/status', controller.signal);
     if (timedOut) throw Error('Refresh timed out');
     if (sequence !== refreshSequence) return;
-    lastStatus = s;
+    lastStatus = validateStatus(s);
     receivedAt = requestedAt;
     receivedWallAt = requestedWallAt;
     lastClock = null;
@@ -468,15 +510,18 @@ async function refresh() {
       : error.message || 'Check the local daemon and try again.';
   } finally {
     clearTimeout(timeout);
-    busy(false);
-    if (element('login').hidden && ['token', 'unlock'].includes(focusTarget?.id))
-      element('refresh').focus();
-    else if (
-      document.hasFocus() &&
-      document.activeElement === document.body &&
-      ['token', 'unlock', 'refresh'].some((id) => element(id) === focusTarget)
-    )
-      focusTarget.focus();
+    if (sequence === refreshSequence) {
+      refreshController = null;
+      busy(false);
+      if (element('login').hidden && ['token', 'unlock'].includes(focusTarget?.id))
+        element('refresh').focus();
+      else if (
+        document.hasFocus() &&
+        document.activeElement === document.body &&
+        ['token', 'unlock', 'refresh'].some((id) => element(id) === focusTarget)
+      )
+        focusTarget.focus();
+    }
   }
 }
 setInterval(() => {
@@ -503,7 +548,9 @@ element('refresh').onclick = refresh;
 element('search').oninput = () => render();
 element('filter').onchange = () => render();
 element('lock').onclick = () => {
-  if (refreshing) return;
+  ++refreshSequence;
+  refreshController?.abort();
+  refreshController = null;
   credential = '';
   lastStatus = null;
   renderedFresh = false;
