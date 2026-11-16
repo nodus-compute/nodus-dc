@@ -1,9 +1,10 @@
-# Dev15 candidate: private partition authority
+# Dev15 development prerelease: private partition authority
 
-`0.1.0.dev15` is a source and package candidate. The latest published download
-remains dev14 until the reviewed dev15 assets are released.
+`0.1.0.dev15` is a development prerelease of the local GPU management package.
+Its allocator and private protocol are verified within the limits below;
+production GPU execution and connected partition lending remain unqualified.
 
-This candidate adds exact MIG device observations and a private v2 partition
+Dev15 adds exact MIG device observations and a private v2 partition
 authority. A local workload can retain one partition while the allocator reserves
 a disjoint sibling for a platform claim. Durable incarnation and configuration
 fences, exact request tombstones, and CPU/RAM/scratch reservations protect that
@@ -14,7 +15,7 @@ reservations. Whole-host v1 consent remains separate.
 and explicit partition-agreement provider are unset. Synthetic providers exercise
 the allocator; they are not supported GPU execution backends. No new lending
 offer, scheduler integration, payment flow or host-confidential execution is
-enabled by installing this candidate.
+enabled by installing this prerelease.
 
 The underlying authority source `84490a6eb05a6467bfc08a1608dc0def65585e3c`
 passed 207 Python checks, with four optional checks skipped. An independent Linux
@@ -22,7 +23,7 @@ run exercised the actual Go client against that source's Python private socket,
 SQLite store and external registry. It covered all six routes, sibling resource
 accounting, stale scope, replay, cleanup, expiry and database rollback using
 synthetic devices and enforcement. These are source-level protocol and allocator
-results, not tests of a dev15 release wheel. Candidate package, installed-path and
+results, not tests of a dev15 release wheel. Package, installed-path and
 artifact compatibility checks have their own exact-source receipts.
 
 Schema 4 state requires the independent authority registry. Older packages must

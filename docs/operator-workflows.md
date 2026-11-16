@@ -5,7 +5,7 @@ Local GPU inventory, explicit allocations, controlled hardware partitioning and 
 The package includes live daemon diagnostics, persistent training checkpoint directories,
 and explicit workload privacy requirements. Dev15 adds private partition authority
 and durable ownership fences; connected partition execution remains unavailable.
-See the [dev15 candidate change record](release-dev15.md) for verification and limits.
+See the [dev15 change record](release-dev15.md) for verification and limits.
 
 ## Current implementation
 
@@ -39,7 +39,7 @@ For standalone inference, follow the [versioned vLLM and SGLang recipes](serving
 Python 3.11+ is required. Runtime/build have no third-party Python dependencies. From an unpacked source archive or repository checkout, build deterministic wheel/sdist archives using only the standard library:
 
 ```sh
-python3 build_backend.py
+python3 build_backend.py &&
 python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev15-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
