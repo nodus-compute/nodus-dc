@@ -4,6 +4,14 @@
 Its allocator and private protocol are verified within the limits below;
 production GPU execution and connected partition lending remain unqualified.
 
+## Known issue: MIG configuration on some Linux hosts
+
+A hardware test of the published dev15 wheel on an A100 with driver 580.105.08 failed final MIG device verification with `partition_binding_unavailable` after configuration had begun. The maintenance lease remained held, and normal restoration was not verified. Experimental sandbox tests did not start.
+
+A confirmed compatibility bug in this release requires exactly 24 hexadecimal characters for the NVIDIA module source ID; valid Linux hosts have also reported 23. This is a candidate explanation for the failed run, whose source ID was not captured. A fix is under validation.
+
+Avoid using dev15 for new MIG configuration changes until the fix is qualified. If configuration has already failed, retain the authority state and held lease; do not delete the state or force a reset to bypass recovery.
+
 Dev15 adds exact MIG device observations and a private v2 partition
 authority. A local workload can retain one partition while the allocator reserves
 a disjoint sibling for a platform claim. Durable incarnation and configuration
