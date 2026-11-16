@@ -291,13 +291,17 @@ class Service:
                     raise Error("lease_not_startable", "lease is expired or no longer reserved")
                 self.backend.validate_workload(workload, lease)
                 directories = outputs(workload, lease["mode"])
-                if directories:
+                readonly = inputs(workload, lease["mode"])
+                if directories or readonly:
                     protected = [Path(self.store.path).parent, Path(__file__).resolve().parent]
+                    held_outputs = []
                     for row in db.execute("SELECT * FROM leases WHERE state!='released' AND id!=?", (lease_id,)):
                         other = Store.decode(row)
-                        protected.extend(outputs(other["workload"], other["mode"]))
+                        held_outputs.extend(outputs(other["workload"], other["mode"]))
                         protected.extend(inputs(other["workload"], other["mode"]))
-                    require_disjoint_outputs(directories, protected=protected)
+                    require_disjoint_outputs(directories, protected=[*protected, *held_outputs])
+                    for path in readonly:
+                        require_disjoint_outputs([path], protected=held_outputs)
                 lease = Store.update(db, lease, now, state="starting", workload=workload)
                 Store.event(db, now, lease, "start_intent", {"workload": workload})
             try:

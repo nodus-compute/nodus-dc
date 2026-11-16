@@ -120,6 +120,29 @@ class TrainingTests(unittest.TestCase):
         with service.store.connection() as db:
             self.assertEqual(Store.lease(db, lease["id"])["state"], "reserved")
 
+    def test_writer_reader_conflict_in_both_orders_and_reuse_after_release(self):
+        writer = self.workload()
+        reader = self.workload()
+        del reader["output_directory"]
+        reader["mounts"].append({"source": str(self.output), "target": "/data"})
+        for index, workloads in enumerate(((writer, reader), (reader, writer))):
+            with self.subTest(writer_first=index == 0):
+                clock, backend = Clock(), TrainingBackend(Clock())
+                service = Service(Store(self.root / f"state-{index}" / "authority.sqlite3"), backend, clock=clock)
+                leases = [service.reserve(resources=[resource], mode="hardware_partition",
+                          expires_at=1100, request_key=resource) for resource in ("MIG-aaaa", "MIG-bbbb")]
+                for lease, workload in zip(leases[:1], workloads[:1]):
+                    service.start(lease["id"], generation=lease["generation"], request_key="start-first", workload=workload)
+                second = leases[1]
+                with self.assertRaises(Error) as raised:
+                    service.start(second["id"], generation=second["generation"], request_key="start-second", workload=workloads[1])
+                self.assertEqual(raised.exception.code, "output_directory_conflict")
+                self.assertEqual(len(backend.running), 1)
+                first = leases[0]
+                service.release(first["id"], generation=first["generation"], request_key="release-first")
+                service.start(second["id"], generation=second["generation"], request_key="start-second", workload=workloads[1])
+                self.assertEqual(set(backend.running), {second["id"]})
+
     def test_mps_clients_need_disjoint_output_directories(self):
         backend = NvidiaDockerBackend(host_id="fixture", enable_trusted_mps=True)
         client = {"workload": self.workload(), "active_thread_percent": 50, "memory_mib": 1024}
