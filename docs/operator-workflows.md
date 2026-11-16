@@ -2,9 +2,10 @@
 
 Local GPU inventory, explicit allocations, controlled hardware partitioning and opt-in capacity participation. The local runtime works offline without a Nodus account. This is a development release; CPU verification is not hardware qualification.
 
-Dev14 adds live daemon diagnostics, persistent training checkpoint directories,
-and explicit workload privacy requirements. See the
-[dev15 candidate change record](release-dev15.md) for verification and limits.
+The package includes live daemon diagnostics, persistent training checkpoint directories,
+and explicit workload privacy requirements. Dev15 adds private partition authority
+and durable ownership fences; connected partition execution remains unavailable.
+See the [dev15 candidate change record](release-dev15.md) for verification and limits.
 
 ## Current implementation
 
