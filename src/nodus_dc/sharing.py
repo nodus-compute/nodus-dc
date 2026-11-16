@@ -6,6 +6,7 @@ All clients are reclaimed together; the physical lease stays exclusive.
 """
 from .errors import Error
 from .model import canonical, key
+from .workload_io import inputs, outputs, require_disjoint_outputs
 
 LABEL = "ai.nodus.datacenter"
 
@@ -33,6 +34,7 @@ def validate_pool(backend, workload, lease):
         percent += p
         memory += m * 1024**2
         ports += [row["host"] for row in client["workload"].get("ports", [])]
+    require_disjoint_outputs(outputs(workload, "trusted_mps"), protected=inputs(workload, "trusted_mps"))
     gpu = next((row for row in lease["baseline"] if row["id"] == lease["resources"][0]), None)
     if not gpu or gpu["kind"] != "gpu" or "trusted_mps" not in gpu["modes"]:
         raise Error("unsupported_mode", "device does not advertise trusted MPS")

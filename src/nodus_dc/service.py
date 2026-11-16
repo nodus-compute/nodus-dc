@@ -5,6 +5,7 @@ import fcntl
 import json
 import math
 import os
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -14,6 +15,8 @@ from .errors import Error
 from .model import (API_VERSION, HOLDING, LOCAL_MODES, CleanupProof, Snapshot,
                     canonical, digest, finite_time, key, overlap)
 from .store import Store
+from . import privacy
+from .workload_io import inputs, outputs, require_disjoint_outputs
 
 # Explicit installer capability: this implementation can retire a disappeared
 # MIG identity only after an actual boot fence and physical-parent cleanup proof.
@@ -107,7 +110,7 @@ class Service:
                                    now=self.clock(), last_wall_time=last)
             return {"api_version": API_VERSION, "inventory": inventory, "availability": availability,
                     "leases": leases, "bridge_policy": dict(policy) if policy else None,
-                    "hardware_qualified": False}
+                    "hardware_qualified": False, "privacy": privacy.capabilities()}
 
     def get(self, lease_id):
         with self.store.connection() as db:
@@ -268,7 +271,8 @@ class Service:
             Store.event(db, now, lease, "reserve", payload)
             return lease
 
-    def reserve(self, *, resources, mode, expires_at, request_key):
+    def reserve(self, *, resources, mode, expires_at, request_key, required_privacy="trusted_host"):
+        privacy.require(required_privacy)
         with self.authority():
             self._inventory()
             return self._reserve(resources, mode, expires_at, request_key)
@@ -287,6 +291,18 @@ class Service:
                 if lease["state"] != "reserved" or lease["expires_at"] <= now:
                     raise Error("lease_not_startable", "lease is expired or no longer reserved")
                 self.backend.validate_workload(workload, lease)
+                directories = outputs(workload, lease["mode"])
+                readonly = inputs(workload, lease["mode"])
+                if directories or readonly:
+                    protected = [Path(self.store.path).parent, Path(__file__).resolve().parent, Path(sys.prefix).resolve()]
+                    held_outputs = []
+                    for row in db.execute("SELECT * FROM leases WHERE state!='released' AND id!=?", (lease_id,)):
+                        other = Store.decode(row)
+                        held_outputs.extend(outputs(other["workload"], other["mode"]))
+                        protected.extend(inputs(other["workload"], other["mode"]))
+                    require_disjoint_outputs(directories, protected=[*protected, *held_outputs])
+                    for path in readonly:
+                        require_disjoint_outputs([path], protected=held_outputs)
                 lease = Store.update(db, lease, now, state="starting", workload=workload)
                 Store.event(db, now, lease, "start_intent", {"workload": workload})
             try:
@@ -649,7 +665,11 @@ class Service:
             return self._claim_response(row, lease)
 
     def bridge_claim(self, *, platform_lease_id, platform_epoch, policy_revision,
-                     idempotency_key, expires_at=None, workload_image="", workload_kind=""):
+                     idempotency_key, expires_at=None, workload_image="", workload_kind="",
+                     required_privacy="trusted_host"):
+        # Check before replay: an existing ordinary claim cannot satisfy a
+        # later confidential request, even with the same idempotency key.
+        privacy.require(required_privacy)
         identity = self._platform_key(platform_lease_id, platform_epoch)
         key(idempotency_key, "idempotency_key")
         if (not isinstance(workload_image, str) or len(workload_image) > 1024 or "\0" in workload_image

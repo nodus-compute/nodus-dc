@@ -21,6 +21,7 @@ class KubernetesContractTest(unittest.TestCase):
             self.assertEqual(container['resources']['requests']['nvidia.com/gpu'], 1)
             self.assertEqual(container['resources']['limits']['nvidia.com/gpu'], 1)
             self.assertEqual(pod['metadata']['annotations']['nodus.dev/model-revision'], MODEL_REVISION)
+            self.assertEqual(pod['metadata']['annotations']['nodus.dev/required-privacy'], 'trusted_host')
             self.assertFalse(pod['spec']['automountServiceAccountToken'])
             self.assertEqual(pod['spec']['nodeSelector']['kubernetes.io/arch'], 'amd64')
             self.assertNotIn('hostPID', pod['spec'])
@@ -40,6 +41,12 @@ class KubernetesContractTest(unittest.TestCase):
         self.assertNotIn('nvidia.com/gpu', resource['limits'])
         self.assertEqual(resource['requests']['nvidia.com/mig-1g.10gb'], 1)
         self.assertEqual(resource['limits']['nvidia.com/mig-1g.10gb'], 1)
+
+    def test_runtime_name_cannot_satisfy_confidential_privacy_requirement(self):
+        for resource in ('nvidia.com/gpu', 'nvidia.com/mig-1g.10gb'):
+            with self.subTest(resource=resource), self.assertRaises(ServingError):
+                self.render(resource_key=resource, runtime_class='kata-qemu-nvidia-gpu-snp',
+                            required_privacy='host_confidential')
 
     def test_rejects_unsupported_resource_names_missing_pins_and_mutable_version(self):
         cases = [{'resource_key': x} for x in ('gpu', 'nvidia.com/gpu.shared', 'amd.com/gpu', 'nvidia.com/mig-foo', 'nvidia.com/mig-1g.10gb\n')]

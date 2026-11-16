@@ -18,6 +18,7 @@ from .backend import NvidiaDockerBackend
 from .errors import Error
 from .service import Service
 from .store import Store
+from .privacy import REQUIREMENTS
 
 
 def parser():
@@ -30,6 +31,9 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     for command in ("inventory", "status", "reconcile"):
         sub.add_parser(command)
+    doctor = sub.add_parser("doctor", help="read live daemon health and capacity without changing state")
+    doctor.add_argument("--port", type=int, default=7441)
+    doctor.add_argument("--local-token-file", help="daemon's local read token; defaults to STATE_DIR/local.token")
     connection = sub.add_parser("connection")
     actions = connection.add_subparsers(dest="connection_action", required=True)
     for action in ("review", "connect", "sync", "disconnect"):
@@ -54,6 +58,8 @@ def parser():
     reserve.add_argument("--mode", choices=["exclusive_host", "exclusive_gpu", "hardware_partition", "gpu_configuration", "trusted_mps"], required=True)
     reserve.add_argument("--ttl-seconds", type=int, required=True)
     reserve.add_argument("--request-key", default=None)
+    reserve.add_argument("--required-privacy", choices=REQUIREMENTS, default="trusted_host",
+                         help="host_confidential refuses admission without an attested execution backend")
     for command in ("start", "drain", "release", "configure", "recover", "native-handoff", "native-return"):
         q = sub.add_parser(command)
         q.add_argument("lease_id")
@@ -110,6 +116,11 @@ def main(argv=None):
     args = parser().parse_args(argv)
     state = Path(args.state_dir).expanduser().resolve()
     try:
+        if args.command == "doctor":
+            from .diagnostics import inspect_daemon
+            result = inspect_daemon(port=args.port, token_path=args.local_token_file or state / "local.token")
+            print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
+            return 0 if result["ok"] else 1
         bridge_token = token_file(args.bridge_token_file) if getattr(args, "bridge_token_file", None) else None
         if args.command == "serve" and (bridge_token or args.allocation_authority == "standalone") and os.geteuid() != 0:
             raise Error("bridge_owner_required", "production allocation/bridge listeners must run as root", 403)
@@ -122,7 +133,8 @@ def main(argv=None):
             result = getattr(service, args.command)()
         elif args.command == "reserve":
             result = service.reserve(resources=args.resource, mode=args.mode,
-                                     expires_at=time.time() + args.ttl_seconds, request_key=request_key)
+                                     expires_at=time.time() + args.ttl_seconds, request_key=request_key,
+                                     required_privacy=args.required_privacy)
         elif args.command == "start":
             workload = json.load(sys.stdin) if args.workload == "-" else json.loads(Path(args.workload).read_text())
             result = service.start(args.lease_id, generation=args.generation, request_key=request_key, workload=workload)

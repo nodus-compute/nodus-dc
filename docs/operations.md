@@ -30,6 +30,24 @@ Local listeners start independently of platform connectivity. The connection wor
 
 ## Checking after a start or restart
 
+Run the read-only diagnostic command against the running daemon:
+
+```sh
+sudo /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc doctor
+```
+
+`doctor` reads live daemon health and its saved inventory over loopback. It never
+creates a state database, refreshes inventory, reserves a GPU or changes sharing.
+Use `--port` and `--local-token-file` after `doctor` if your daemon uses different
+values. Use the local token, never the bridge or platform credential. Each HTTP
+read has a five-second total deadline; redirects and responses over 4 MiB fail.
+
+Exit zero means the daemon reports healthy and its inventory is fresh. Inspect
+`available_gpus`, `available_partitions` and `resource_reasons` separately: a
+healthy daemon may have every GPU busy or held. Availability still requires a
+reservation and says nothing about external workload admission or hardware
+qualification. Failures include an actionable diagnostic or `next_steps`.
+
 A successful service-manager start or restart does not mean the API is listening yet. Check the service first; these commands only read its state and recent logs:
 
 ```sh
