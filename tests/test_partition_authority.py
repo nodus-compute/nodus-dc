@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
 
@@ -82,6 +83,82 @@ class Partitions(unittest.TestCase):
     def assert_error(self,code,callback):
         with self.assertRaises(Error) as exc: callback()
         self.assertEqual(exc.exception.code,code)
+
+    def test_invalid_driver_preflight_does_not_mutate_configuration(self):
+        lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="preflight")
+        self.p.devices.files["/sys/module/nvidia/srcversion"] = "malformed"
+        with self.service.store.connection() as db:
+            original = tuple(db.execute("SELECT * FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone())
+        with patch.object(self.backend, "configure_mig", wraps=self.backend.configure_mig) as mutate:
+            self.assert_error("partition_binding_unavailable", lambda: self.service.configure(
+                lease["id"], generation=lease["generation"], request_key="bad-driver", plan={"enabled":True,"profiles":["3g.20gb"]}))
+            mutate.assert_not_called()
+        current = self.service.get(lease["id"])
+        self.assertEqual((current["state"], current["runtime"], current["workload"]), ("reserved", None, None))
+        self.assertEqual(current["baseline"], lease["baseline"])
+        with self.service.store.connection() as db:
+            self.assertEqual(tuple(db.execute("SELECT * FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone()), original)
+
+    def test_final_observation_failure_quarantines_without_releasing_uncertain_change(self):
+        lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="post-observation")
+        prior_cleanup_calls = self.backend.cleanup_calls
+        configure = self.backend.configure_mig
+        def change_then_lose_identity(held, plan):
+            result = configure(held, plan)
+            self.p.devices.files["/sys/module/nvidia/srcversion"] = "malformed"
+            return result
+        plan = {"enabled":True,"profiles":["3g.20gb"]}
+        with patch.object(self.backend, "configure_mig", side_effect=change_then_lose_identity) as mutate:
+            self.assert_error("configuration_uncertain", lambda: self.service.configure(
+                lease["id"], generation=lease["generation"], request_key="post-driver", plan=plan))
+            self.assertEqual(mutate.call_count, 1)
+        restarted = Service(Store(self.root/"state.db"), self.backend, clock=self.clock)
+        current = restarted.get(lease["id"])
+        self.assertEqual((current["state"], current["runtime"], current["workload"]), ("quarantined", None, {"mig_plan":plan}))
+        self.assertEqual(current["baseline"], lease["baseline"])
+        with restarted.store.connection() as db:
+            self.assertEqual(db.execute("SELECT state FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone()[0], "quarantined")
+        self.assert_error("uncertain_launch", lambda: restarted.release(lease["id"], generation=lease["generation"], request_key="no-reset"))
+        self.assertEqual(self.backend.cleanup_calls, prior_cleanup_calls)
+
+    def test_configuration_expiry_during_driver_preflight_never_mutates(self):
+        lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1001, request_key="preflight-expiry")
+        read = self.p.devices.text
+        def expire(path):
+            if path == "/sys/module/nvidia/srcversion": self.clock.now = 1002
+            return read(path)
+        with patch.object(self.p.devices, "text", side_effect=expire), patch.object(self.backend, "configure_mig") as mutate:
+            self.assert_error("lease_expired", lambda: self.service.configure(
+                lease["id"], generation=lease["generation"], request_key="expired", plan={"enabled":True,"profiles":["3g.20gb"]}))
+            mutate.assert_not_called()
+        current = self.service.get(lease["id"])
+        self.assertEqual((current["state"], current["runtime"], current["workload"]), ("reserved", None, None))
+
+    def test_captured_driver_configures_from_no_children_and_disable_skips_preflight(self):
+        configured = self.backend.rows
+        def disabled_rows():
+            return tuple(replace(r, details={**r.details,"mig_mode":"Disabled"}) if r.kind=="gpu" else r
+                         for r in configured if r.kind != "partition")
+        self.backend.rows = disabled_rows()
+        lease = self.service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key="captured-driver")
+        self.p.devices.files["/sys/module/nvidia/srcversion"] = "12B00758E1DCB3540DF2F3A"
+        configure = self.backend.configure_mig
+        def change(held, plan):
+            self.backend.rows = configured if plan["enabled"] else disabled_rows()
+            return configure(held, plan)
+        with patch.object(self.backend, "configure_mig", side_effect=change) as mutate:
+            enabled = self.service.configure(lease["id"], generation=lease["generation"], request_key="enabled",
+                                             plan={"enabled":True,"profiles":["3g.20gb","3g.20gb"]})
+            self.assertEqual(enabled["state"], "reserved")
+            with self.service.store.connection() as db:
+                binding = json.loads(db.execute("SELECT binding FROM partition_configurations WHERE parent_uuid=?", (GPU,)).fetchone()[0])
+            self.assertEqual([b["driver_source_version"] for b in binding["bindings"]], ["12B00758E1DCB3540DF2F3A"] * 2)
+            self.p.devices.files["/sys/module/nvidia/srcversion"] = "malformed"
+            disabled = self.service.configure(lease["id"], generation=lease["generation"], request_key="disabled",
+                                              plan={"enabled":False,"profiles":[]})
+            self.assertEqual(disabled["state"], "reserved")
+            self.assertFalse(any(r["kind"] == "partition" for r in disabled["baseline"]))
+            self.assertEqual(mutate.call_count, 2)
 
     def test_claim_sibling_budget_cleanup_and_payload_tombstone(self):
         local=self.service.reserve(resources=[A],mode="hardware_partition",expires_at=1400,request_key="local",

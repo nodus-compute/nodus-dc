@@ -13,7 +13,7 @@ import re
 import uuid
 
 from .errors import Error
-from .model import canonical, digest, overlap
+from .model import Snapshot, canonical, digest, overlap
 from .store import Store
 from . import mig_binding
 
@@ -175,6 +175,15 @@ class PartitionAuthority:
         return {"host_id": host.id, "boot_id": host.details.get("boot_id"), "parent_uuid": parent,
                 "driver_version": snapshot.driver_version, "pci_bus_id": gpu.details.get("pci_bus_id"),
                 "mig_mode": gpu.details.get("mig_mode"), "bindings": sorted(bindings, key=lambda b: b["partition_uuid"])}
+
+    def preflight_configuration(self, lease):
+        if self.service.store.fence is None:
+            return  # Legacy backends cannot publish durable partition authority.
+        snapshot = self.service.backend.inventory()
+        if (not isinstance(snapshot, Snapshot) or not math.isfinite(snapshot.observed_at)
+                or abs(self.service.clock() - snapshot.observed_at) > 30):
+            raise Error("stale_inventory", "fresh inventory is required before MIG configuration", 503)
+        mig_binding.observe_driver(snapshot, lease["resources"][0], devices=self.devices)
 
     def begin_configuration(self, db, lease, operation):
         if self.service.store.fence is None:

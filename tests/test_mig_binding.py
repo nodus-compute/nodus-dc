@@ -93,6 +93,40 @@ class BindingTests(unittest.TestCase):
         self.backend.snapshot = replace(self.backend.snapshot, resources=tuple(rows), observed_at=1001)
         self.assertEqual(self.binding(), before)
 
+    def test_captured_linux_module_source_version_preserves_exact_identity(self):
+        # Recorded independently on two A100 / Linux 6.8 / 580.105.08 hosts.
+        captured = "12B00758E1DCB3540DF2F3A"
+        original = self.binding()["binding"]
+        for source_version in (captured, captured.lower(), "A" * 24):
+            with self.subTest(source_version=source_version):
+                self.devices.files["/sys/module/nvidia/srcversion"] = source_version
+                binding = self.binding()["binding"]
+                self.assertEqual(binding["driver_source_version"], source_version)
+                self.assertEqual(binding["driver_version"], "580.105.08")
+                self.assertEqual(binding["devices"], original["devices"])
+                if source_version != "A" * 24:
+                    self.assertNotEqual(binding["binding_digest"], original["binding_digest"])
+
+    def test_module_identity_format_and_version_mismatches_remain_refused(self):
+        path = "/sys/module/nvidia/srcversion"
+        for value in ("", "A" * 22, "A" * 25, "G" * 23, "0x" + "A" * 23, "A" * 11 + " " + "A" * 11):
+            with self.subTest(source_version=value):
+                self.devices = Devices()
+                self.devices.files[path] = value
+                with self.assertRaises(Error) as caught:
+                    self.binding()
+                self.assertEqual(caught.exception.code, "partition_binding_unavailable")
+        for path, value in (("/sys/module/nvidia/version", ""),
+                            ("/sys/module/nvidia/version", "580.196.07"),
+                            ("/proc/driver/nvidia/version", "NVRM version: 580.196.07")):
+            with self.subTest(path=path, value=value):
+                self.devices = Devices()
+                self.devices.files["/sys/module/nvidia/srcversion"] = "12B00758E1DCB3540DF2F3A"
+                self.devices.files[path] = value
+                with self.assertRaises(Error) as caught:
+                    self.binding()
+                self.assertEqual(caught.exception.code, "partition_binding_unavailable")
+
     def test_missing_or_ambiguous_kernel_devices_are_refused(self):
         mutations = [
             lambda d: d.nodes.update({"/dev/nvidia3": (195, 0)}),

@@ -408,6 +408,10 @@ class Service:
                         or len(lease["resources"]) != 1 or lease["state"] != "reserved"
                         or lease["expires_at"] <= self.clock()):
                     raise Error("configuration_lease_required", "configuration needs a current reserved GPU maintenance lease")
+                if plan["enabled"]:
+                    self.partitions.preflight_configuration(lease)
+                if lease["expires_at"] <= self.clock():
+                    raise Error("lease_expired", "configuration lease expired during preflight", 409)
                 self.partitions.begin_configuration(db, lease, request_key)
                 lease = Store.update(db, lease, self.clock(), state="starting", workload={"mig_plan": plan}, runtime=None)
                 Store.event(db, self.clock(), lease, "configuration_intent", plan)
@@ -417,19 +421,19 @@ class Service:
                 parents = {r["id"]: r["parent"] for r in rows}
                 baseline = [r for r in rows if overlap(set(lease["resources"]), {r["id"]}, parents)]
                 self._inventory()
+                with self.store.transaction(self.clock()) as db:
+                    lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="reserved", baseline=baseline,
+                                         workload=None, runtime={"lease_id": lease_id, "generation": generation,
+                                         "configuration": plan}, error=None)
+                    self.partitions.commit_configuration(db, lease, snapshot)
+                    Store.event(db, self.clock(), lease, "configuration_verified", {"plan": plan, "baseline": baseline})
+                    return lease
             except Exception as exc:
                 with self.store.transaction(self.clock()) as db:
                     lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="quarantined", error=str(exc))
                     self.partitions.quarantine(db, lease["resources"][0], "configuration_change_failed")
                     Store.event(db, self.clock(), lease, "configuration_failed", {"error": str(exc)})
                 raise Error("configuration_uncertain", "MIG change needs recovery; GPU remains held", 503) from exc
-            with self.store.transaction(self.clock()) as db:
-                lease = Store.update(db, Store.lease(db, lease_id), self.clock(), state="reserved", baseline=baseline,
-                                     workload=None, runtime={"lease_id": lease_id, "generation": generation,
-                                     "configuration": plan}, error=None)
-                self.partitions.commit_configuration(db, lease, snapshot)
-                Store.event(db, self.clock(), lease, "configuration_verified", {"plan": plan, "baseline": baseline})
-                return lease
 
     def adopt_partitions(self, lease_id, *, generation, request_key):
         """Explicitly adopt a drained parent; observation alone never advances authority."""
