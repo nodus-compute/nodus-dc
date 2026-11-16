@@ -175,8 +175,8 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
     devices = devices or LinuxDevices()
     try:
         host, parent, child, geometry = _scope(snapshot, resource_id)
-        driver = observe_driver(snapshot, parent.id, devices=devices)
-        boot = driver["boot_id"]
+        driver_identity = observe_driver(snapshot, parent.id, devices=devices)
+        boot = driver_identity["boot_id"]
 
         # NVIDIA capability gpuN uses the physical device minor, not NVML index.
         pci = parent.details.get("pci_bus_id", "")
@@ -241,7 +241,7 @@ def observe(snapshot: Snapshot, resource_id: str, *, devices=None):
                   "parent_uuid": parent.device_uuid, "partition_uuid": child.device_uuid,
                   "pci_bus_id": bdf, "gpu_instance_id": gi, "compute_instance_id": ci,
                   "profile": child.details["profile"], "memory_bytes": child.details["memory_capacity_bytes"],
-                  "parent_geometry": geometry, **driver,
+                  "parent_geometry": geometry, **driver_identity,
                   "devices": nodes}
         return {**result, "binding_digest": digest(result)}
     except (KeyError, TypeError, AttributeError, ValueError, OSError) as exc:
