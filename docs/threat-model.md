@@ -27,11 +27,13 @@ configurations. Fractional packing and confidentiality therefore need separate
 qualified execution paths; there is no automatic downgrade to ordinary sharing.
 
 The upstream integration candidate is
-[Confidential Containers with NVIDIA GPU Operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/25.10/confidential-containers-deploy.html):
+[NVIDIA's Confidential Containers reference architecture](https://docs.nvidia.com/confidential-computing/containers/v1.1.0/overview):
 Kata supplies the guest boundary and Trustee appraises CPU/GPU evidence before
-releasing secrets. Its documented early-access status and platform constraints
-require evaluation before production adoption. Nodus does not yet deploy or
-qualify this stack.
+releasing secrets. The current v1.1.0 architecture has
+[a validated hardware/software matrix](https://docs.nvidia.com/confidential-computing/containers/v1.1.0/supported-platforms)
+and must run directly on a prepared host; nested virtualization is unsupported.
+Nodus does not yet deploy or qualify this stack. The local Trustee connectivity
+quickstart uses sample evidence and is not proof of confidential execution.
 
 ## Existing boundaries
 
