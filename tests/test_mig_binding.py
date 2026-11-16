@@ -137,6 +137,18 @@ class BindingTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "lease_expired")
             self.assertEqual(service.get(lease["id"])["state"], "reserved")
 
+    def test_regressed_clock_cannot_revalidate_partition_evidence(self):
+        now = [1000]
+        self.backend.clock = lambda: now[0]
+        with tempfile.TemporaryDirectory() as directory:
+            service = Service(Store(Path(directory) / "authority.sqlite3"), self.backend, clock=self.backend.clock)
+            lease = service.reserve(resources=["MIG-aaaa"], mode="hardware_partition",
+                                    expires_at=1100, request_key="binding-clock")
+            now[0] = 998
+            with self.assertRaises(Error) as caught:
+                service.partition_binding(lease["id"], generation=lease["generation"])
+            self.assertEqual(caught.exception.code, "clock_regression")
+
     def test_mid_observation_geometry_change_and_stale_inventory_are_refused(self):
         def change():
             rows = list(self.backend.snapshot.resources)

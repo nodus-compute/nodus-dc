@@ -124,13 +124,15 @@ class Service:
         """
         from .mig_binding import observe_lease
         with self.authority():
-            lease = self.get(lease_id)
-            self._fence(lease, generation)
-            if lease["expires_at"] <= self.clock():
-                raise Error("lease_expired", "expired ownership cannot supply device binding evidence", 409)
+            with self.store.transaction(self.clock()) as db:
+                lease = Store.lease(db, lease_id)
+                self._fence(lease, generation)
+                if lease["expires_at"] <= self.clock():
+                    raise Error("lease_expired", "expired ownership cannot supply device binding evidence", 409)
             evidence = observe_lease(self.backend, lease)
-            if lease["expires_at"] <= self.clock():
-                raise Error("lease_expired", "ownership expired while observing the device binding", 409)
+            with self.store.transaction(self.clock()):
+                if lease["expires_at"] <= self.clock():
+                    raise Error("lease_expired", "ownership expired while observing the device binding", 409)
             return evidence
 
     def bridge_policy_state(self):
