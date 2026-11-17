@@ -47,7 +47,11 @@ class Executor:
         self.clock=clock; self.continuous=True; self.clean=True; self.verified=[]
         self.accounted=True; self.accounting=[]
     def qualification(self, binding):
-        return {"qualified":True,"continuous_configuration_authority":self.continuous,"runtime_sha256":"b"*64,"accelerator":"a100-40gb"}
+        return {"qualified":True,"continuous_configuration_authority":self.continuous,"runtime_sha256":"b"*64,"accelerator":"a100-40gb",
+                "execution_identity": {**{key:"b"*64 for key in (
+                    "manifest_sha256","qualification_sha256","runsc_sha256","sentry_sha256",
+                    "scoped_shim_sha256","containerd_shim_sha256","cdi_sha256","libraries_sha256","hooks_sha256")},
+                    "cdi_path":"/owned/synthetic/cdi.json"}}
     def host_capacity(self): return {"cpu_millis":4000,"memory_bytes":8*1024**3,"scratch_bytes":8*1024**3}
     def verify_host_accounting(self, capacity, held, scope):
         self.accounting.append((capacity, held, scope))
@@ -128,6 +132,12 @@ class Partitions(unittest.TestCase):
                 self.assertEqual(request({"include_host_budget":True}), (200,{"offers":[],"host_budget":None}))
                 self.assertEqual(request({}), (200,{"offers":[]}))
                 self.assert_error("host_resources_unaccounted", lambda:self.p.claim(**frozen))
+            prepare = self.executor.prepare_reservation
+            for reserved in ("nodus.execution_binding", "nodus.future_authority"):
+                self.executor.prepare_reservation = lambda lease, resources: {"enforcement_ready":True,reserved:None}
+                self.assert_error("invalid_execution_binding",lambda:self.p.claim(**frozen))
+                self.assertFalse(self.p.inspect(**frozen)["held"])
+            self.executor.prepare_reservation = prepare
             borrowed = self.p.claim(**frozen)["lease"]
             self.assertEqual(request({"include_host_budget":True})[1]["host_budget"]["local_reserved"], resources)
             self.assertEqual(sorted((r["lease"]["owner"],r["resources"]) for r in self.executor.accounting[-1][1]),

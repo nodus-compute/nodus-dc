@@ -90,3 +90,49 @@ The owning synthetic Unix/SQLite journey starts local A, retains external B, the
 The owning Python seams use the real SQLite store and private Unix HTTP handler with declared synthetic device/enforcement providers. They cover sibling hierarchy, retained host budgets, exact lost-response/tombstone recovery, cross-version refusal, configuration-change intent, mismatch/monitor-gap quarantine, SQLite rollback, registry/commit interruption, expiry and changed agreement generation. Docker command tests verify requested limits, not live cgroups.
 
 `examples/experimental/partition-authority-fixture.py` serves the real Python authority over its private socket for a separately invoked real Go-client integration exercise. It uses only synthetic GPU/enforcement data, a synthetic clock and a public fixture token; it performs no GPU or provider operations. It is not automatic CI infrastructure or an installed service. A successful cross-component exercise still cannot establish hardware isolation, resource enforcement, billing, product watchdog/restart or active-sibling preservation. Those remain required before publishing a supported configuration.
+
+## Private execution identity and reader floor
+
+The optional private `bind` operation accepts a positive exact `lease` and a runtime
+`ref` (`attempt_id`, `epoch`). It freezes the full lease, local lease ID, observed
+MIG/driver evidence, approved runtime/CDI/library/hook identities, and the digest of
+the original reservation proof. This is identity only: the versioned
+`partition-execution-binding.v1` contract does not establish a runtime owner,
+installed limits, or executable readiness. Requested task memory remains unchanged;
+it is not relabeled as an aggregate host reservation. A later limit contract must
+charge full task RAM plus bounded host scratch and per-owner overhead, subtract
+shared headroom once, and use the same versioned charge for fit and Claim.
+
+The authority stores this binding under `nodus.execution_binding` in the existing
+`host_reservations.enforcement` object. Providers cannot supply any `nodus.*` member.
+Legacy provider hooks receive their original proof only after strict validation of
+the complete reserved member and its lease binding. Unknown, null or unreadable
+reserved data refuses; it is never discarded to manufacture valid enforcement.
+The immutable digest excludes phase/revision and hashes the original provider proof
+without self-reference. There is no second ownership ledger.
+
+`begin` accepts the exact lease/ref/binding digest and expected revision 1. It commits
+`committed/1` to `materialization-begun/2` before any future side effects. Retrying that
+same CAS returns the same revision; different/stale inputs refuse. Neither operation
+accepts a caller-selected phase or `runnable`. Existing Check means current permission,
+not materialization completion. Reclaim and policy retirement advance once to
+`retired`; Complete still requires exact independent cleanup proof. Released claim
+and reservation rows retain the full binding and terminal phase; they cannot revive.
+
+The first successful bind commits schema floor 6 through the existing write-ahead
+fence protocol. The registry and SQLite fence tuple acquire the exact optional
+`reader_schema: 6` field together with their sequence. d9/dev16 readers opened before
+binding reject this unknown field on their next authority transaction; newly opened
+readers also reject schema 6. A failed precommit bind leaves the prior floor. A crash
+after registry write retains the ordinary registry/SQLite mismatch refusal, with no
+repair or sequence reset. Policy updates cannot lower this floor. An old reader may
+still perform read-only inventory observation before reaching its transaction, but
+cannot pass the tested execution/provider callbacks or commit mutations.
+
+The existing real Unix/SQLite journey and Go client seam cover identity/CAS replay,
+full task memory, malformed reserved data, retirement and sibling preservation. The
+owning distribution case keeps actual pinned d9 and dev16 Store processes open before
+first binding, then checks refusal of Check/Claim/Reclaim/Complete/local start/release,
+zero execution-provider calls, unchanged database/registry and reopening refusal.
+These new cases require bounded Linux qualification; no runtime, GPU, aggregate limit
+or production provider qualification is implied.

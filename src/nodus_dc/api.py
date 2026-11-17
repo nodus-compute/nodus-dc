@@ -313,7 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                 return operation(**body)
             if path.startswith("/v2/bridge/partitions/"):
                 operation = path.removeprefix("/v2/bridge/partitions/")
-                methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete")}
+                methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete","bind","begin")}
                 if operation not in methods: raise Error("not_found", "partition operation does not exist", 404)
                 return methods[operation](**body)
             direct = {"/v1/reserve": service.reserve, "/v1/reconcile": service.reconcile,

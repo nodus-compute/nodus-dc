@@ -95,6 +95,54 @@ class PartitionPolicyJourney(unittest.TestCase):
         status,first=self.update(); self.assertEqual(status,200,first)
         self.assertEqual(first["grant"],self.g); self.assertEqual(first["agreement"],self.g["agreement"])
         local,request,held=self.claimed()
+        ref={"attempt_id":"att_00000000000000000000000001","epoch":held["platform_epoch"]}
+        def binding_state():
+            from nodus_dc.partition_binding import split_reservation
+            with self.s.store.connection() as db:
+                row=db.execute("SELECT r.* FROM host_reservations r JOIN partition_claims c ON c.lease_id=r.lease_id WHERE c.platform_lease_id=?",(held["platform_lease_id"],)).fetchone()
+                return split_reservation(row)[1]
+        # Failed first binding commits neither identity nor the reader floor.
+        qualify=self.case.executor.qualification
+        self.case.executor.qualification=lambda device:{**qualify(device),"execution_identity":None}
+        self.assertNotEqual(self.call("bind",{"lease":held,"ref":ref},partitions=True)[0],200)
+        self.case.executor.qualification=qualify
+        self.assertIsNone(binding_state())
+        with self.s.store.connection() as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"5")
+        self.assertNotIn("reader_schema",self.s.store.fence.read())
+        status,committed=self.call("bind",{"lease":held,"ref":ref},partitions=True)
+        self.assertEqual(status,200,committed)
+        self.assertEqual((committed["phase"],committed["phase_revision"]),("committed",1))
+        self.assertEqual(committed["binding"]["requested_resources"],held["resources"])
+        self.assertEqual(self.s.store.fence.read()["reader_schema"],6)
+        original_verify=self.case.executor.verify_reservation
+        def exact_provider(lease,reservation):
+            self.assertEqual(json.loads(reservation["enforcement"]),{"enforcement_ready":True,"synthetic":True})
+            return original_verify(lease,reservation)
+        self.case.executor.verify_reservation=exact_provider
+        begin={"lease":held,"ref":ref,"binding_sha256":committed["binding_sha256"],"expected_phase_revision":1}
+        for changed in ({**begin,"binding_sha256":"0"*64},{**begin,"expected_phase_revision":2},
+                        {**begin,"phase":"runnable"},{**begin,"ref":{**ref,"epoch":2}}):
+            self.assertNotEqual(self.call("begin",changed,partitions=True)[0],200)
+            self.assertEqual(binding_state(),committed)
+        status,begun=self.call("begin",begin,partitions=True);self.assertEqual(status,200,begun)
+        self.assertEqual((begun["phase"],begun["phase_revision"]),("materialization-begun",2))
+        self.assertEqual(begun["binding"],committed["binding"])
+        self.assertEqual(self.call("begin",begin,partitions=True),(200,begun))
+        self.assertEqual(self.call("bind",{"lease":held,"ref":ref},partitions=True),(200,begun))
+        self.assertNotEqual(self.call("bind",{"lease":held,"ref":{**ref,"attempt_id":CONSENT}},partitions=True)[0],200)
+        self.assertEqual(binding_state(),begun)
+        with self.s.store.connection() as db:
+            row=db.execute("SELECT lease_id,enforcement FROM host_reservations WHERE lease_id IN (SELECT lease_id FROM partition_claims)").fetchone()
+            local_id,original=row[0],row[1]
+        for malformed in (None,{**begun,"phase":"runnable"}):
+            with self.s.store.transaction(self.case.clock()) as db:
+                proof=json.loads(original);proof["nodus.execution_binding"]=malformed
+                db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",(json.dumps(proof),local_id))
+            self.assertFalse(self.call("check",held,partitions=True)[1]["authorized"])
+            self.assertNotEqual(self.call("begin",begin,partitions=True)[0],200)
+            with self.s.store.transaction(self.case.clock()) as db:
+                db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",(original,local_id))
         self.assertTrue(self.call("check",held,partitions=True)[1]["authorized"])
         self.ns += 5_000_000_000
         status,renewed=self.update(freshness={"echoed_boottime_ns":self.ns,"valid_for_ns":30_000_000_000,"available_until_unix_millis":2100000})
@@ -102,7 +150,13 @@ class PartitionPolicyJourney(unittest.TestCase):
         replay=self.call("claim",request,partitions=True)[1]["lease"]
         self.assertEqual(replay,held);self.assertEqual(replay["expires_at_unix_millis"],1100000)
         self.assertTrue(self.call("check",held,partitions=True)[1]["authorized"])
+        with self.s.store.connection() as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"6")
         self.assertEqual(self.update("withdraw")[0],200)
+        retired=binding_state()
+        self.assertEqual((retired["phase"],retired["phase_revision"]),("retired",3))
+        self.assertEqual(retired["binding"],committed["binding"])
+        self.assertNotEqual(self.call("begin",begin,partitions=True)[0],200)
         self.assertFalse(self.call("check",held,partitions=True)[1]["authorized"])
         self.assertTrue(self.call("inspect",held,partitions=True)[1]["held"])
         self.assertEqual(self.call("reclaim",request,partitions=True)[1]["lease"],held)
@@ -113,7 +167,34 @@ class PartitionPolicyJourney(unittest.TestCase):
         self.assertTrue(self.call("complete",{"lease":held,"cleanup_verified":True},partitions=True)[1]["released"])
         self.assertEqual(self.case.executor.verified,[(B,),(B,)])
         self.assertEqual(self.s.get(local["id"])["state"],"active")
+        self.assertEqual(binding_state(),retired)  # Completion retains provenance with the released claim.
+        self.assertEqual(self.call("reclaim",request,partitions=True)[0],200)
+        self.assertEqual(binding_state(),retired)
         self.assertEqual(self.update()[1]["error"]["code"],"partition_policy_retired")
+
+    def test_binding_commit_crash_retains_the_write_ahead_reader_fence(self):
+        self.assertEqual(self.update()[0],200)
+        local,_,held=self.claimed()
+        advance=self.s.store.fence.advance
+        def interrupted(db):
+            advance(db)
+            raise RuntimeError("synthetic interruption after registry write before binding commit")
+        self.s.store.fence.advance=interrupted
+        # Avoid interrupting the earlier read-only inventory transaction; only
+        # the binding's schema6 transaction crosses this deliberate boundary.
+        def binding_only(db):
+            if db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]=="6": interrupted(db)
+            else: advance(db)
+        self.s.store.fence.advance=binding_only
+        ref={"attempt_id":"att_00000000000000000000000001","epoch":held["platform_epoch"]}
+        self.assertEqual(self.call("bind",{"lease":held,"ref":ref},partitions=True)[0],500)
+        self.s.store.fence.advance=advance
+        with self.s.store.connection() as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],"5")
+            self.assertNotIn("nodus.execution_binding",db.execute("SELECT enforcement FROM host_reservations WHERE lease_id IN (SELECT lease_id FROM partition_claims)").fetchone()[0])
+        self.assertEqual(self.s.store.fence.read()["reader_schema"],6)
+        self.assertEqual(self.call("check",held,partitions=True)[1]["error"]["code"],"authority_continuity_lost")
+        self.assertEqual(self.s.get(local["id"])["state"],"active")
 
     def test_restart_expiry_and_session_revoke_cannot_revive_held_execution(self):
         self.assertEqual(self.update()[0],200)

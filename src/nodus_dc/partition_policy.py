@@ -186,6 +186,8 @@ class PartitionPolicy:
                     or revision is not None and request["offer"]["policy_revision"] != revision): continue
             db.execute("UPDATE partition_claims SET retired=1,updated_at=? WHERE platform_lease_id=? AND platform_epoch=?", (now,row["platform_lease_id"],row["platform_epoch"]))
             if row["lease_id"]:
+                from .partition_binding import retire
+                retire(db, row["lease_id"])
                 lease = Store.lease(db, row["lease_id"])
                 if lease["state"] != "released": Store.update(db, lease, now, state="draining", error="partition_permission_retired")
 
@@ -265,7 +267,7 @@ class PartitionPolicy:
                 else:
                     if old: self._retire(db, self.service.clock(), revision=old["revision"])
                 db.execute("INSERT INTO meta VALUES('partition_policy_scope',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (canonical(scope),))
-                db.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
+                db.execute("UPDATE meta SET value='5' WHERE key='schema_version' AND CAST(value AS INTEGER)<5")
             # A failed registry/SQLite commit never installs positive permission.
             if action == "grant":
                 self.live = {"scope": scope, "grant": copy.deepcopy(grant), "terms": parsed, "deadline": deadline,

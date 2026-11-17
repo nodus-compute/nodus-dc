@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import select
+import tarfile
 import sqlite3
 import sys
 import tempfile
@@ -30,6 +32,95 @@ class DistributionTests(unittest.TestCase):
     def test_schema5_refuses_published_dev15_without_changing_policy_or_ownership(self):
         self.schema_downgrade("NODUS_POLICY_LEGACY_WHEEL",
             "ea5d0929d5039cac947a2f28d90c038b9720fb978e07b985a880fd2d3ccdda05", "5")
+
+    def test_schema6_fences_already_open_dev16_and_d9_before_provider_hooks(self):
+        # Actual frozen old code, not a reimplementation of the old reader.
+        pins = (("NODUS_BINDING_DEV16_WHEEL","4a9153d982bad3f34db4792ad80649a054e12ead8573d6639f54ba25eaf19870"),
+                ("NODUS_BINDING_D9_ARCHIVE","c9150aa8a107616056d968bf36e8dd664a4123a64b34f0c7cd69726b92989a29"))
+        for name, expected in pins:
+            if not os.environ.get(name): self.skipTest("offline binding reader fixture required: "+name)
+            self.assertEqual(hashlib.sha256(Path(os.environ[name]).read_bytes()).hexdigest(),expected)
+        from tests.test_partition_policy import PartitionPolicyJourney
+        journey=PartitionPolicyJourney();journey.setUp()
+        children=[]
+        try:
+            self.assertEqual(journey.update()[0],200)
+            local,request,held=journey.claimed()
+            old_source=journey.case.root/"old-d9";old_source.mkdir()
+            with tarfile.open(os.environ[pins[1][0]]) as archive:
+                for member in archive.getmembers():
+                    prefix="nodus-dc/src/"
+                    if member.isfile() and member.name.startswith(prefix) and member.name.endswith(".py"):
+                        relative=Path(member.name[len(prefix):])
+                        self.assertNotIn("..",relative.parts)
+                        target=old_source/relative;target.parent.mkdir(parents=True,exist_ok=True)
+                        target.write_bytes(archive.extractfile(member).read())
+            probe = r"""
+import json, sys
+from pathlib import Path
+import nodus_dc
+assert str(nodus_dc.__file__).startswith(sys.argv[2]+'/'), 'wrong old-reader import'
+from nodus_dc.service import Service
+from nodus_dc.store import Store
+from nodus_dc.errors import Error
+from tests.test_partition_authority import Backend, Clock
+root=Path(sys.argv[1]);clock=Clock();backend=Backend(clock,root)
+service=Service(Store(root/'state.db'),backend,clock=clock,bridge_enabled=True)
+calls=[]
+def forbidden(*args,**kwargs):
+    calls.append('provider');raise AssertionError('old reader reached provider')
+class Executor:
+    def __getattr__(self,name): return forbidden
+service.partitions.executor=Executor()
+for name in ('start','cleanup','validate_workload','configure_mig','recover_partition'):
+    setattr(backend,name,forbidden)
+print(json.dumps({'opened':True}),flush=True)
+body=json.loads(sys.stdin.readline());held=body['held'];local=body['local']
+out={}
+for name,operation in (
+    ('check',lambda:service.partitions.check(**held)),
+    ('claim',lambda:service.partitions.claim(**body['request'])),
+    ('reclaim',lambda:service.partitions.reclaim(**held)),
+    ('complete',lambda:service.partitions.complete(lease=held,cleanup_verified=True)),
+    ('start',lambda:service.start(local['id'],generation=local['generation'],request_key='old-start',workload={'test_workload':True})),
+    ('release',lambda:service.release(local['id'],generation=local['generation'],request_key='old-release'))):
+    try: operation();out[name]='ALLOWED'
+    except Error as error: out[name]=error.code
+try: Store(root/'state.db');out['reopen']='ALLOWED'
+except Error as error: out['reopen']=error.code
+out['provider_calls']=calls
+print(json.dumps(out),flush=True)
+"""
+            for source in (Path(os.environ[pins[0][0]]).resolve(),old_source):
+                environment={k:v for k,v in os.environ.items() if k not in {"PYTHONPATH","PYTHONHOME"}}
+                environment["PYTHONPATH"]=os.pathsep.join((str(source),str(ROOT)))
+                child=subprocess.Popen([sys.executable,"-c",probe,str(journey.case.root),str(source)],
+                    stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                    env=environment,cwd=journey.case.root)
+                children.append(child)
+                self.assertTrue(select.select([child.stdout],[],[],15)[0],"old reader did not open before binding")
+                self.assertEqual(json.loads(child.stdout.readline()),{"opened":True})
+            ref={"attempt_id":"att_00000000000000000000000001","epoch":held["platform_epoch"]}
+            status,committed=journey.call("bind",{"lease":held,"ref":ref},partitions=True)
+            self.assertEqual(status,200,committed)
+            with journey.s.store.connection() as db: before=list(db.iterdump())
+            registry=journey.s.store.fence.path.read_bytes()
+            for child in children:
+                stdout,stderr=child.communicate(json.dumps({"held":held,"request":request,"local":local})+"\n",timeout=30)
+                self.assertEqual(child.returncode,0,stderr)
+                result=json.loads(stdout)
+                self.assertEqual(result.pop("provider_calls"),[])
+                self.assertEqual(result.pop("reopen"),"schema_version")
+                self.assertEqual(result,{key:"authority_fence_unavailable" for key in ("check","claim","reclaim","complete","start","release")})
+                with journey.s.store.connection() as db: self.assertEqual(list(db.iterdump()),before)
+                self.assertEqual(journey.s.store.fence.path.read_bytes(),registry)
+            self.assertTrue(journey.call("check",held,partitions=True)[1]["authorized"])
+            self.assertEqual(journey.s.get(local["id"])["state"],"active")
+        finally:
+            for child in children:
+                if child.poll() is None: child.kill()
+                child.communicate(timeout=5)
+            journey.tearDown()
 
     def schema_downgrade(self, variable, legacy_sha, schema):
         legacy_path = os.environ.get(variable)

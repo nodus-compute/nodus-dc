@@ -69,7 +69,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-            if version not in {"1", "2", "3", "4", "5"}:
+            if version not in {"1", "2", "3", "4", "5", "6"}:
                 raise Error("schema_version", f"unsupported state schema {version}", 503)
         os.chmod(self.path, 0o600)
 
