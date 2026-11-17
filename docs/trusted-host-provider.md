@@ -50,6 +50,14 @@ initial profile; exhausting that finite history refuses rather than truncates.
 Released provenance is read from the same SQLite rows to verify retained runtime
 tombstones without charging A twice. No mutable parallel registry is added.
 
+Retired but unreleased rows remain part of strict admission accounting. A retired
+committed/issued binding (revision2/3) requires absence of its exact guard, owner
+and H paths. A retired consumed/published binding (revision4/5) requires the same
+full positive-clean owner proof used for released history, or admission refuses.
+Directory names alone are insufficient. The complete A remains reserved until
+Complete succeeds; this check neither releases capacity nor grants a partial
+owner execution or a renewal-only exception.
+
 The provider verifies original v5 guard identity, raw `scoped-limits.json` and
 Plan2 `host-scope.json` hashes, full MIG grant digest, fixed S/T/Internal identities,
 owner/H controls and live guardian evidence. `metadata-intent.json` version2 binds

@@ -481,6 +481,16 @@ class LinuxPartitionProvider:
                     or identity(e.protected(m["Path"],directory=True))!=m["Identity"] or info.f_blocks*info.f_frsize!=m["Bytes"] or info.f_files!=m["Inodes"]): raise refused()
         return actual
 
+    def _retired_owner(self,e,c,state):
+        # Retirement revokes execution; it does not prove an outstanding A is bounded.
+        if state["phase"]!="retired" or type(state["phase_revision"]) is not int or not 2<=state["phase_revision"]<=5:
+            raise refused()
+        if state["phase_revision"]<=3:
+            key,directory,owner,epoch,guardian,host=self._paths(c,state["binding"]["ref"])
+            if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
+        else:
+            self._owner(e,c,state,clean=True)
+
     def _reservation(self,e,c,local,row,context):
         lease=context["lease"]; proof=decode(row["enforcement"])
         execution.qualified_proof(proof,lease)
@@ -496,7 +506,8 @@ class LinuxPartitionProvider:
             if any(os.path.lexists(p) for p in (directory,owner,host)):
                 self._owner(e,c,state)
         elif state["phase"]=="host-published": self._owner(e,c,state)
-        elif state["phase"]!="retired": raise refused()
+        elif state["phase"]=="retired": self._retired_owner(e,c,state)
+        else: raise refused()
 
     def qualification(self,binding):
         e=Evidence(self._immutable_hashes); c=self._configuration(e); self._envelope(e,c)
@@ -547,9 +558,7 @@ class LinuxPartitionProvider:
             if key in expected: raise refused()
             if item in retired:
                 if state["phase"]!="retired": raise refused()
-                if state["phase_revision"]<=3:
-                    if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
-                else: self._owner(e,c,state,clean=True)
+            if state["phase"]=="retired": self._retired_owner(e,c,state)
             if any(os.path.lexists(p) for p in (directory,owner,host)): expected.add(key)
         root=path(b["root"]["path"])
         for directory in (root/"nodus-scoped-owners",root/"nodus-scoped-host",path(c["fifo_dir"])/"guardians"):

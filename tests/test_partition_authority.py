@@ -194,6 +194,49 @@ class Partitions(unittest.TestCase):
             return held, {"lease":held,"ref":ref,"binding_sha256":state["binding_sha256"]}
         def begin(base, operation, **kw):
             return {**base,"operation":operation,"expected_phase_revision":{"issue":1,"consume":2,"publish":3}[operation],**kw}
+        def strict_retired_accounting(held, retired):
+            # Exercise the production reservation routing through actual offers/SQLite.
+            # Artifact/image/kernel evidence remains explicitly synthetic in this fixture.
+            from nodus_dc.partition_host import LinuxPartitionProvider, refused
+            reader = object.__new__(LinuxPartitionProvider); reader.sha256 = "7"*64
+            roots = tuple(self.root/("held-retired-"+name) for name in ("guard","owner","host"))
+            reader._paths = lambda c, ref: ("key",roots[0],roots[1],roots[1]/"epoch",roots[1]/"guardian",roots[2])
+            reader._image = lambda *args: None
+            observations = []
+            def owner(e, c, state, *, clean=False):
+                observations.append((state["binding"]["ref"],clean))
+                self.assertTrue(clean)
+                if not clean_ready[0]: raise refused()
+            clean_ready = [False]; reader._owner = owner
+            original = self.executor.verify_reservation
+            def verify(local, row, *, context):
+                if context["binding_state"] and context["binding_state"]["phase"]=="retired":
+                    proof = json.loads(row["enforcement"])
+                    proof["provider_config_sha256"] = reader.sha256
+                    reader._reservation(None,{"host_budget":proof["host_budget"]},local,
+                                        {**row,"enforcement":json.dumps(proof)},context)
+                return original(local,row,context=context)
+            def report():
+                status, value = call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})
+                self.assertEqual(status,200,value)
+                return value
+            self.executor.verify_reservation = verify
+            try:
+                if retired["phase_revision"]<=3:
+                    for root in roots:
+                        root.mkdir()
+                        try: self.assertEqual(report(),{"offers":[],"host_budget":None})
+                        finally: root.rmdir()
+                    self.assertEqual(observations,[])
+                else:
+                    self.assertEqual(report(),{"offers":[],"host_budget":None})
+                    self.assertEqual(observations,[(retired["binding"]["ref"],True)])
+                clean_ready[0] = True
+                self.assertIsNotNone(report()["host_budget"])
+                self.assertTrue(call("inspect",held)[1]["held"])
+                self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+            finally:
+                self.executor.verify_reservation = original
         def finish(held):
             prior = saved(held)[0]
             self.assertTrue(call("reclaim",held)[1]["retired"])
@@ -206,6 +249,7 @@ class Partitions(unittest.TestCase):
             self.assertNotEqual(call("begin",begin({"lease":held,"ref":prior["binding"]["ref"],
                 "binding_sha256":prior["binding_sha256"]},"issue"))[0],200)
             self.assertFalse(call("check",held)[1]["authorized"])
+            strict_retired_accounting(held,retired)
             self.executor.clean = False
             self.assertFalse(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
             self.assertTrue(call("inspect",held)[1]["held"])
