@@ -315,6 +315,18 @@ class Handler(BaseHTTPRequestHandler):
                 operation = path.removeprefix("/v2/bridge/partitions/")
                 methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete","bind","begin")}
                 if operation not in methods: raise Error("not_found", "partition operation does not exist", 404)
+                if "_peer" in body:
+                    raise Error("invalid_request", "peer identity is observed by the private socket", 400)
+                if (operation == "begin" and "operation" in body) or (operation == "check" and "creation_token" in body):
+                    from .partition_peer import SocketCreator
+                    if operation == "begin":
+                        from .partitions import fields
+                        extras = {"issue":"", "consume":" creation_token", "publish":" creation_token host_scope_sha256"}
+                        if body.get("operation") not in extras:
+                            raise Error("invalid_request", "unsupported binding transition", 400)
+                        fields(body, "lease ref binding_sha256 expected_phase_revision operation" + extras[body["operation"]])
+                    with SocketCreator(self.connection) as peer:
+                        return methods[operation](_peer=peer, **body)
                 return methods[operation](**body)
             direct = {"/v1/reserve": service.reserve, "/v1/reconcile": service.reconcile,
                       "/v1/bridge/status": service.bridge_status,

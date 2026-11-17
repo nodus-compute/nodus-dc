@@ -272,7 +272,11 @@ class PartitionAuthority:
         available = dict(capacity)
         local_reserved = {key: 0 for key in capacity}
         held = []
-        live = db.execute("SELECT id FROM leases WHERE state!='released'").fetchall()
+        from .partition_binding import split_reservation
+        from .partition_execution import PROVIDER
+        live = db.execute("SELECT id FROM leases WHERE state!='released'" + (" LIMIT 65" if accounting_version else "")).fetchall()
+        if accounting_version and len(live) > 64:
+            raise Error("host_resources_unaccounted", "bounded live ownership inventory is exhausted", 409)
         for row in live:
             if row["id"] == ignore: continue
             reservation = db.execute("SELECT * FROM host_reservations WHERE lease_id=?", (row["id"],)).fetchone()
@@ -282,11 +286,14 @@ class PartitionAuthority:
             profile = ephemeral.reservation_profile(reservation, lease)
             if (profile is not None) != (accounting_version is not None):
                 raise Error("host_resources_unaccounted", "mixed accounting requires a separately qualified contract", 409)
-            from .partition_binding import provider_reservation
-            if self.executor.verify_reservation(lease, provider_reservation(reservation, lease)) is not True:
+            provider, state = split_reservation(reservation, lease)
+            qualified = json.loads(provider["enforcement"]).get("contract") == PROVIDER
+            context = {"lease":profile["lease"], "binding_state":state, "purpose":"account"} if qualified and profile else None
+            verified = self.executor.verify_reservation(lease, provider, context=context) if context else self.executor.verify_reservation(lease, provider)
+            if verified is not True:
                 raise Error("host_resources_unenforced", "a concurrent host resource limit is unverified", 503)
             resources = dict(budget({key: reservation[key] for key in capacity}))
-            held.append({"lease": lease, "resources": resources})
+            held.append({"lease":lease, "resources":resources, **({"provider_row":provider,"binding_state":state} if qualified else {})})
             for key in capacity:
                 available[key] -= resources[key]
                 if lease["owner"] == "local": local_reserved[key] += resources[key]
@@ -298,7 +305,19 @@ class PartitionAuthority:
             raise Error("authority_continuity_lost", "host accounting requires durable allocation authority", 503)
         scope = {"authority_incarnation": anchor["incarnation"], "configurations": [dict(row) for row in db.execute(
             "SELECT parent_uuid,generation,boot_id,state FROM partition_configurations ORDER BY parent_uuid")]}
-        if accounting_version is not None: scope["accounting_version"] = accounting_version
+        if accounting_version is not None:
+            scope["accounting_version"] = accounting_version
+            # Exact released tombstones remain in the same rows; they consume no A twice.
+            # Bound history rather than accepting a truncated runtime-owner inventory.
+            retired = db.execute("SELECT r.* FROM host_reservations r JOIN leases l ON l.id=r.lease_id WHERE l.state='released' ORDER BY l.generation LIMIT 257").fetchall()
+            if len(retired) > 256:
+                raise Error("host_resources_unaccounted", "bounded retired ownership inventory is exhausted", 409)
+            scope["retired"] = []
+            for row in retired:
+                local = Store.lease(db,row["lease_id"])
+                provider, state = split_reservation(row,local)
+                if json.loads(provider["enforcement"]).get("contract") == PROVIDER:
+                    scope["retired"].append({"lease":local,"provider_row":provider,"binding_state":state})
         if verify(copy.deepcopy(capacity), copy.deepcopy(held), scope) is not True:
             raise Error("host_resources_unaccounted", "complete enforced host accounting is unavailable", 409)
         if any(value < 0 for value in available.values()):
@@ -420,8 +439,12 @@ class PartitionAuthority:
     def _echo(row): return {**json.loads(row["request"]), "generation": row["generation"]}
 
     def claim(self, **request):
+        qualified = "qualified_image" in request
+        image = request.pop("qualified_image", None)
         request = validate_lease(request); self._active()
         from . import ephemeral
+        from . import partition_execution as execution
+        if qualified: image = execution.qualified_image(image, request)
         accounting_version = ephemeral.ACCOUNTING if "ephemeral" in request else None
         with self.service.authority():
             self.ensure_durable()
@@ -431,6 +454,12 @@ class PartitionAuthority:
                 prior = self._lookup(db, request)
                 if prior:
                     if not prior["generation"]: raise Error("platform_claim_retired", "tuple retired before acquisition", 409)
+                    if qualified:
+                        from .partition_binding import split_reservation
+                        reservation = db.execute("SELECT * FROM host_reservations WHERE lease_id=?", (prior["lease_id"],)).fetchone()
+                        provider, _ = split_reservation(reservation, Store.lease(db, prior["lease_id"]))
+                        proof = execution.qualified_proof(json.loads(provider["enforcement"]), self._echo(prior))
+                        if proof["qualified_image"] != image: raise execution._denied()
                     return {"lease": self._echo(prior)}
                 self.service._expires(request["expires_at_unix_millis"]/1000)
                 self._policy(db, request=request)
@@ -454,7 +483,15 @@ class PartitionAuthority:
                      request["expires_at_unix_millis"]/1000,"partition:"+digest(self._identity(request)),digest(normalized),canonical(authorization),canonical(baseline)))
                 # The new lease is not counted until its reservation is inserted.
                 resources = request["ephemeral"]["charge"]["aggregate"] if accounting_version else request["resources"]
-                proof = self.executor.prepare_reservation(Store.lease(db,lease_id), resources)
+                if qualified:
+                    anchor = self.service.store.fence.verify(db)
+                    context = {"lease":{**request,"generation":generation}, "qualified_image":image,
+                               "authority_scope":{"authority_incarnation":anchor["incarnation"],"accounting_version":accounting_version}}
+                    proof = self.executor.prepare_reservation(Store.lease(db,lease_id), resources, context=context)
+                    execution.qualified_proof(proof, {**request,"generation":generation})
+                    if proof["qualified_image"] != image: raise execution._denied()
+                else:
+                    proof = self.executor.prepare_reservation(Store.lease(db,lease_id), resources)
                 if not isinstance(proof,dict) or proof.get("enforcement_ready") is not True:
                     raise Error("host_resources_unenforced", "partition host limits cannot be enforced", 503)
                 from .partition_binding import provider_proof
@@ -472,7 +509,8 @@ class PartitionAuthority:
                 db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",(lease_id,*[resources[k] for k in ("cpu_millis","memory_bytes","scratch_bytes")],canonical(proof)))
                 db.execute("INSERT INTO partition_claims VALUES(?,?,?,?,?,?,0,?,?)",(*self._identity(request),canonical(normalized),digest(normalized),lease_id,generation,now,now))
                 if accounting_version:
-                    db.execute("UPDATE meta SET value='7' WHERE key='schema_version' AND CAST(value AS INTEGER)<7")
+                    floor = 8 if qualified else 7
+                    db.execute("UPDATE meta SET value=? WHERE key='schema_version' AND CAST(value AS INTEGER)<?", (str(floor), floor))
                 return {"lease": {**request,"generation":generation}}
 
     def inspect(self, **request):
@@ -504,9 +542,10 @@ class PartitionAuthority:
                     if lease["state"]!="released": Store.update(db,lease,now,state="draining",error="partition_reclaim")
             return {"lease":self._echo(self._lookup(db,request)),"retired":True}
 
-    def _checked(self, db, request, row):
-        if "ephemeral" in request: return None  # H enforcement/runnable authority is not implemented.
-        from .partition_binding import provider_reservation
+    def _checked(self, db, request, row, *, purpose="check", peer=None, token=None, host_scope_sha256=None):
+        from .partition_binding import split_reservation
+        from . import ephemeral, partition_execution as execution
+        profile = "ephemeral" in request
         authorized=False
         lease = binding = qualification = reservation = None
         if row and not row["retired"] and row["lease_id"]:
@@ -526,16 +565,29 @@ class PartitionAuthority:
                     and qualification.get("continuous_configuration_authority") is True
                     and qualification.get("runtime_sha256")==request["offer"]["runtime_sha256"]
                     and digest({"device":binding,"runtime_sha256":qualification["runtime_sha256"]})==request["offer"]["partition"]["binding_sha256"])
-                capacity=self._capacity(db)
+                capacity=self._capacity(db, accounting_version=ephemeral.ACCOUNTING if profile else None)
                 matching=matching and all(v>=0 for v in capacity.values())
                 matching=matching and request["resources"]==request["offer"]["capacity"] and self._shape(
                     policy,request["offer"]["accelerator"],request["offer"]["profile"],
-                    request["offer"]["gpu_memory_bytes"],request["resources"])==request["resources"]
+                    request["offer"]["gpu_memory_bytes"],request["ephemeral"]["charge"]["aggregate"] if profile else request["resources"],
+                    accounting_version=ephemeral.ACCOUNTING if profile else None)==request["resources"]
                 reservation=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(lease["id"],)).fetchone()
+                verified = allowed = False
+                if (matching and current_agreement==request["offer"]["agreement"] and self.executor
+                        and lease["expires_at"]>self.service.clock() and lease["state"] in {"reserved","active"} and reservation):
+                    provider, state = split_reservation(reservation, lease)
+                    if profile:
+                        execution.qualified_proof(json.loads(provider["enforcement"]), request)
+                        context = execution.permission(state, purpose, peer, token, host_scope_sha256)
+                        verified = self.executor.verify_reservation(lease, provider, context={"lease":request,**context}) is True
+                        allowed = self.executor.check_execution(lease, request, context=context) is True
+                        if context["creator"] is not None: peer.verify(context["creator"])
+                    else:
+                        verified = self.executor.verify_reservation(lease, provider) is True
+                        allowed = self.executor.check_execution(lease,request) is True
                 authorized=bool(matching and current_agreement==request["offer"]["agreement"] and self.executor
                     and lease["expires_at"]>self.service.clock() and lease["state"] in {"reserved","active"}
-                    and reservation and self.executor.verify_reservation(lease,provider_reservation(reservation, lease)) is True
-                    and self.executor.check_execution(lease,request) is True)
+                    and verified and allowed)
                 if authorized:
                     # A slow runtime check cannot extend a finite grant.
                     policy = self._policy(db,request=request)
@@ -546,14 +598,17 @@ class PartitionAuthority:
                 if exc.code=="clock_regression": raise
         return (lease, binding, qualification, reservation) if authorized else None
 
-    def check(self, **request):
+    def check(self, *, _peer=None, **request):
+        creation = "creation_token" in request
+        token = request.pop("creation_token", None)
         request=validate_lease(request); self._active()
+        if creation and "ephemeral" not in request: raise Error("invalid_request", "creation context requires the qualified profile", 400)
         if not request["generation"]: raise Error("stale_generation","check requires a held generation",409)
         with self.service.authority():
             self.service._inventory()
             with self._admission_transaction() as db:
                 row=self._lookup(db,request)
-                checked=self._checked(db,request,row)
+                checked=self._checked(db,request,row,purpose="create" if creation else "check",peer=_peer,token=token)
                 if checked and checked[0]["state"]=="reserved": Store.update(db,checked[0],self.service.clock(),state="active")
                 return {"lease":self._echo(row) if row else request,"authorized":checked is not None}
 
@@ -561,7 +616,17 @@ class PartitionAuthority:
         from .partition_binding import resolve
         return resolve(self, lease=lease, ref=ref)
 
-    def begin(self, *, lease, ref, binding_sha256, expected_phase_revision):
+    def begin(self, *, lease, ref, binding_sha256, expected_phase_revision, operation=None,
+              creation_token=None, host_scope_sha256=None, _peer=None):
+        if "ephemeral" in lease:
+            if operation is None:
+                from .ephemeral import require_unavailable
+                require_unavailable(lease)
+            from .partition_execution import resolve
+            return resolve(self,lease=lease,ref=ref,binding_sha256=binding_sha256,expected_phase_revision=expected_phase_revision,
+                           operation=operation,token=creation_token,host_scope_sha256=host_scope_sha256,peer=_peer)
+        if operation is not None or creation_token is not None or host_scope_sha256 is not None or _peer is not None:
+            raise Error("invalid_request", "legacy binding has no creator capability", 400)
         from .partition_binding import resolve
         return resolve(self, lease=lease, ref=ref, binding_sha256=binding_sha256,
                        expected_phase_revision=expected_phase_revision)
@@ -586,13 +651,16 @@ class PartitionAuthority:
                 from .partition_binding import split_reservation
                 reservation=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(local["id"],)).fetchone()
                 if reservation:
-                    _, bound=split_reservation(reservation,local)
+                    provider, bound=split_reservation(reservation,local)
                     if bound and bound["phase"]!="retired":
                         raise Error("reclaim_required","retire the exact execution binding first",409)
                 if local["state"]=="released": return {"lease":echo,"released":True}
                 local=Store.update(db,local,self.service.clock(),state="verifying")
             # This seam is scoped to one lease. Whole-host cleanup/reset is never called.
             if self.executor is None: raise Error("partition_executor_unavailable","scoped cleanup verifier is unavailable",503)
-            proof=self.executor.verify_clean(local,echo)
+            from .partition_execution import PROVIDER
+            qualified = reservation and json.loads(provider["enforcement"]).get("contract") == PROVIDER
+            proof=(self.executor.verify_clean(local,echo,context={"provider_row":provider,"binding_state":bound})
+                   if qualified else self.executor.verify_clean(local,echo))
             local=self.service._apply_cleanup(local,proof,additional={"protocol":"partition-v2"})
             return {"lease":echo,"released":local["state"]=="released"}

@@ -111,6 +111,210 @@ class Partitions(unittest.TestCase):
             "enforcement_ready":True,"synthetic":True,"accounting_version":ephemeral.ACCOUNTING}
         return dict(task)
 
+    def enable_trusted_profile(self):
+        """Protocol fixture: real Linux socket peers, explicitly synthetic host/GPU evidence."""
+        from nodus_dc import ephemeral
+        from nodus_dc.partition_execution import PROVIDER
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        self.backend.rows = tuple(replace(row, details={**row.details,"boot_id":boot})
+                                  if row.kind == "host" else row for row in self.backend.rows)
+        self.p.devices.files["/proc/sys/kernel/random/boot_id"] = boot
+        self.adopt("kernel-peer-boot")
+        task = self.enable_ephemeral_profile()
+        self.executor.published = False
+        self.executor.prepares = 0
+        self.executor.contexts = []
+        image = {"version":1,"reference":IMAGE,"manifest_sha256":"a"*64,"config_sha256":"e"*64,
+                 "rootfs_chain_sha256":"f"*64,"os":"linux","architecture":"amd64","user":"0:0",
+                 "workdir":"/","namespace":"nodus-fixture","snapshotter":"overlayfs","spec_sha256":"d"*64}
+        def prepare(local, resources, *, context):
+            self.executor.prepares += 1
+            self.assertEqual(resources, context["lease"]["ephemeral"]["charge"]["aggregate"])
+            capacity = self.executor.host_capacity(accounting_version=ephemeral.ACCOUNTING)["capacity"]
+            host = {"version":1,"accounting_version":ephemeral.ACCOUNTING,"boot_id":boot,
+                    "authority_incarnation":context["authority_scope"]["authority_incarnation"],
+                    **{name+"_namespace":os.readlink("/proc/self/ns/"+name) for name in ("pid","user","cgroup")},
+                    "root":{"path":"/sys/fs/cgroup/synthetic","device":31,"inode":32,
+                            "cpu_millis":capacity["cpu_millis"]+1000,"memory_bytes":capacity["memory_bytes"]+1024**3,"pids":2048},
+                    "shared":{"path":"/sys/fs/cgroup/synthetic/shared","device":31,"inode":33,
+                              "cpu_millis":1000,"memory_bytes":1024**3,"pids":512},
+                    "capacity":capacity,"max_claims":2}
+            return {"contract":PROVIDER,"accounting_version":ephemeral.ACCOUNTING,"enforcement_ready":True,
+                    "synthetic":True,"qualified_image":context["qualified_image"],"host_budget":host}
+        def check(local, request, *, context):
+            self.executor.contexts.append(copy.deepcopy(context))
+            state = context["binding_state"]
+            if context["purpose"] == "publish" or (state and state["phase"] == "host-published"):
+                return self.executor.published
+            return True
+        self.executor.prepare_reservation = prepare
+        self.executor.verify_reservation = lambda local, row, *, context: True
+        self.executor.check_execution = check
+        original_clean = self.executor.verify_clean
+        self.executor.verify_clean = lambda local, request, *, context: original_clean(local, request)
+        descriptor = {"contract":ephemeral.CONTRACT,"spec_sha256":"d"*64,"charge":ephemeral.charge(task),
+            "features":{"continuity":"ephemeral","restore_manifest":False,"checkpoint_policy":False,
+                "snapshot_inputs":False,"lazy_inputs":False,"outside_outputs":False,
+                "input_count":0,"input_bytes":0,"output_count":0}}
+        return task, descriptor, image
+
+    def test_qualified_creator_cas_replay_loss_and_retirement(self):
+        from nodus_dc import ephemeral
+        from nodus_dc.partition_binding import split_reservation
+        from nodus_dc.api import Handler
+        from http.client import RemoteDisconnected
+        import subprocess
+        import sys
+        task, descriptor, image = self.enable_trusted_profile()
+        server = BridgeUnixServer(str(self.root/"creator.sock"), self.service, "fixture-"+"x"*40, owner_uid=os.geteuid())
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        def call(op, body):
+            connection = UnixHTTPConnection(server.path)
+            try:
+                connection.request("POST", "/v2/bridge/partitions/"+op, json.dumps(body).encode(),
+                                   {"Authorization":"Bearer "+server.bridge_token})
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally: connection.close()
+        def saved(held):
+            with self.service.store.connection() as db:
+                row = db.execute("SELECT r.* FROM host_reservations r JOIN partition_claims c ON c.lease_id=r.lease_id WHERE c.platform_lease_id=?",(held["platform_lease_id"],)).fetchone()
+                return split_reservation(row)[1], row["memory_bytes"], list(db.iterdump())
+        def acquire(name):
+            status, report = call("offers", {"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})
+            self.assertEqual(status,200,report)
+            request = {"platform_lease_id":name,"platform_epoch":1,"generation":0,"offer":report["offers"][0],
+                       "resources":task,"workload":{"workload_image":IMAGE,"workload_kind":"Job"},
+                       "expires_at_unix_millis":1100000,"ephemeral":descriptor}
+            status, response = call("claim", {**request,"qualified_image":image})
+            self.assertEqual(status,200,response); held = response["lease"]
+            ref = {"attempt_id":"att_"+str(self.executor.prepares).zfill(26),"epoch":1}
+            status, state = call("bind", {"lease":held,"ref":ref})
+            self.assertEqual(status,200,state)
+            return held, {"lease":held,"ref":ref,"binding_sha256":state["binding_sha256"]}
+        def begin(base, operation, **kw):
+            return {**base,"operation":operation,"expected_phase_revision":{"issue":1,"consume":2,"publish":3}[operation],**kw}
+        def finish(held):
+            prior = saved(held)[0]
+            self.assertTrue(call("reclaim",held)[1]["retired"])
+            status, retired = call("bind",{"lease":held,"ref":prior["binding"]["ref"]})
+            self.assertEqual(status,200,retired)
+            self.assertEqual(retired,{**prior,"phase":"retired","phase_revision":prior["phase_revision"]+1})
+            self.assertEqual(call("bind",{"lease":held,"ref":prior["binding"]["ref"]}),(200,retired))
+            wrong={**prior["binding"]["ref"],"attempt_id":"att_00000000000000000000000099"}
+            self.assertNotEqual(call("bind",{"lease":held,"ref":wrong})[0],200)
+            self.assertNotEqual(call("begin",begin({"lease":held,"ref":prior["binding"]["ref"],
+                "binding_sha256":prior["binding_sha256"]},"issue"))[0],200)
+            self.assertFalse(call("check",held)[1]["authorized"])
+            self.executor.clean = False
+            self.assertFalse(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            self.assertTrue(call("inspect",held)[1]["held"])
+            self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+            self.executor.clean = True
+            self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            prepares = self.executor.prepares
+            self.assertEqual(call("claim",{**held,"qualified_image":image})[1]["lease"],held)
+            self.assertEqual(self.executor.prepares,prepares)
+            self.assertFalse(call("inspect",held)[1]["held"])
+        try:
+            held, base = acquire("creator-full")
+            self.assertEqual(self.service.store.fence.read()["reader_schema"],8)
+            self.assertTrue(call("check",held)[1]["authorized"])  # reservation, never creation
+            status, issued = call("begin",begin(base,"issue")); self.assertEqual(status,200,"creator transition failed")
+            a = issued["creation_token"]
+            self.assertEqual(issued["state"]["creator"]["pid"],os.getpid())
+            self.assertNotEqual(call("begin",begin(base,"issue"))[0],200)
+            self.assertFalse(call("check",held)[1]["authorized"])
+            # A distinct real process cannot use the original process's capability.
+            probe = """import json,sys
+from tests.test_api import UnixHTTPConnection
+v=json.load(sys.stdin);c=UnixHTTPConnection(v['socket'])
+c.request('POST','/v2/bridge/partitions/begin',json.dumps(v['body']).encode(),{'Authorization':'Bearer '+v['token']})
+r=c.getresponse();r.read();print(r.status);c.close()
+"""
+            child = subprocess.run([sys.executable,"-c",probe],input=json.dumps({"socket":str(server.path),"token":server.bridge_token,
+                "body":begin(base,"consume",creation_token=a)}),text=True,capture_output=True,timeout=15)
+            self.assertEqual(child.returncode,0,child.stderr); self.assertNotEqual(child.stdout.strip(),"200")
+            status, consumed = call("begin",begin(base,"consume",creation_token=a)); self.assertEqual(status,200,"creator transition failed")
+            b = consumed["creation_token"]; self.assertTrue(a != b,"creation capability did not rotate")
+            self.assertNotEqual(call("begin",begin(base,"consume",creation_token=a))[0],200)
+            self.assertFalse(call("check",held)[1]["authorized"])
+            self.assertFalse(call("check",{**held,"creation_token":a})[1]["authorized"])
+            self.assertTrue(call("check",{**held,"creation_token":b})[1]["authorized"])
+            state, _, dump = saved(held)
+            self.assertEqual(state["phase"],"creation-consumed")
+            self.assertTrue(a not in "\n".join(dump) and b not in "\n".join(dump),"plaintext capability persisted")
+            publish = begin(base,"publish",creation_token=b,host_scope_sha256="9"*64)
+            self.assertNotEqual(call("begin",publish)[0],200)  # positive owner evidence required
+            self.executor.published = True
+            status, published = call("begin",publish); self.assertEqual(status,200,"creator transition failed")
+            self.assertTrue(published["creation_token"] == "","publish returned a creation capability")
+            self.assertTrue(call("check",held)[1]["authorized"])
+            self.assertFalse(call("check",{**held,"creation_token":b})[1]["authorized"])
+            self.assertNotEqual(call("begin",publish)[0],200)
+            self.executor.published = False
+            self.assertFalse(call("check",held)[1]["authorized"])
+            finish(held)
+            # A committed transition followed by transport loss must not return its token on replay.
+            for phase in ("committed","creation-issued","creation-consumed","host-published"):
+                held, base = acquire("lost-"+phase)
+                if phase == "committed": finish(held); continue
+                body = begin(base,"issue")
+                if phase in {"creation-consumed","host-published"}:
+                    status, issued = call("begin",body); self.assertEqual(status,200,"creator transition failed")
+                    body = begin(base,"consume",creation_token=issued["creation_token"])
+                if phase == "host-published":
+                    status, consumed = call("begin",body); self.assertEqual(status,200,"creator transition failed")
+                    self.executor.published = True
+                    body = begin(base,"publish",creation_token=consumed["creation_token"],host_scope_sha256="9"*64)
+                original = Handler.send_json
+                def lost(handler, status, value):
+                    if status == 200 and isinstance(value,dict) and "creation_token" in value:
+                        handler.close_connection = True
+                        handler.connection.shutdown(2)
+                        return
+                    return original(handler,status,value)
+                with patch.object(Handler,"send_json",lost):
+                    with self.assertRaises(RemoteDisconnected): call("begin",body)
+                self.assertEqual(saved(held)[0]["phase"],phase)
+                self.assertNotEqual(call("begin",body)[0],200)
+                self.assertEqual(call("check",held)[1]["authorized"],phase == "host-published")
+                if phase == "host-published":
+                    self.assertFalse(call("check",{**held,"creation_token":consumed["creation_token"]})[1]["authorized"])
+                    self.clock.now += 101
+                    self.assertFalse(call("check",held)[1]["authorized"])
+                finish(held)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+
+    def test_qualified_floor8_write_ahead_loss_cannot_reopen_admission(self):
+        from nodus_dc import ephemeral
+        task, descriptor, image = self.enable_trusted_profile()
+        offer = self.p.offers(include_host_budget=True,accounting_version=ephemeral.ACCOUNTING)["offers"][0]
+        request = {"platform_lease_id":"floor8-loss","platform_epoch":1,"generation":0,"offer":offer,
+                   "resources":task,"workload":{"workload_image":IMAGE,"workload_kind":"Job"},
+                   "expires_at_unix_millis":1100000,"ephemeral":descriptor,"qualified_image":image}
+        with self.service.store.connection() as db:
+            generation = db.execute("SELECT value FROM meta WHERE key='next_generation'").fetchone()[0]
+            schema = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        advance = self.service.store.fence.advance
+        def interrupted(db):
+            advance(db)
+            if db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "8":
+                raise RuntimeError("synthetic loss after durable reader floor")
+        self.service.store.fence.advance = interrupted
+        try:
+            with self.assertRaises(RuntimeError): self.p.claim(**request)
+        finally: self.service.store.fence.advance = advance
+        self.assertEqual(self.service.store.fence.read()["reader_schema"],8)
+        with self.service.store.connection() as db:
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],schema)
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='next_generation'").fetchone()[0],generation)
+            self.assertEqual(db.execute("SELECT count(*) FROM partition_claims").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT count(*) FROM host_reservations").fetchone()[0],0)
+        self.assert_error("authority_continuity_lost",lambda:self.p.claim(**request))
+
     def test_shared_host_budget_report_and_atomic_claim_refuse_unaccounted_work(self):
         resources = {"cpu_millis":1000,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2}
         local = self.service.reserve(resources=[A], mode="hardware_partition", expires_at=1400,

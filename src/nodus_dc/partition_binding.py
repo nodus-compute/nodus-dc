@@ -1,4 +1,4 @@
-"""Private immutable execution identity; no runnable limit plan or runtime owner."""
+"""Immutable private execution identity and same-row phase provenance."""
 from __future__ import annotations
 
 import copy
@@ -56,18 +56,30 @@ def split_reservation(reservation, local=None):
         present = MEMBER in proof
         state = proof.pop(MEMBER, None)
         from . import ephemeral
+        aggregate = None
         if ephemeral.MEMBER in proof:
-            if present: raise ValueError()
-            ephemeral.split(row, proof, local)
+            aggregate = ephemeral.split(row, proof, local)
         elif proof.get("accounting_version") == ephemeral.ACCOUNTING:
             raise ValueError()  # Aggregate provider data is never a legacy reservation.
         provider_proof(proof)
         if present:
-            fields(state, "binding binding_sha256 phase phase_revision")
+            from . import partition_execution as execution
+            if not isinstance(state, dict) or not isinstance(state.get("binding"), dict): raise ValueError()
             binding = state["binding"]
-            fields(binding, "contract lease local_lease_id ref requested_resources device_observation runtime_identity reservation_proof_sha256")
+            v2 = binding.get("contract") == execution.CONTRACT
+            if v2:
+                if aggregate is None: raise ValueError()
+                fields(state, execution.STATE_FIELDS)
+                fields(binding, execution.BINDING_FIELDS)
+            else:
+                if aggregate is not None: raise ValueError()
+                fields(state, "binding binding_sha256 phase phase_revision")
+                fields(binding, "contract lease local_lease_id ref requested_resources device_observation runtime_identity reservation_proof_sha256")
             lease = validate_lease(binding["lease"])
-            if not lease["generation"] or binding["contract"] != CONTRACT: raise ValueError()
+            if not lease["generation"] or (not v2 and binding["contract"] != CONTRACT): raise ValueError()
+            if v2:
+                if aggregate["lease"] != lease: raise ValueError()
+                execution.validate_state(state, proof)
             guid(binding["local_lease_id"])
             if local is not None and (local["id"] != binding["local_lease_id"]
                     or local["generation"] != lease["generation"]
@@ -76,16 +88,17 @@ def split_reservation(reservation, local=None):
             reference(binding["ref"], lease["platform_epoch"])
             runtime_identity(binding["runtime_identity"], lease["offer"]["runtime_sha256"])
             device = binding["device_observation"]
+            resources = lease["ephemeral"]["charge"]["aggregate"] if v2 else lease["resources"]
             if (binding["local_lease_id"] != row["lease_id"]
                     or binding["requested_resources"] != lease["resources"]
-                    or any(row[key] != lease["resources"][key] for key in lease["resources"])
+                    or any(row[key] != resources[key] for key in resources)
                     or binding["reservation_proof_sha256"] != digest(proof)
                     or state["binding_sha256"] != digest(binding)
                     or digest({"device":device,"runtime_sha256":lease["offer"]["runtime_sha256"]}) != lease["offer"]["partition"]["binding_sha256"]
-                    or state["phase"] not in {"committed", "materialization-begun", "retired"}
-                    or type(state["phase_revision"]) is not int
-                    or (state["phase"], state["phase_revision"]) not in {
-                        ("committed",1), ("materialization-begun",2), ("retired",2), ("retired",3)}):
+                    or (not v2 and (state["phase"] not in {"committed", "materialization-begun", "retired"}
+                        or type(state["phase_revision"]) is not int
+                        or (state["phase"], state["phase_revision"]) not in {
+                            ("committed",1), ("materialization-begun",2), ("retired",2), ("retired",3)}))):
                 raise ValueError()
         row["enforcement"] = canonical(proof)
         return row, state
@@ -98,7 +111,9 @@ def provider_reservation(reservation, local):
 
 
 def save(db, reservation, state):
-    proof = json.loads(split_reservation(reservation)[0]["enforcement"])
+    split_reservation(reservation)
+    # Both reserved members belong to this same row; provider projection must never erase aggregate provenance.
+    proof = json.loads(reservation["enforcement"])
     db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",
                (canonical({**proof, MEMBER:state}), reservation["lease_id"]))
 
@@ -113,6 +128,10 @@ def retire(db, local_id):
 
 def resolve(authority, *, lease, ref, binding_sha256=None, expected_phase_revision=None):
     request = validate_lease(lease)
+    if "ephemeral" in request:
+        from .partition_execution import resolve as resolve_profile
+        return resolve_profile(authority, lease=request, ref=ref, binding_sha256=binding_sha256,
+                               expected_phase_revision=expected_phase_revision)
     from .ephemeral import require_unavailable
     require_unavailable(request)
     if not request["generation"]:

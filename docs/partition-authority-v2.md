@@ -181,3 +181,53 @@ recovery. Existing Unix/SQLite and distribution cases cover this contract, inclu
 concurrent aggregate fit, full M, retained failed cleanup, and real old-reader refusal.
 These additions are source-only pending bounded Linux verification. Production
 provider registration, aggregate kernel enforcement and funded dispatch remain closed.
+
+## Private trusted-host execution binding (source only)
+
+An explicitly constructed `LinuxPartitionProvider` can validate the proposed
+qualified-image Claim and execution binding v2. It is not registered by the
+service, installer or connection flow. Ordinary v1 binding and unqualified
+aggregate reservation behavior remain unchanged. This source is not native
+qualification, production readiness, funded placement, or host confidentiality.
+
+Qualified Claim adds `qualified_image` to the existing flat request; the lease
+wire stays unchanged. The first accepted qualified Claim raises the same
+write-ahead SQLite/registry reader floor to 8. The immutable provider proof retains
+the exact image, host budget and provider configuration digest. Binding v2 stores
+both authority provenance members in the same reservation row: task resources
+remain C/M/S, the reservation remains aggregate C/A/S. A runtime Ref cannot be
+reassigned to a different lease, even after release.
+
+The only creation permission comes from the existing Begin transaction:
+`committed/1 → creation-issued/2 → creation-consumed/3 → host-published/4`.
+Issue returns random capability A once and stores only its hash. Consume verifies
+A and the exact live Unix peer, burns A and returns a distinct B once. The peer
+identity comes from SO_PEERCRED, a live pidfd, boot/start ticks, executable bytes
+and PID/user/cgroup namespaces; no request supplies a PID or an original-call flag.
+The original platform call keeps B transiently in memory. Replaying or recovering
+a transition never returns either capability. Lost responses go cleanup-only.
+Plain Check cannot recover creation permission; B permits repeated read-only
+creation checks only in phase3. Publish requires independent current owner/scope
+verification before phase4; B stops authorizing after publication. Reclaim is
+terminal from every phase and keeps the full reservation until positive cleanup.
+
+The provider uses the existing seven hooks and the existing SQLite authority;
+it owns no ledger, service or mutable readiness inventory. It reads only bounded
+protected files, kernel cgroups and mount/process identities under the authority
+lock. It never calls back into the Go executor. See
+[the explicit provider configuration and proof boundary](trusted-host-provider.md).
+
+The Unix/SQLite owning cases use actual Linux socket peer identities and source-pinned
+old b18 readers, but explicitly synthetic GPU, image and enforcement facts. Those
+cases cannot qualify the Linux provider or a full Agent/MIG lifecycle. The existing
+full Agent journey must establish the real host envelope, image cache and runtime,
+then prove normal completion/STOP, unchanged sibling and exact retirement before
+production construction can be enabled.
+
+Retired v2 Bind is a cleanup-only identity read: the existing endpoint validates
+its full stored lease, Ref, proof and independent authority fence, then returns
+the unchanged binding with terminal phase/revision. It does not consult live
+permission or issue a creation token, and a different Ref refuses. This permits
+normal cleanup after expiry/restart without reauthorizing a job. Generic Check,
+Begin and runtime creation remain denied; unproved cleanup still retains A.
+The legacy v1 Bind contract is unchanged.
