@@ -433,7 +433,7 @@ class Partitions(unittest.TestCase):
         self.assertEqual(self.p.claim(**request)["lease"],held)
         changed=copy.deepcopy(request); changed["resources"]["cpu_millis"]-=1
         self.assert_error("idempotency_conflict",lambda:self.p.reclaim(**changed))
-        self.assertEqual(self.p.offers(),{"offers":[]})  # first release allows one borrower per host
+        self.assertEqual(self.p.offers(),{"offers":[]})  # Both observed instances remain held.
         self.assert_error("allocation_conflict",lambda:self.service.reserve(resources=["host-a"],mode="exclusive_host",expires_at=1500,request_key="host"))
         retired=self.p.reclaim(**request)["lease"]; self.assertEqual(retired,held)
         self.assertTrue(self.p.inspect(**request)["held"])
