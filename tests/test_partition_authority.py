@@ -180,7 +180,7 @@ class Partitions(unittest.TestCase):
             with self.service.store.connection() as db:
                 row = db.execute("SELECT r.* FROM host_reservations r JOIN partition_claims c ON c.lease_id=r.lease_id WHERE c.platform_lease_id=?",(held["platform_lease_id"],)).fetchone()
                 return split_reservation(row)[1], row["memory_bytes"], list(db.iterdump())
-        def acquire(name):
+        def acquire(name, *, bind=True):
             status, report = call("offers", {"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})
             self.assertEqual(status,200,report)
             request = {"platform_lease_id":name,"platform_epoch":1,"generation":0,"offer":report["offers"][0],
@@ -189,11 +189,19 @@ class Partitions(unittest.TestCase):
             status, response = call("claim", {**request,"qualified_image":image})
             self.assertEqual(status,200,response); held = response["lease"]
             ref = {"attempt_id":"att_"+str(self.executor.prepares).zfill(26),"epoch":1}
+            if not bind: return held, {"lease":held,"ref":ref}
             status, state = call("bind", {"lease":held,"ref":ref})
             self.assertEqual(status,200,state)
             return held, {"lease":held,"ref":ref,"binding_sha256":state["binding_sha256"]}
         def begin(base, operation, **kw):
             return {**base,"operation":operation,"expected_phase_revision":{"issue":1,"consume":2,"publish":3}[operation],**kw}
+        def retirement(held, ref):
+            prepares, contexts = self.executor.prepares, len(self.executor.contexts)
+            with patch.object(self.service,"_inventory",side_effect=AssertionError("retirement must not observe inventory")), \
+                    patch.object(self.p,"_checked",side_effect=AssertionError("retirement must not admit")):
+                result = call("bind",{"lease":held,"ref":ref,"purpose":"retirement"})
+            self.assertEqual((self.executor.prepares,len(self.executor.contexts)),(prepares,contexts))
+            return result
         def strict_retired_accounting(held, retired):
             # Exercise the production reservation routing through actual offers/SQLite.
             # Artifact/image/kernel evidence remains explicitly synthetic in this fixture.
@@ -244,8 +252,14 @@ class Partitions(unittest.TestCase):
             self.assertEqual(status,200,retired)
             self.assertEqual(retired,{**prior,"phase":"retired","phase_revision":prior["phase_revision"]+1})
             self.assertEqual(call("bind",{"lease":held,"ref":prior["binding"]["ref"]}),(200,retired))
+            expected = {"contract":"partition-retirement.v1","lease":held,"state":retired,
+                        "disposition":"never-consumed" if retired["phase_revision"]<=3 else "scope-required"}
+            self.assertEqual(retirement(held,prior["binding"]["ref"]),(200,expected))
+            self.assertEqual(retirement(held,prior["binding"]["ref"]),(200,expected))
             wrong={**prior["binding"]["ref"],"attempt_id":"att_00000000000000000000000099"}
             self.assertNotEqual(call("bind",{"lease":held,"ref":wrong})[0],200)
+            self.assertNotEqual(retirement(held,wrong)[0],200)
+            self.assertNotEqual(retirement({**held,"generation":held["generation"]+1},prior["binding"]["ref"])[0],200)
             self.assertNotEqual(call("begin",begin({"lease":held,"ref":prior["binding"]["ref"],
                 "binding_sha256":prior["binding_sha256"]},"issue"))[0],200)
             self.assertFalse(call("check",held)[1]["authorized"])
@@ -260,8 +274,34 @@ class Partitions(unittest.TestCase):
             self.assertEqual(call("claim",{**held,"qualified_image":image})[1]["lease"],held)
             self.assertEqual(self.executor.prepares,prepares)
             self.assertFalse(call("inspect",held)[1]["held"])
+            self.assertEqual(retirement(held,prior["binding"]["ref"]),(200,expected))
         try:
+            held, base = acquire("never-bound",bind=False)
+            self.assertIsNone(saved(held)[0])
+            self.assertNotEqual(retirement(held,base["ref"])[0],200)
+            for purpose in (None,"create"):
+                self.assertNotEqual(call("bind",{**base,"purpose":purpose})[0],200)
+            self.assertTrue(call("reclaim",held)[1]["retired"])
+            unbound = {"contract":"partition-retirement.v1","lease":held,"disposition":"never-bound","state":None}
+            self.assertEqual(retirement(held,base["ref"]),(200,unbound))
+            # An unbound row asserts no Ref at all, rather than adopting the caller's Ref.
+            another = {**base["ref"],"attempt_id":"att_00000000000000000000000099"}
+            self.assertEqual(retirement(held,another),(200,unbound))
+            self.assertNotEqual(call("bind",base)[0],200)
+            self.assertFalse(call("check",held)[1]["authorized"])
+            self.executor.clean = False
+            self.assertFalse(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            self.assertTrue(call("inspect",held)[1]["held"])
+            self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+            self.executor.clean = True
+            self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            prepares = self.executor.prepares
+            self.assertEqual(call("claim",{**held,"qualified_image":image})[1]["lease"],held)
+            self.assertEqual(self.executor.prepares,prepares)
+            self.assertFalse(call("inspect",held)[1]["held"])
+            self.assertEqual(retirement(held,base["ref"]),(200,unbound))
             held, base = acquire("creator-full")
+            self.assertNotEqual(retirement(held,base["ref"])[0],200)
             self.assertEqual(self.service.store.fence.read()["reader_schema"],8)
             self.assertTrue(call("check",held)[1]["authorized"])  # reservation, never creation
             status, issued = call("begin",begin(base,"issue")); self.assertEqual(status,200,"creator transition failed")

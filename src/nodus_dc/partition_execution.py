@@ -172,6 +172,44 @@ def permission(state, purpose, peer=None, token=None, host_scope_sha256=None):
             "host_scope_sha256":host_scope_sha256}
 
 
+def retirement(authority, *, lease, ref):
+    """Read terminal same-row provenance, never current permission or kernel absence."""
+    from .partitions import validate_lease
+    from .partition_binding import reference, split_reservation
+    from .store import Store
+    import json
+    request = validate_lease(lease)
+    if "ephemeral" not in request or not request["generation"]: raise _denied()
+    ref = reference(ref, request["platform_epoch"])
+    authority._active()
+    service = authority.service
+    with service.authority():
+        with service.store.transaction(service.clock()) as db:
+            anchor = authority._durable(db)
+            prior = authority._lookup(db, request)
+            if (not prior or not prior["retired"] or not prior["lease_id"]
+                    or authority._echo(prior) != request or anchor.get("reader_schema") != 8
+                    or anchor["incarnation"] != request["offer"]["partition"]["authority_incarnation"]):
+                raise _denied()
+            stored = authority._echo(prior)
+            local = Store.lease(db, prior["lease_id"])
+            row = db.execute("SELECT * FROM host_reservations WHERE lease_id=?", (local["id"],)).fetchone()
+            if row is None: raise _denied()
+            provider, state = split_reservation(row, local)
+            profile = json.loads(row["enforcement"]).get(ephemeral.MEMBER)
+            if profile is None or profile["lease"] != stored: raise _denied()
+            qualified_proof(json.loads(provider["enforcement"]), stored)
+            if state is None:
+                # No Ref has ever been persisted here; the supplied Ref is not observed ownership.
+                disposition = "never-bound"
+            else:
+                if (state["phase"] != "retired" or state["binding"]["lease"] != stored
+                        or state["binding"]["ref"] != ref): raise _denied()
+                disposition = "never-consumed" if state["phase_revision"] <= 3 else "scope-required"
+            return {"contract":"partition-retirement.v1", "lease":stored,
+                    "disposition":disposition, "state":copy.deepcopy(state)}
+
+
 def resolve(authority, *, lease, ref, binding_sha256=None, expected_phase_revision=None,
             operation=None, token=None, host_scope_sha256=None, peer=None):
     from .partitions import validate_lease

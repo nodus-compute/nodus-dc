@@ -231,3 +231,20 @@ permission or issue a creation token, and a different Ref refuses. This permits
 normal cleanup after expiry/restart without reauthorizing a job. Generic Check,
 Begin and runtime creation remain denied; unproved cleanup still retains A.
 The legacy v1 Bind contract is unchanged.
+
+An optional literal `purpose:"retirement"` on that same Bind endpoint returns
+exactly `{contract:"partition-retirement.v1", lease, disposition, state}`. The
+request still carries the exact full lease and a valid Ref. It requires the
+retired qualified row, matching floor8 authority fence and original complete
+reservation proof; it invokes no inventory or provider admission hook. Absent
+purpose retains the existing Bind behavior; null, unknown purposes and legacy
+leases refuse this additional read.
+
+`never-bound` means no execution binding was ever stored in this row: state is
+null, and the supplied Ref is not echoed as observed ownership. A stored retired
+v2 binding must match the exact requested Ref and full lease. Its revision2/3
+returns `never-consumed`; revision4/5 returns `scope-required`, both with the full
+unchanged terminal state. Replay is an identity read, never a creator capability.
+These dispositions do not prove kernel/daemon absence or release the reservation.
+The caller still performs its ordinary teardown and Complete still requires the
+provider's positive cleanup proof. A consumed row with missing scope stays held.

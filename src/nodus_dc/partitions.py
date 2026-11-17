@@ -612,7 +612,13 @@ class PartitionAuthority:
                 if checked and checked[0]["state"]=="reserved": Store.update(db,checked[0],self.service.clock(),state="active")
                 return {"lease":self._echo(row) if row else request,"authorized":checked is not None}
 
-    def bind(self, *, lease, ref):
+    def bind(self, *, lease, ref, **request):
+        if request:
+            fields(request, "purpose")
+            if request["purpose"] != "retirement":
+                raise Error("invalid_request", "unsupported binding read purpose", 400)
+            from .partition_execution import retirement
+            return retirement(self, lease=lease, ref=ref)
         from .partition_binding import resolve
         return resolve(self, lease=lease, ref=ref)
 
