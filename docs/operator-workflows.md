@@ -107,7 +107,7 @@ The [support matrix](support-matrix.md) separates implemented candidates from qu
 
 Use this path only when **Get install command** in the [Data-center dashboard](https://data-center.nodus-compute.ai) explicitly confirms monitoring only. If that confirmation is absent, leave the host unchanged; do not substitute an Execute enrollment command. The monitoring-only command enrolls a `nodusd` agent in **Monitor** mode, separately from `nodus-dc connection connect`. It reports host inventory and GPU observations without authorizing remote jobs or capacity sharing.
 
-Monitor requires a Linux host with systemd and a working NVIDIA driver/NVML. It does not require Docker, NVIDIA Container Toolkit, a CUDA workload probe or the allocator's local-authority URL/token options. Use the dashboard's Monitor-capable signed installer command unchanged; do not add the Execute options below.
+Monitor requires a Linux host with systemd and a working NVIDIA driver/NVML. It does not require Docker, NVIDIA Container Toolkit, a CUDA workload probe or the allocator's local-authority URL/token options. Use the dashboard's install command unchanged; do not add the Execute options below.
 
 The documented standalone package uses `/opt/nodus-dc`, `/var/lib/nodus-dc` and, if configured, `nodus-dc.service`. Monitor uses `/opt/nodus/bin/nodusd`, `/etc/nodus`, `/var/lib/nodus` and `nodusd.service`. Keep these paths, services and credentials distinct. The standalone allocator's local/bridge tokens are not enrollment tokens, and monitoring does not require enabling its bridge. Existing local workloads remain under their current allocator; this source separation is not yet a live workload-coexistence qualification.
 
