@@ -251,6 +251,14 @@ class Partitions(unittest.TestCase):
             other, other_base = acquire("renewal-sibling")
             status, issued = call("begin",begin(other_base,"issue")); self.assertEqual(status,200)
             status, consumed = call("begin",begin(other_base,"consume",creation_token=issued["creation_token"])); self.assertEqual(status,200)
+            def sibling_snapshot():
+                # Check advances the global authority fence, but must not change this held sibling.
+                with self.service.store.connection() as db:
+                    claim = db.execute("SELECT * FROM partition_claims WHERE platform_lease_id=? AND platform_epoch=?",
+                                       (other["platform_lease_id"],other["platform_epoch"])).fetchone()
+                    lease = db.execute("SELECT * FROM leases WHERE id=?",(claim["lease_id"],)).fetchone()
+                    reservation = db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(claim["lease_id"],)).fetchone()
+                    return dict(claim), dict(lease), dict(reservation)
             reader=object.__new__(LinuxPartitionProvider); reader.sha256="7"*64; reader._immutable_hashes={}
             kernel=self.root/"renewal-kernel"; fifo=self.root/"renewal-fifo"
             for parent in (kernel/"nodus-scoped-owners",kernel/"nodus-scoped-host",fifo/"guardians"):
@@ -295,11 +303,11 @@ class Partitions(unittest.TestCase):
                 self.assertFalse(call("check",held)[1]["authorized"])
                 self.assertFalse(call("check",{**other,"creation_token":consumed["creation_token"]})[1]["authorized"])
                 self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1],{"offers":[],"host_budget":None})
-                before=saved(other); prepares=self.executor.prepares
+                before=sibling_snapshot(); prepares=self.executor.prepares
                 self.assertTrue(call("check",request)[1]["authorized"])
                 self.assertIn(("finite",other_base["ref"],False),observed)
                 self.assertNotIn(("finite",base["ref"],False),observed)
-                self.assertEqual(saved(other),before);self.assertEqual(self.executor.prepares,prepares)
+                self.assertEqual(sibling_snapshot(),before);self.assertEqual(self.executor.prepares,prepares)
                 target=self.executor.accounting[-1][2]["renewal_target"]
                 self.assertEqual(target,{"local_lease_id":state["binding"]["local_lease_id"],"binding_sha256":state["binding_sha256"],"ref":base["ref"],"phase_revision":4})
                 finite[0]=False;self.assertFalse(call("check",request)[1]["authorized"]);finite[0]=True
