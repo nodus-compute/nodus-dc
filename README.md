@@ -53,7 +53,7 @@ readiness from another terminal with:
 | Run vLLM or SGLang | [Inference recipes](docs/serving-profiles.md) |
 | Run training with persistent checkpoints | [Training guide](docs/training.md) |
 | Allocate GPUs or configure MIG partitions | [Local allocation and partitioning](docs/operator-workflows.md#allocate-and-launch) |
-| Connect a host and monitor it in Nodus | [Connection and service setup](docs/operations.md) · [Data-center dashboard](https://data-center.nodus-compute.ai) |
+| Connect a host and monitor it in Nodus | [Monitoring-only connection](docs/operator-workflows.md#monitoring-only-dashboard-connection) · [Data-center dashboard](https://data-center.nodus-compute.ai) |
 | Use an existing Kubernetes cluster | [Kubernetes integration](kubernetes/README.md) |
 | Upgrade, recover or uninstall | [Operator workflows](docs/operator-workflows.md#recovery-and-upgrades) |
 
