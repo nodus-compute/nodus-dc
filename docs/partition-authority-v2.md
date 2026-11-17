@@ -75,7 +75,7 @@ The wire allows one offer per compute instance. The provider selects the first c
 
 ## Shared host resources and executor boundary
 
-The durable host account includes all unreleased local and external leases, including draining and quarantined leases. An existing owner without a declared, verified budget blocks offers. Scratch is memory-backed and bounded within the same RAM limit; it is not an additional RAM allowance. Host capacity must already exclude operator/system headroom.
+The durable host account includes all unreleased local and external leases, including draining and quarantined leases. An existing owner without a declared, verified budget blocks offers. Under the legacy accounting contract, scratch is memory-backed and bounded within the same RAM limit; it is not an additional RAM allowance. Host capacity must already exclude operator/system headroom.
 
 The local reserve API accepts an optional `host_resources` object with positive `cpu_millis` and `memory_bytes`, plus `scratch_bytes` between zero and the RAM limit. Budgeted local execution currently requires a hardware-partition lease and a qualified enforcement provider. Its Docker command applies CPU period/quota, equal memory/swap limits, a PID limit and bounded tmpfs/shared memory. Writable host output binds and published ports are refused for this bounded shape. Before starting a budgeted container, the backend inspects the created container and refuses any mismatch in resolved CPU, RAM/swap or scratch limits. Neither command construction nor this inspect gate proves that the target kernel enforced the limits.
 
@@ -136,3 +136,48 @@ first binding, then checks refusal of Check/Claim/Reclaim/Complete/local start/r
 zero execution-provider calls, unchanged database/registry and reopening refusal.
 These new cases require bounded Linux qualification; no runtime, GPU, aggregate limit
 or production provider qualification is implied.
+
+## Closed ephemeral aggregate profile
+
+The private lease may carry `ephemeral` with exact contract
+`scoped-ephemeral-test.v1`. Absence preserves the legacy protocol; null, empty,
+unknown or malformed values refuse. This test profile freezes a spec digest,
+explicit unsupported-feature refusals, declared input ceilings and a normalized
+charge. It does not install host scratch or make a lease executable. Profile
+Check is always unauthorized; bind/begin return `ephemeral_enforcement_unavailable`.
+
+Task CPU C is 10..64000 millicores; task memory M is 64 MiB..1 TiB and scratch S is
+4 KiB..64 MiB, both page aligned. The fixed charge is stage T=2S+8 MiB,
+host H=S+T+128 MiB helper+64 MiB metadata, owner O=128 MiB. The reservation is
+`{cpu_millis:C+350, memory_bytes:M+H+O, scratch_bytes:S}`. The lease retains full
+task C/M/S. Scratch remains a separate ceiling and is not added to RAM subtraction
+again. Input bytes mean the sum of positive declared `max_bytes` ceilings, not a
+measurement; up to 16 inputs and 16 outputs fit the profile. Continuity must be
+ephemeral, with no restore manifest, checkpoint policy, snapshot/lazy inputs or
+outside outputs. The platform must independently compile and verify the spec.
+
+Profile offers require `include_host_budget:true` and
+`accounting_version:"partition-aggregate-test.v1"`. The existing `host_capacity`
+hook receives that keyword and must return exactly `{accounting_version,capacity}`;
+the host must already exclude shared headroom once. No raw physical capacity or
+legacy task reservation is reinterpreted as an aggregate budget. The existing
+accounting-verifier scope includes this version. The first slice refuses mixed
+live legacy/profile reservations until a qualified mixed accounting contract exists.
+
+The unchanged `prepare_reservation(lease,resources)` hook receives the aggregate
+vector and must return the same `accounting_version` in its original proof.
+This remains a prerequisite/plan hook, never an instruction to materialize H.
+The authority adds `nodus.ephemeral_claim` provenance binding the exact lease and
+original proof digest to the aggregate row. Provider verification receives the
+aggregate row and original proof only after validation. Missing, altered, or mixed
+reserved metadata refuses. Local Docker task limits are unchanged; they do not
+accept aggregate rows. Released claims retain this provenance after exact cleanup.
+
+The first successful profile Claim advances schema/registry reader floor to 7 in
+the same write-ahead transaction. Already-open and fresh ecfa/floor6 readers must
+refuse before provider execution or mutation. Failed admission leaves the old floor;
+registry-before-SQLite interruption remains an unrecoverable mismatch without drained
+recovery. Existing Unix/SQLite and distribution cases cover this contract, including
+concurrent aggregate fit, full M, retained failed cleanup, and real old-reader refusal.
+These additions are source-only pending bounded Linux verification. Production
+provider registration, aggregate kernel enforcement and funded dispatch remain closed.

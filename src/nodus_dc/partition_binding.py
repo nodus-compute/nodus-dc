@@ -55,6 +55,12 @@ def split_reservation(reservation, local=None):
         if not isinstance(proof, dict): raise ValueError()
         present = MEMBER in proof
         state = proof.pop(MEMBER, None)
+        from . import ephemeral
+        if ephemeral.MEMBER in proof:
+            if present: raise ValueError()
+            ephemeral.split(row, proof, local)
+        elif proof.get("accounting_version") == ephemeral.ACCOUNTING:
+            raise ValueError()  # Aggregate provider data is never a legacy reservation.
         provider_proof(proof)
         if present:
             fields(state, "binding binding_sha256 phase phase_revision")
@@ -107,6 +113,8 @@ def retire(db, local_id):
 
 def resolve(authority, *, lease, ref, binding_sha256=None, expected_phase_revision=None):
     request = validate_lease(lease)
+    from .ephemeral import require_unavailable
+    require_unavailable(request)
     if not request["generation"]:
         raise Error("stale_generation", "execution binding requires a held generation", 409)
     ref = reference(ref, request["platform_epoch"])

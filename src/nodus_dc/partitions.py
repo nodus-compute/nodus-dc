@@ -67,7 +67,8 @@ def budget(value):
 
 
 def validate_lease(value):
-    fields(value, "platform_lease_id platform_epoch generation offer workload resources expires_at_unix_millis")
+    profile = isinstance(value, dict) and "ephemeral" in value
+    fields(value, "platform_lease_id platform_epoch generation offer workload resources expires_at_unix_millis" + (" ephemeral" if profile else ""))
     identifier(value["platform_lease_id"]); integer(value["platform_epoch"], 1); integer(value["generation"])
     offer = value["offer"]
     fields(offer, "partition policy_revision agreement accelerator profile gpu_memory_bytes driver_version runtime_sha256 capacity available_until_unix_millis")
@@ -87,6 +88,9 @@ def validate_lease(value):
     integer(offer["policy_revision"], 1); integer(offer["gpu_memory_bytes"], 1)
     for name in ("accelerator", "profile", "driver_version"): identifier(offer[name])
     sha(offer["runtime_sha256"]); budget(offer["capacity"]); budget(value["resources"])
+    if profile:
+        from .ephemeral import validate
+        validate(value["ephemeral"], value["resources"])
     if any(value["resources"][k] > offer["capacity"][k] for k in value["resources"]):
         raise Error("invalid_request", "reservation exceeds frozen offer capacity", 400)
     integer(offer["available_until_unix_millis"], 1)
@@ -154,14 +158,19 @@ class PartitionAuthority:
                                     workload=request["workload"] if request else None)
 
     @staticmethod
-    def _shape(policy, accelerator, profile, memory, capacity):
+    def _shape(policy, accelerator, profile, memory, capacity, accounting_version=None):
         # The strict wire permits one offer per CI. Pick the first approved exact
         # bundle which fits; never derive a fractional price or overstate capacity.
         for row in policy["shapes"]:
             shape = row["shape"]
             budget = {"cpu_millis":shape["cpuMillis"], "memory_bytes":shape["memoryBytes"], "scratch_bytes":shape["scratchBytes"]}
+            charged = budget
+            if accounting_version is not None:
+                from .ephemeral import charge
+                try: charged = charge(budget)["aggregate"]
+                except Error: continue  # Unsupported shapes never become profile offers.
             if (shape["accelerator"] == accelerator and shape["profile"] == profile and shape["gpuMemoryBytes"] == memory
-                    and all(budget[k] <= capacity[k] for k in budget)):
+                    and all(charged[k] <= capacity[k] for k in charged)):
                 return budget
         return None
 
@@ -246,10 +255,20 @@ class PartitionAuthority:
             for row in db.execute("SELECT parent_uuid FROM partition_configurations WHERE state='committed'").fetchall():
                 self.quarantine(db,row["parent_uuid"],reason)
 
-    def _host_account(self, db, ignore=None):
+    def _host_account(self, db, ignore=None, accounting_version=None):
         if self.executor is None:
             raise Error("partition_executor_unqualified", "no qualified partition executor is installed", 503)
-        capacity = dict(budget(self.executor.host_capacity()))
+        from . import ephemeral
+        if accounting_version is None:
+            capacity = dict(budget(self.executor.host_capacity()))
+        else:
+            try:
+                declared = self.executor.host_capacity(accounting_version=accounting_version)
+                fields(declared, "accounting_version capacity")
+                if declared["accounting_version"] != ephemeral.ACCOUNTING: raise ValueError()
+                capacity = dict(budget(declared["capacity"]))
+            except (TypeError, ValueError, Error):
+                raise Error("host_resources_unaccounted", "explicit aggregate capacity is unavailable", 409) from None
         available = dict(capacity)
         local_reserved = {key: 0 for key in capacity}
         held = []
@@ -260,6 +279,9 @@ class PartitionAuthority:
             if reservation is None:
                 raise Error("host_resources_unaccounted", "every concurrent owner needs enforced host resource reservations", 409)
             lease = Store.lease(db, row["id"])
+            profile = ephemeral.reservation_profile(reservation, lease)
+            if (profile is not None) != (accounting_version is not None):
+                raise Error("host_resources_unaccounted", "mixed accounting requires a separately qualified contract", 409)
             from .partition_binding import provider_reservation
             if self.executor.verify_reservation(lease, provider_reservation(reservation, lease)) is not True:
                 raise Error("host_resources_unenforced", "a concurrent host resource limit is unverified", 503)
@@ -276,15 +298,18 @@ class PartitionAuthority:
             raise Error("authority_continuity_lost", "host accounting requires durable allocation authority", 503)
         scope = {"authority_incarnation": anchor["incarnation"], "configurations": [dict(row) for row in db.execute(
             "SELECT parent_uuid,generation,boot_id,state FROM partition_configurations ORDER BY parent_uuid")]}
+        if accounting_version is not None: scope["accounting_version"] = accounting_version
         if verify(copy.deepcopy(capacity), copy.deepcopy(held), scope) is not True:
             raise Error("host_resources_unaccounted", "complete enforced host accounting is unavailable", 409)
         if any(value < 0 for value in available.values()):
             raise Error("host_resources_unaccounted", "retained host reservations exceed enforced capacity", 409)
         available["scratch_bytes"] = min(available["scratch_bytes"], available["memory_bytes"])
-        return {"capacity": capacity, "local_reserved": local_reserved, "available": available}
+        account = {"capacity": capacity, "local_reserved": local_reserved, "available": available}
+        if accounting_version is not None: account["accounting_version"] = accounting_version
+        return account
 
-    def _capacity(self, db, ignore=None):
-        return self._host_account(db, ignore)["available"]
+    def _capacity(self, db, ignore=None, accounting_version=None):
+        return self._host_account(db, ignore, accounting_version)["available"]
 
     def reserve_local(self, db, lease, resources):
         resources = budget(resources)
@@ -301,14 +326,17 @@ class PartitionAuthority:
             raise Error("host_resources_unenforced", "CPU, RAM and memory-backed scratch limits are required", 503)
         from .partition_binding import provider_proof
         provider_proof(proof)
+        from .ephemeral import ACCOUNTING
+        if proof.get("accounting_version") == ACCOUNTING:
+            raise Error("host_resources_unaccounted", "local aggregate task limits are not implemented", 409)
         db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",
                    (lease["id"], resources["cpu_millis"], resources["memory_bytes"], resources["scratch_bytes"], canonical(proof)))
 
-    def _offer_rows(self, db, host_account=None):
+    def _offer_rows(self, db, host_account=None, accounting_version=None):
         policy = self._policy(db)
         agreement = policy["agreement"]
         if not isinstance(agreement, dict): raise Error("partition_terms_unavailable", "partition terms are not authorized", 403)
-        capacity = self._capacity(db) if host_account is None else host_account["available"]
+        capacity = self._capacity(db, accounting_version=accounting_version) if host_account is None else host_account["available"]
         if capacity["cpu_millis"] <= 0 or capacity["memory_bytes"] <= 0: return []
         anchor = self.service.store.fence.verify(db) if self.service.store.fence else None
         if not anchor: raise Error("authority_continuity_lost", "durable configuration authority has not been adopted", 503)
@@ -327,7 +355,7 @@ class PartitionAuthority:
                 if (not isinstance(qualification, dict) or qualification.get("qualified") is not True
                         or qualification.get("continuous_configuration_authority") is not True): continue
                 runtime = qualification["runtime_sha256"]; sha(runtime)
-                bundle = self._shape(policy, qualification["accelerator"], binding["profile"], binding["memory_bytes"], capacity)
+                bundle = self._shape(policy, qualification["accelerator"], binding["profile"], binding["memory_bytes"], capacity, accounting_version)
                 if bundle is None: continue
                 result.append({"partition": {"resource_id": binding["partition_uuid"], "authority_incarnation": anchor["incarnation"],
                     "configuration_generation": row["generation"], "boot_id": row["boot_id"], "parent_uuid": row["parent_uuid"],
@@ -341,7 +369,12 @@ class PartitionAuthority:
         return result
 
     def offers(self, **request):
-        fields(request, "include_host_budget" if request else "")
+        from .ephemeral import ACCOUNTING
+        versioned = "accounting_version" in request
+        fields(request, "include_host_budget accounting_version" if versioned else ("include_host_budget" if request else ""))
+        if versioned and request["accounting_version"] != ACCOUNTING:
+            raise Error("invalid_request", "unsupported host accounting contract", 400)
+        accounting_version = ACCOUNTING if versioned else None
         include_budget = bool(request)
         if include_budget and request["include_host_budget"] is not True:
             raise Error("invalid_request", "host budget reporting must be explicitly requested", 400)
@@ -351,8 +384,8 @@ class PartitionAuthority:
             account = None
             try:
                 with self._admission_transaction() as db:
-                    if include_budget: account = self._host_account(db)
-                    offers = self._offer_rows(db, account)
+                    if include_budget: account = self._host_account(db, accounting_version=accounting_version)
+                    offers = self._offer_rows(db, account, accounting_version)
             except Error as exc:
                 if exc.code in {"partition_executor_unqualified", "partition_terms_unavailable", "partition_policy_unavailable", "partition_policy_expired", "host_resources_unaccounted", "host_resources_unenforced", "external_not_authorized"}:
                     offers, account = [], None
@@ -360,6 +393,7 @@ class PartitionAuthority:
             report = {"offers": offers}
             if include_budget:
                 report["host_budget"] = None if account is None else {key: account[key] for key in ("capacity", "local_reserved")}
+                if account is not None and versioned: report["host_budget"]["accounting_version"] = ACCOUNTING
             # Match the Unix API serializer; never silently omit eligible partitions.
             if len(offers) > 64 or len(json.dumps(report, sort_keys=True, allow_nan=False).encode()) > 65536:
                 raise Error("partition_offer_report_too_large", "complete partition offer report exceeds its wire limit", 503)
@@ -387,6 +421,8 @@ class PartitionAuthority:
 
     def claim(self, **request):
         request = validate_lease(request); self._active()
+        from . import ephemeral
+        accounting_version = ephemeral.ACCOUNTING if "ephemeral" in request else None
         with self.service.authority():
             self.ensure_durable()
             self.service._inventory()
@@ -398,7 +434,7 @@ class PartitionAuthority:
                     return {"lease": self._echo(prior)}
                 self.service._expires(request["expires_at_unix_millis"]/1000)
                 self._policy(db, request=request)
-                current = self._offer_rows(db)
+                current = self._offer_rows(db, accounting_version=accounting_version)
                 if not any(o["available_until_unix_millis"] >= request["offer"]["available_until_unix_millis"]
                         and {**o,"available_until_unix_millis":request["offer"]["available_until_unix_millis"]} == request["offer"] for o in current):
                     raise Error("stale_partition_offer", "partition offer or current independent authority changed", 409)
@@ -417,17 +453,26 @@ class PartitionAuthority:
                     (lease_id,generation,"external","hardware_partition","reserved",canonical([resource]),now,now,
                      request["expires_at_unix_millis"]/1000,"partition:"+digest(self._identity(request)),digest(normalized),canonical(authorization),canonical(baseline)))
                 # The new lease is not counted until its reservation is inserted.
-                proof = self.executor.prepare_reservation(Store.lease(db,lease_id), request["resources"])
+                resources = request["ephemeral"]["charge"]["aggregate"] if accounting_version else request["resources"]
+                proof = self.executor.prepare_reservation(Store.lease(db,lease_id), resources)
                 if not isinstance(proof,dict) or proof.get("enforcement_ready") is not True:
                     raise Error("host_resources_unenforced", "partition host limits cannot be enforced", 503)
                 from .partition_binding import provider_proof
                 provider_proof(proof)
+                if accounting_version:
+                    if proof.get("accounting_version") != accounting_version:
+                        raise Error("host_resources_unenforced", "aggregate reservation contract is unavailable", 503)
+                    proof = {**proof, ephemeral.MEMBER:ephemeral.metadata({**request,"generation":generation}, proof)}
+                elif proof.get("accounting_version") == ephemeral.ACCOUNTING:
+                    raise Error("host_resources_unaccounted", "aggregate proof requires the explicit profile", 409)
                 self.service._expires(request["expires_at_unix_millis"]/1000)
                 policy = self._policy(db,request=request)
                 if policy["agreement"]!=request["offer"]["agreement"]:
                     raise Error("partition_terms_changed", "partition agreement changed during admission", 409)
-                db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",(lease_id,*[request["resources"][k] for k in ("cpu_millis","memory_bytes","scratch_bytes")],canonical(proof)))
+                db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",(lease_id,*[resources[k] for k in ("cpu_millis","memory_bytes","scratch_bytes")],canonical(proof)))
                 db.execute("INSERT INTO partition_claims VALUES(?,?,?,?,?,?,0,?,?)",(*self._identity(request),canonical(normalized),digest(normalized),lease_id,generation,now,now))
+                if accounting_version:
+                    db.execute("UPDATE meta SET value='7' WHERE key='schema_version' AND CAST(value AS INTEGER)<7")
                 return {"lease": {**request,"generation":generation}}
 
     def inspect(self, **request):
@@ -460,6 +505,7 @@ class PartitionAuthority:
             return {"lease":self._echo(self._lookup(db,request)),"retired":True}
 
     def _checked(self, db, request, row):
+        if "ephemeral" in request: return None  # H enforcement/runnable authority is not implemented.
         from .partition_binding import provider_reservation
         authorized=False
         lease = binding = qualification = reservation = None

@@ -34,8 +34,15 @@ class DistributionTests(unittest.TestCase):
             "ea5d0929d5039cac947a2f28d90c038b9720fb978e07b985a880fd2d3ccdda05", "5")
 
     def test_schema6_fences_already_open_dev16_and_d9_before_provider_hooks(self):
+        self.binding_reader_floor()
+
+    def test_schema7_fences_already_open_ecfa_before_provider_hooks(self):
+        self.binding_reader_floor(aggregate=True)
+
+    def binding_reader_floor(self, aggregate=False):
         # Actual frozen old code, not a reimplementation of the old reader.
-        pins = (("NODUS_BINDING_DEV16_WHEEL","4a9153d982bad3f34db4792ad80649a054e12ead8573d6639f54ba25eaf19870"),
+        pins = (("NODUS_AGGREGATE_ECFA_ARCHIVE","828e7d0dfab05640972f572d1785a7f1fca135e7fd535b931fd2f5944db2fb22"),) if aggregate else (
+                ("NODUS_BINDING_DEV16_WHEEL","4a9153d982bad3f34db4792ad80649a054e12ead8573d6639f54ba25eaf19870"),
                 ("NODUS_BINDING_D9_ARCHIVE","c9150aa8a107616056d968bf36e8dd664a4123a64b34f0c7cd69726b92989a29"))
         for name, expected in pins:
             if not os.environ.get(name): self.skipTest("offline binding reader fixture required: "+name)
@@ -47,7 +54,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(journey.update()[0],200)
             local,request,held=journey.claimed()
             old_source=journey.case.root/"old-d9";old_source.mkdir()
-            with tarfile.open(os.environ[pins[1][0]]) as archive:
+            with tarfile.open(os.environ[pins[-1][0]]) as archive:
                 for member in archive.getmembers():
                     prefix="nodus-dc/src/"
                     if member.isfile() and member.name.startswith(prefix) and member.name.endswith(".py"):
@@ -91,7 +98,8 @@ except Error as error: out['reopen']=error.code
 out['provider_calls']=calls
 print(json.dumps(out),flush=True)
 """
-            for source in (Path(os.environ[pins[0][0]]).resolve(),old_source):
+            sources = (old_source,) if aggregate else (Path(os.environ[pins[0][0]]).resolve(),old_source)
+            for source in sources:
                 environment={k:v for k,v in os.environ.items() if k not in {"PYTHONPATH","PYTHONHOME"}}
                 environment["PYTHONPATH"]=os.pathsep.join((str(source),str(ROOT)))
                 child=subprocess.Popen([sys.executable,"-c",probe,str(journey.case.root),str(source)],
@@ -100,9 +108,28 @@ print(json.dumps(out),flush=True)
                 children.append(child)
                 self.assertTrue(select.select([child.stdout],[],[],15)[0],"old reader did not open before binding")
                 self.assertEqual(json.loads(child.stdout.readline()),{"opened":True})
-            ref={"attempt_id":"att_00000000000000000000000001","epoch":held["platform_epoch"]}
-            status,committed=journey.call("bind",{"lease":held,"ref":ref},partitions=True)
-            self.assertEqual(status,200,committed)
+            if aggregate:
+                from nodus_dc import ephemeral
+                # Retire legacy owners normally; the first profile deliberately refuses mixed contracts.
+                self.assertEqual(journey.call("reclaim",held,partitions=True)[0],200)
+                self.assertTrue(journey.call("complete",{"lease":held,"cleanup_verified":True},partitions=True)[1]["released"])
+                journey.s.release(local["id"],generation=local["generation"],request_key="release-before-aggregate")
+                task=journey.case.enable_ephemeral_profile()
+                status,offers=journey.call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING},partitions=True)
+                self.assertEqual(status,200,offers)
+                profile={"contract":ephemeral.CONTRACT,"spec_sha256":"d"*64,"charge":ephemeral.charge(task),
+                    "features":{"continuity":"ephemeral","restore_manifest":False,"checkpoint_policy":False,
+                        "snapshot_inputs":False,"lazy_inputs":False,"outside_outputs":False,
+                        "input_count":0,"input_bytes":0,"output_count":0}}
+                candidate={**request,"platform_lease_id":"aggregate-floor","generation":0,"offer":offers["offers"][0],
+                    "resources":task,"ephemeral":profile}
+                status,committed=journey.call("claim",candidate,partitions=True)
+                self.assertEqual(status,200,committed)
+                self.assertEqual(journey.s.store.fence.read()["reader_schema"],7)
+            else:
+                ref={"attempt_id":"att_00000000000000000000000001","epoch":held["platform_epoch"]}
+                status,committed=journey.call("bind",{"lease":held,"ref":ref},partitions=True)
+                self.assertEqual(status,200,committed)
             with journey.s.store.connection() as db: before=list(db.iterdump())
             registry=journey.s.store.fence.path.read_bytes()
             for child in children:
@@ -114,8 +141,12 @@ print(json.dumps(out),flush=True)
                 self.assertEqual(result,{key:"authority_fence_unavailable" for key in ("check","claim","reclaim","complete","start","release")})
                 with journey.s.store.connection() as db: self.assertEqual(list(db.iterdump()),before)
                 self.assertEqual(journey.s.store.fence.path.read_bytes(),registry)
-            self.assertTrue(journey.call("check",held,partitions=True)[1]["authorized"])
-            self.assertEqual(journey.s.get(local["id"])["state"],"active")
+            if aggregate:
+                self.assertFalse(journey.call("check",committed["lease"],partitions=True)[1]["authorized"])
+                self.assertEqual(journey.s.get(local["id"])["state"],"released")
+            else:
+                self.assertTrue(journey.call("check",held,partitions=True)[1]["authorized"])
+                self.assertEqual(journey.s.get(local["id"])["state"],"active")
         finally:
             for child in children:
                 if child.poll() is None: child.kill()

@@ -96,6 +96,21 @@ class Partitions(unittest.TestCase):
         with self.assertRaises(Error) as exc: callback()
         self.assertEqual(exc.exception.code,code)
 
+    def enable_ephemeral_profile(self, task=None, capacity=None):
+        """Explicit synthetic aggregate provider shared with the Go/private Unix fixture."""
+        from nodus_dc import ephemeral
+        task = task or {"cpu_millis":2000,"memory_bytes":3*1024**3,"scratch_bytes":64*1024**2}
+        capacity = capacity or {"cpu_millis":8000,"memory_bytes":8*1024**3,"scratch_bytes":128*1024**2}
+        policy = self.synthetic_policy(None)
+        policy["shapes"][0]["shape"].update(cpuMillis=task["cpu_millis"],memoryBytes=task["memory_bytes"],scratchBytes=task["scratch_bytes"])
+        self.p.policy_provider = lambda db, **kwargs: policy
+        original_capacity = self.executor.host_capacity
+        self.executor.host_capacity = lambda *, accounting_version=None: original_capacity() if accounting_version is None else {
+            "accounting_version":ephemeral.ACCOUNTING,"capacity":dict(capacity)}
+        self.executor.prepare_reservation = lambda lease, resources: {
+            "enforcement_ready":True,"synthetic":True,"accounting_version":ephemeral.ACCOUNTING}
+        return dict(task)
+
     def test_shared_host_budget_report_and_atomic_claim_refuse_unaccounted_work(self):
         resources = {"cpu_millis":1000,"memory_bytes":2*1024**3,"scratch_bytes":128*1024**2}
         local = self.service.reserve(resources=[A], mode="hardware_partition", expires_at=1400,
@@ -151,6 +166,147 @@ class Partitions(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=5)
             self.assertFalse(thread.is_alive())
+
+    def test_ephemeral_aggregate_claim_is_atomic_and_cannot_authorize_execution(self):
+        from nodus_dc import ephemeral
+        from nodus_dc.partition_binding import provider_reservation
+        task = {"cpu_millis":2000,"memory_bytes":64*1024**2,"scratch_bytes":4*1024**2}
+        charge = ephemeral.charge(task)
+        descriptor = {"contract":ephemeral.CONTRACT,"spec_sha256":"d"*64,"charge":charge,
+            "features":{"continuity":"ephemeral","restore_manifest":False,"checkpoint_policy":False,
+                "snapshot_inputs":False,"lazy_inputs":False,"outside_outputs":False,
+                "input_count":1,"input_bytes":17,"output_count":1}}
+        policy = self.synthetic_policy(None)
+        policy["shapes"][0]["shape"].update(cpuMillis=task["cpu_millis"],memoryBytes=task["memory_bytes"],scratchBytes=task["scratch_bytes"])
+        self.p.policy_provider = lambda db, **kwargs: policy
+        capacity = {"cpu_millis":10000,"memory_bytes":2*charge["aggregate"]["memory_bytes"]-4096,"scratch_bytes":2*task["scratch_bytes"]}
+        original_prepare = self.executor.prepare_reservation
+        server = BridgeUnixServer(str(self.root/"aggregate.sock"), self.service, "fixture-"+"x"*40, owner_uid=os.geteuid())
+        thread = threading.Thread(target=server.serve_forever,daemon=True); thread.start()
+        workers = []
+        def call(op, body):
+            connection = UnixHTTPConnection(server.path)
+            try:
+                connection.request("POST","/v2/bridge/partitions/"+op,json.dumps(body).encode(),
+                    {"Authorization":"Bearer "+server.bridge_token})
+                response = connection.getresponse()
+                return response.status,json.loads(response.read())
+            finally: connection.close()
+        report_request = {"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
+        def floor():
+            with self.service.store.connection() as db:
+                return db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        try:
+            self.assertEqual(call("offers",report_request),(200,{"offers":[],"host_budget":None}))
+            self.enable_ephemeral_profile(task,capacity)
+            aggregate_prepare = self.executor.prepare_reservation
+            self.executor.prepare_reservation = original_prepare
+            status, report = call("offers",report_request); self.assertEqual(status,200,report)
+            self.assertEqual(report["host_budget"],{"accounting_version":ephemeral.ACCOUNTING,"capacity":capacity,
+                "local_reserved":{k:0 for k in task}})
+            self.assertEqual(len(report["offers"]),2)
+            requests = [{"platform_lease_id":"aggregate-"+str(i),"platform_epoch":1,"generation":0,
+                "offer":offer,"workload":{"workload_image":IMAGE,"workload_kind":"Job"},
+                "resources":dict(task),"ephemeral":copy.deepcopy(descriptor),"expires_at_unix_millis":1100000}
+                for i,offer in enumerate(report["offers"])]
+            previous_floor = floor()
+            for invalid in (None,{}, {**descriptor,"extra":1},
+                    {**descriptor,"charge":{**charge,"host_memory_bytes":False}},
+                    {**descriptor,"features":{**descriptor["features"],"input_bytes":0}},
+                    {**descriptor,"features":{**descriptor["features"],"lazy_inputs":True}},
+                    {**descriptor,"charge":{**charge,"aggregate":task}}):
+                self.assertEqual(call("claim",{**requests[0],"ephemeral":invalid})[0],400)
+            # A provider that only knows raw task accounting cannot commit the new floor.
+            self.assertEqual(call("claim",requests[0])[0],503)
+            self.assertEqual(floor(),previous_floor)
+            self.assertNotIn("reader_schema",self.service.store.fence.read())
+            self.assertFalse(call("inspect",requests[0])[1]["held"])
+            def aggregate_reservation(lease,resources):
+                self.assertEqual(resources,charge["aggregate"])
+                return aggregate_prepare(lease,resources)
+            self.executor.prepare_reservation = aggregate_reservation
+            barrier = threading.Barrier(3,timeout=5); outcomes=[]; failures=[]
+            def acquire(request):
+                try:
+                    barrier.wait(); outcomes.append((request,call("claim",request)))
+                except Exception as exc: failures.append(exc)
+            workers=[threading.Thread(target=acquire,args=(r,),daemon=True) for r in requests]
+            for worker in workers: worker.start()
+            barrier.wait()
+            for worker in workers: worker.join(5)
+            self.assertTrue(all(not worker.is_alive() for worker in workers)); self.assertEqual(failures,[])
+            self.assertEqual(sorted(response[0] for _,response in outcomes),[200,409])
+            requested,response=next(pair for pair in outcomes if pair[1][0]==200)
+            held=response[1]["lease"]
+            self.assertEqual(held["resources"],task)
+            self.assertEqual(held["ephemeral"],descriptor)
+            self.assertEqual(call("claim",requested),(200,{"lease":held}))
+            self.assertEqual(call("claim",{**requested,"ephemeral":{**descriptor,"spec_sha256":"e"*64}})[0],409)
+            self.assertEqual((floor(),self.service.store.fence.read()["reader_schema"]),("7",7))
+            with self.service.store.connection() as db:
+                row=db.execute("SELECT r.* FROM host_reservations r JOIN leases l ON l.id=r.lease_id WHERE l.owner='external'").fetchone()
+                local=Store.lease(db,row["lease_id"])
+                self.assertEqual({k:row[k] for k in task},charge["aggregate"])
+                original=row["enforcement"]
+                self.assertEqual(json.loads(provider_reservation(row,local)["enforcement"]),
+                    {"enforcement_ready":True,"synthetic":True,"accounting_version":ephemeral.ACCOUNTING})
+            self.assertFalse(call("check",held)[1]["authorized"])
+            ref={"attempt_id":"att_00000000000000000000000001","epoch":1}
+            self.assertEqual(call("bind",{"lease":held,"ref":ref})[1]["error"]["code"],"ephemeral_enforcement_unavailable")
+            self.assertEqual(call("begin",{"lease":held,"ref":ref,"binding_sha256":"a"*64,"expected_phase_revision":1})[0],503)
+            self.assertEqual(call("offers",{})[1],{"offers":[]})  # No legacy reinterpretation.
+            self.assertEqual(call("offers",report_request)[1]["offers"],[])
+            self.assertEqual(self.executor.accounting[-1][2]["accounting_version"],ephemeral.ACCOUNTING)
+            self.assertEqual(self.executor.accounting[-1][1][0]["resources"],charge["aggregate"])
+            # Reserved data cannot be dropped or altered to masquerade as legacy provider proof.
+            for changed in (None,{**json.loads(original)[ephemeral.MEMBER],"provider_proof_sha256":"0"*64}):
+                with self.service.store.transaction(self.clock()) as db:
+                    proof=json.loads(original)
+                    if changed is None: proof.pop(ephemeral.MEMBER)
+                    else: proof[ephemeral.MEMBER]=changed
+                    db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",(json.dumps(proof),local["id"]))
+                self.assertEqual(call("offers",report_request)[1]["error"]["code"],"invalid_execution_binding")
+                self.assertEqual(call("reclaim",held)[1]["error"]["code"],"invalid_execution_binding")
+                with self.service.store.transaction(self.clock()) as db:
+                    db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",(original,local["id"]))
+            self.assertTrue(call("reclaim",held)[1]["retired"])
+            self.executor.clean=False
+            self.assertFalse(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            self.assertTrue(call("inspect",held)[1]["held"])
+            self.assertEqual(call("offers",report_request)[1]["offers"],[])
+            self.executor.clean=True
+            self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+            with self.service.store.connection() as db:
+                self.assertEqual(db.execute("SELECT enforcement FROM host_reservations WHERE lease_id=?",(local["id"],)).fetchone()[0],original)
+            self.assertEqual(len(call("offers",report_request)[1]["offers"]),2)
+        finally:
+            for worker in workers: worker.join(5)
+            server.shutdown(); server.server_close(); thread.join(5)
+            self.assertFalse(thread.is_alive())
+
+        # A crash after the registry write must not repair itself into a second admission.
+        crash = Partitions(); crash.setUp()
+        try:
+            crash.enable_ephemeral_profile(task,capacity)
+            offer=crash.p.offers(**report_request)["offers"][0]
+            request={**requests[0],"offer":offer}
+            with crash.service.store.connection() as db:
+                old_floor=db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            advance=crash.service.store.fence.advance
+            def interrupted(db):
+                advance(db)
+                if db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]=="7":
+                    raise RuntimeError("synthetic interruption after aggregate registry write")
+            crash.service.store.fence.advance=interrupted
+            with self.assertRaisesRegex(RuntimeError,"after aggregate registry write"):
+                crash.p.claim(**request)
+            crash.service.store.fence.advance=advance
+            with crash.service.store.connection() as db:
+                self.assertEqual(db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0],old_floor)
+                self.assertEqual(db.execute("SELECT count(*) FROM partition_claims").fetchone()[0],0)
+            self.assertEqual(crash.service.store.fence.read()["reader_schema"],7)
+            crash.assert_error("authority_continuity_lost",lambda:crash.p.claim(**request))
+        finally: crash.tearDown()
 
     def test_disjoint_external_claims_share_budget_and_cleanup_preserves_local_and_borrowed_siblings(self):
         # Four declared 1g instances; only three fit the enforced host CPU budget concurrently.
