@@ -47,7 +47,7 @@ python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev16-py3-n
 The installer keeps the CLI and Python interpreter under `/opt/nodus-dc/current/bin`;
 it does not add them to your shell PATH. The commands below use that installed path.
 
-Installation does not start services, change drivers or opt into participation. Preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
+Installation does not start services, change drivers or opt into participation. For local workload execution, preinstall a supported NVIDIA driver, Docker and NVIDIA Container Toolkit. Preload digest-pinned workload images and model files; the runtime never pulls them. Run the Linux daemon as the trusted host operator with Docker/GPU management permissions. Actual allocation binds a canonical authority registry in `/var/lib/nodus-dc`, so it normally requires root. Do not expose Docker or the local token to customers.
 
 ```sh
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc inventory
@@ -99,11 +99,27 @@ Installation and activation use a durable journal. Retry the same normal command
 
 ## API, connection and verification
 
-See [API contract](api.md), [operator service configuration](operations.md) and `PROVENANCE.json`. The bridge is disabled unless a separate owner-only bridge token file is configured. External work requires explicit finite authorization and shares the exact local host lock/database. Disconnect, expiry or failed health checks request reclaim; capacity remains held until exact generation cleanup is independently verified.
+See [API contract](api.md), [operator service configuration](operations.md) and `PROVENANCE.json`.
 
 The [support matrix](support-matrix.md) separates implemented candidates from qualified hardware. The [threat model](threat-model.md) states trusted actors, enforcement boundaries and excluded guarantees.
 
-Connect for metrics first with `--participation disabled`. This mode verifies the enrolled node and keeps external work disabled; it does not accept capacity terms or require a payment mode, availability window or workload permission. Metrics come from the enrolled `nodusd` agent. Keep its local-authority protection configured even for observation: enrollment alone must never give remote jobs a second allocation path around local workloads. GPU installation also requires the [public digest-pinned CUDA probe](../probe/README.md); preserve its normal driver, runtime and allocation-authority checks.
+### Monitoring-only dashboard connection
+
+Use this path only when **Get install command** in the [Data-center dashboard](https://data-center.nodus-compute.ai) explicitly confirms monitoring only. If that confirmation is absent, leave the host unchanged; do not substitute an Execute enrollment command. The monitoring-only command enrolls a `nodusd` agent in **Monitor** mode, separately from `nodus-dc connection connect`. It reports host inventory and GPU observations without authorizing remote jobs or capacity sharing.
+
+Monitor requires a Linux host with systemd and a working NVIDIA driver/NVML. It does not require Docker, NVIDIA Container Toolkit, a CUDA workload probe or the allocator's local-authority URL/token options. Use the dashboard's Monitor-capable signed installer command unchanged; do not add the Execute options below.
+
+The documented standalone package uses `/opt/nodus-dc`, `/var/lib/nodus-dc` and, if configured, `nodus-dc.service`. Monitor uses `/opt/nodus/bin/nodusd`, `/etc/nodus`, `/var/lib/nodus` and `nodusd.service`. Keep these paths, services and credentials distinct. The standalone allocator's local/bridge tokens are not enrollment tokens, and monitoring does not require enabling its bridge. Existing local workloads remain under their current allocator; this source separation is not yet a live workload-coexistence qualification.
+
+Monitor requires a fresh `nodusd` installation. The installer refuses existing agent binaries, configuration, bootstrap token or service, and nonempty agent state. An existing **Execute** `nodusd` cannot be converted by running the Monitor installer. Preserve its state; this installer supplies no Execute-to-Monitor migration. Do not delete state to bypass the refusal.
+
+Monitor enrollment creates `/var/lib/nodus/node.json`, so this package's never-enrolled `native-handoff` path subsequently refuses the host. Monitoring does not establish eligibility for the separate [terminal native return](terminal-native-return.md) workflow or provide confidentiality from the host operator.
+
+### Execute agent and optional capacity sharing
+
+The following instructions apply to an **Execute** agent using this package's allocation authority, including its observation-only participation setting. They are not Monitor installation instructions. The bridge is disabled unless a separate owner-only bridge token file is configured. External work requires explicit finite authorization and shares the exact local host lock/database. Disconnect, expiry or failed health checks request reclaim; capacity remains held until exact generation cleanup is independently verified.
+
+For this Execute connection, start with `--participation disabled`. This setting verifies the enrolled node and keeps external work disabled; it does not accept capacity terms or require a payment mode, availability window or workload permission. Metrics come from the enrolled `nodusd` agent. Keep its local-authority protection configured even for this observation setting: enrollment alone must never give remote jobs a second allocation path around local workloads. Execute GPU installation also requires the [public digest-pinned CUDA probe](../probe/README.md); preserve its normal driver, runtime and allocation-authority checks.
 
 The companion platform node installer must receive `--local-authority-url unix:///run/nodus-dc/bridge.sock --local-authority-token-file /var/lib/nodus-dc/bridge.token`. Use the same bridge file for the local daemon. The privileged local API has a separate socket at `/run/nodus-dc/local.sock`; HTTP is read-only. Production sockets require root-owned private paths and OS peer UID checks. The cloud API credential is a different private token file. `connection review` displays current exact-node terms without accepting them. `connection connect --participation enabled` verifies the enrolled node UUID from `/var/lib/nodus/node.json`, checks accepted terms/compensation and grants only an explicit availability window of at most 24 hours. Passing `--accept-terms-digest` explicitly accepts that exact reviewed digest and requires a human owner/admin session credential. An on-host API key cannot accept terms; use the console to accept them, then omit this flag to connect with the host's read credential.
 

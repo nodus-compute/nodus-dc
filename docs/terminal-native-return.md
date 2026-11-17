@@ -1,5 +1,11 @@
 # Terminal native owner return (unqualified dev2 candidate)
 
+This guide applies to an **Execute** agent connected through the standalone
+allocator's local-authority bridge. It is not the [monitoring-only dashboard
+connection](operator-workflows.md#monitoring-only-dashboard-connection): Monitor
+rejects the local-authority installer options below, and Monitor enrollment does
+not establish terminal-return eligibility.
+
 This command permanently retires a previously connected host installation before
 its operator restores existing native SSH/customer access. It does not create
 accounts or SSH credentials, enable SSH, provision or reimage a server, or prove
@@ -47,7 +53,7 @@ old file does not restore eligibility. The operator remains trusted before nativ
 grant; this is not a claim to discover arbitrary secrets placed on a root-owned
 host or to attest against an operator who edits local state.
 
-A fresh installation can connect for metrics with `--participation disabled --terminal-native-return`, using that dedicated key from its first connection. This does not accept sharing terms. Keep the signed node agent's local-authority URL/token configured, the Pool's external participation disabled, and any unrelated remote workload routing off. Observation does not enable local policy or external claims. Later explicit `--participation enabled` retains all normal consent, workload and finite-availability requirements.
+A fresh Execute/allocator installation can connect for metrics with `--participation disabled --terminal-native-return`, using that dedicated key from its first connection. This does not accept sharing terms. Keep the signed Execute node agent's local-authority URL/token configured, the Pool's external participation disabled, and any unrelated remote workload routing off. This observation setting does not enable local policy or external claims. Later explicit `--participation enabled` retains all normal consent, workload and finite-availability requirements.
 
 Participation history is durable. Missing/legacy history never means “never participated”; any enabled bridge policy permanently records `ever_enabled`, even if no external work starts. Returning to observation preserves prior consent and does not reset this history. A continuously tracked host that has never enabled participation may return without inventing or accepting capacity terms: the protocol verifies current remote nonacceptance, then requires the exact positive NodeRetirement proof after deleting the enrolled Node.
 
