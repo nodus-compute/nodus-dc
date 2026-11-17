@@ -311,7 +311,6 @@ class PartitionAuthority:
         if not anchor: raise Error("authority_continuity_lost", "durable configuration authority has not been adopted", 503)
         parents = {r["id"]: r["parent"] for r in db.execute("SELECT id,parent FROM resources")}
         held = [Store.decode(r) for r in db.execute("SELECT * FROM leases WHERE state!='released'")]
-        if any(l["owner"] == "external" for l in held): return []
         result = []
         for row in db.execute("SELECT * FROM partition_configurations WHERE state='committed'"):
             observation = json.loads(row["binding"])
