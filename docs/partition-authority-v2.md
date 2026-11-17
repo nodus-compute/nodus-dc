@@ -248,3 +248,28 @@ unchanged terminal state. Replay is an identity read, never a creator capability
 These dispositions do not prove kernel/daemon absence or release the reservation.
 The caller still performs its ordinary teardown and Complete still requires the
 provider's positive cleanup proof. A consumed row with missing scope stays held.
+
+Published renewal uses the existing Check request with one optional exact
+`published_ref:{attempt_id,epoch}`. Presence is mutually exclusive with
+`creation_token`, including null; malformed Ref, legacy lease and non-published
+target refuse. The server derives the target from the current same-row qualified
+binding, exact full lease and Ref, and requires phase `host-published`, revision4.
+The reply remains `{lease,authorized}`. No request carries a ready flag or chooses
+an accounting strength. Default Check, Claim, Bind, Begin and creator checks retain
+strict admission accounting.
+
+Only that published target's accounting pass receives an internal
+`renewal_target:{local_lease_id,binding_sha256,ref,phase_revision:4}` context. Exactly
+one live held row must match. The target's image, policy, live owner, device and
+expiry checks stay strict. Other held consumed or retired-consumed rows can retain
+their full C/A/S using the finite record-pair predicate described in the provider
+contract. Released history never uses that predicate. No reservation or phase is
+changed by renewal, and no incomplete sibling becomes executable or clean.
+
+The paired Go client must route only this typed request around its creation gate;
+ordinary requests remain gated. Without that integration an Agent can still wait
+before HTTP until its prior guardian deadline expires. A fresh authorized sibling
+renewal does not extend the original creator's deadline. The existing Unix/SQLite
+case exercises routing with synthetic owner evidence; real kernel continuity and
+the complete Agent path remain unqualified. Consumed cancellation before a complete
+record pair still requires separate positive original-creator retirement work.

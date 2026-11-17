@@ -153,6 +153,25 @@ def qualified_proof(proof, lease):
     return proof
 
 
+def renewal_target(state, lease, ref):
+    """Derive accounting context only from the exact current published binding."""
+    if (state is None or state["phase"] != "host-published" or state["phase_revision"] != 4
+            or state["binding"]["lease"] != lease or state["binding"]["ref"] != ref):
+        raise _denied()
+    return {"local_lease_id":state["binding"]["local_lease_id"], "binding_sha256":state["binding_sha256"],
+            "ref":copy.deepcopy(ref), "phase_revision":4}
+
+
+def renewal_matches(target, state, local_id):
+    fields(target, "local_lease_id binding_sha256 ref phase_revision")
+    guid(target["local_lease_id"]); sha(target["binding_sha256"])
+    if type(target["phase_revision"]) is not int or target["phase_revision"] != 4: raise _denied()
+    if local_id != target["local_lease_id"]: return False
+    if state is None or renewal_target(state, state["binding"]["lease"], target["ref"]) != target:
+        raise _denied()
+    return True
+
+
 def permission(state, purpose, peer=None, token=None, host_scope_sha256=None):
     """Build verified hook context; no boolean supplied by the requester authorizes creation."""
     who = None

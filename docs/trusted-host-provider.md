@@ -55,8 +55,8 @@ committed/issued binding (revision2/3) requires absence of its exact guard, owne
 and H paths. A retired consumed/published binding (revision4/5) requires the same
 full positive-clean owner proof used for released history, or admission refuses.
 Directory names alone are insufficient. The complete A remains reserved until
-Complete succeeds; this check neither releases capacity nor grants a partial
-owner execution or a renewal-only exception.
+Complete succeeds; this strict admission path neither releases capacity nor grants
+a partial owner execution. Published-target renewal is a separate predicate below.
 
 The provider verifies original v5 guard identity, raw `scoped-limits.json` and
 Plan2 `host-scope.json` hashes, full MIG grant digest, fixed S/T/Internal identities,
@@ -120,9 +120,34 @@ hashes its executable once and refuses metadata changes during subsequent pidfd
 rechecks. These bounded content optimizations do not extend a lease or qualify
 validation latency before the native journey measures it.
 
-The original platform creation call must serialize outer Agent renewal through
-issue/consume/local scope creation/publish without extending the original deadline.
-Generic Check deliberately denies issued/consumed states, and any partial owner
-also refuses. A runtime callback mutex alone does not serialize a separate Agent
-watcher. That platform join remains required before full-path qualification; this
-provider does not weaken partial evidence or create recovery permission to mask it.
+The original platform creation call keeps its finite issue/consume/local scope/
+publish authority. Generic Check deliberately denies issued/consumed states, and
+strict admission refuses partial owners. A runtime callback mutex alone does not
+serialize a separate Agent watcher. Published renewal needs the separately typed
+client route below; it never reconstructs original creation permission.
+
+For an exact server-validated host-published target only, `_accounted_owner` may
+retain another held consumed or retired-consumed row's full C/A/S. It independently
+reads the protected limits/Plan2 scope pair and original Ref, boot, namespaces,
+allocation root, binding/budget/device/spec hashes, owner/H control identities,
+fixed topology and S/T/Internal mount identities. Both complete raw records are
+required; a directory name or partial pair cannot qualify. Root/shared caps,
+complete ownership census and the single shared subtraction remain mandatory.
+No live kernel facts are cached. Two finite passes recheck the record identities,
+control values, bounded membership and mount state.
+
+Owner M+O and H remain separately capped, with swap0, burst0, pids512/64 and group
+OOM policy; OOM-exempt members refuse. A sibling guardian may have exited and its
+OOM counters may be nonzero while the original capped domain still accounts for
+the held charge. Exact per-mount unmount intent plus fresh absence may replace a
+still-mounted identity during retirement. Contradictory present intent, metadata,
+guardian or retirement records refuse. A present metadata intent retains the
+strict original daemon verification. None of these observations authorizes the
+incomplete sibling or substitutes for its full positive cleanup proof.
+
+The renewal target itself, released history and every default admission path keep
+the strict owner validators. Unknown roots, missing/replaced capped identities,
+pre-pair creation uncertainty and incomplete mount evidence still refuse. This
+slice adds no creator handle, abort tombstone, schema floor, ledger or service.
+Original-call cancellation before the pair and actual sibling continuity require
+the later bounded runtime/Agent proof; production registration remains absent.

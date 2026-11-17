@@ -370,13 +370,17 @@ class LinuxPartitionProvider:
             if poll.poll(0): raise refused()
         finally: os.close(pidfd)
 
-    def _records(self,e,c,state):
+    def _record_pair(self,e,c,state):
         binding=state["binding"]; lease=binding["lease"]; ch=lease["ephemeral"]["charge"]
         key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
         if e.protected(directory,directory=True).st_mode & 0o077: raise refused()
-        guard,_=e.record(directory/"intent.json",16384)
-        fields(guard,"Version Executor Ref Namespace BootID TimeNamespace HostScope CgroupPath Freeze Kill ScopeSHA256 HostSHA256")
-        if (guard["Version"]!=5 or guard["Executor"]!=2 or guard["Namespace"]!=c["namespace"]
+        scope,shash=e.record(directory/"host-scope.json",32768)
+        fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls Visible Stage Internal")
+        original=scope["Guard"]
+        fields(original,"Version Executor Ref Namespace BootID TimeNamespace HostScope CgroupPath Freeze Kill ScopeSHA256")
+        if type(original["Version"]) is not int or original["Version"]!=4: raise refused()
+        guard={**original,"Version":5,"HostSHA256":shash}
+        if (guard["Executor"]!=2 or guard["Namespace"]!=c["namespace"]
                 or type(guard["Ref"].get("Epoch")) is not int or guard["Ref"]!={"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]}
                 or guard["BootID"]!=binding["host_budget"]["boot_id"] or guard["CgroupPath"]!=str(epoch)):
             raise refused()
@@ -394,17 +398,7 @@ class LinuxPartitionProvider:
                   "Task":{"CPUMillis":lease["resources"]["cpu_millis"],"MemoryBytes":lease["resources"]["memory_bytes"],"PIDs":512},
                   "HostScratchBytes":ch["host_memory_bytes"],"OwnerOverheadBytes":ch["owner_overhead_bytes"],"OwnerOverheadCPUMillis":ch["owner_cpu_millis"]}
         if limits["Plan"]!=expected: raise refused()
-        scope,shash=e.record(directory/"host-scope.json",32768)
-        fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls Visible Stage Internal")
-        metadata,_=e.record(directory/"metadata-intent.json",16384)
-        container=binding["ref"]["attempt_id"]+"-e"+str(binding["ref"]["epoch"])
-        fields(metadata,"Version Guard Snapshotter ContainerID SnapshotKey Daemon")
-        if (type(metadata["Version"]) is not int or metadata["Version"]!=2 or metadata["Guard"]!=guard
-                or metadata["Snapshotter"]!=binding["image"]["snapshotter"] or metadata["ContainerID"]!=container
-                or metadata["SnapshotKey"]!=container): raise refused()
-        self._daemon(e,c,metadata["Daemon"])
-        original={**guard,"Version":4}; original.pop("HostSHA256")
-        if scope["Version"]!=2 or scope["Guard"]!=original or shash!=guard["HostSHA256"] or scope["Root"]!=limits["Root"] or scope["GroupPath"]!=str(host) or scope["GuardianPath"]!=str(guardian): raise refused()
+        if type(scope["Version"]) is not int or scope["Version"]!=2 or scope["Root"]!=limits["Root"] or scope["GroupPath"]!=str(host) or scope["GuardianPath"]!=str(guardian): raise refused()
         plan=scope["Plan"]; fields(plan,"Version SpecSHA256 DeviceSHA256 VisibleBytes StageBytes")
         if plan["Version"]!=2 or plan["SpecSHA256"]!=lease["ephemeral"]["spec_sha256"] or plan["VisibleBytes"]!=lease["resources"]["scratch_bytes"] or plan["StageBytes"]!=ch["stage_bytes"]: raise refused()
         if plan["DeviceSHA256"] != self._grant_digest(binding): raise refused()
@@ -417,6 +411,84 @@ class LinuxPartitionProvider:
         for group, freeze, kill in ((epoch,guard["Freeze"],guard["Kill"]),(host,scope["Freeze"],scope["Kill"])):
             if identity(e.protected(group/"cgroup.freeze"))!=freeze or identity(e.protected(group/"cgroup.kill"))!=kill: raise refused()
         return directory,owner,epoch,guardian,host,guard,limits,scope,shash
+
+    def _metadata(self,e,c,state,directory,guard):
+        binding=state["binding"]
+        metadata,_=e.record(directory/"metadata-intent.json",16384)
+        container=binding["ref"]["attempt_id"]+"-e"+str(binding["ref"]["epoch"])
+        fields(metadata,"Version Guard Snapshotter ContainerID SnapshotKey Daemon")
+        if (type(metadata["Version"]) is not int or metadata["Version"]!=2 or metadata["Guard"]!=guard
+                or metadata["Snapshotter"]!=binding["image"]["snapshotter"] or metadata["ContainerID"]!=container
+                or metadata["SnapshotKey"]!=container): raise refused()
+        self._daemon(e,c,metadata["Daemon"])
+
+    def _records(self,e,c,state):
+        records=self._record_pair(e,c,state)
+        directory,_,_,_,_,guard,_,_,_=records
+        if e.record(directory/"intent.json",16384)[0]!=guard: raise refused()
+        self._metadata(e,c,state,directory,guard)
+        return records
+
+    def _accounted_owner(self,e,c,state):
+        """Prove retained finite charges, without granting creation, execution or cleanup."""
+        records=self._record_pair(e,c,state)
+        directory,owner,epoch,guardian,host,guard,limits,scope,actual=records
+        if state["host_scope_sha256"] and actual!=state["host_scope_sha256"]: raise refused()
+        task=limits["Plan"]["Task"]; plan=limits["Plan"]
+        expected={"cgroup.type":"domain","memory.max":str(task["MemoryBytes"]+plan["OwnerOverheadBytes"]),
+                  "memory.swap.max":"0","memory.oom.group":"1","pids.max":"512","cpu.max.burst":"0",
+                  "cpu.max":f'{(task["CPUMillis"]+plan["OwnerOverheadCPUMillis"])*100} 100000'}
+        if set(limits["Controls"])!=set(expected)|{"memory.events.local"} or set(scope["Controls"])!=set(expected)|{"memory.events.local"}: raise refused()
+        for _ in range(2):
+            for name,want in (("intent.json",guard),("revoked.json",guard),("expired.json",guard),
+                              ("removed.json",guard),("owner-empty.json",guard),("host-retired.json",scope),
+                              ("guardian.json",{"Guard":guard,"Group":limits["Guardian"]}),
+                              ("retired.json",{"Guard":guard,"Group":limits["Guardian"]})):
+                if os.path.lexists(directory/name) and e.record(directory/name)[0]!=want: raise refused()
+            if os.path.lexists(directory/"metadata-intent.json"):
+                self._metadata(e,c,state,directory,guard)
+            if self._record_pair(e,c,state)!=records: raise refused()
+            e.controls(owner,expected,limits["Controls"])
+            e.controls(host,{**expected,"memory.max":str(plan["HostScratchBytes"]),"pids.max":"64","cpu.max":"25000 100000"},scope["Controls"])
+            for group,controls in ((owner,limits["Controls"]),(host,scope["Controls"])):
+                if identity(e.protected(group/"memory.events.local"))!=controls["memory.events.local"]: raise refused()
+            if (e.names(owner,dirs=True)!={"nodus-epochs","nodus-guardians"}
+                    or e.names(epoch.parent,dirs=True)!={epoch.name} or e.names(guardian.parent,dirs=True)!={guardian.name}
+                    or e.names(host,dirs=True)): raise refused()
+            for group in (owner,epoch.parent,guardian.parent):
+                if e.text(group/"cgroup.procs"): raise refused()
+            for root,maximum in ((owner,512),(host,64)):
+                queue=[root];count=processes=0
+                while queue:
+                    group=queue.pop();count+=1
+                    if count>1024: raise refused()
+                    queue.extend(group/name for name in e.names(group,1024,dirs=True))
+                    for member in e.text(group/"cgroup.procs",16384).split():
+                        processes+=1
+                        if processes>maximum or e.text(f"/proc/{int(member)}/oom_score_adj")=="-1000": raise refused()
+            mounts=e.mounts()
+            for title in ("Visible","Stage","Internal"):
+                m=scope[title]; selected=[v for v in mounts if v["path"]==m["Path"]]
+                if any(v["path"].startswith(m["Path"]+"/") for v in mounts): raise refused()
+                unmount=directory/("host-unmount-"+Path(m["Path"]).name+".json")
+                if os.path.lexists(unmount) and e.record(unmount)[0]!=m: raise refused()
+                if not selected:
+                    if e.record(unmount)[0]!=m: raise refused()
+                    continue
+                if len(selected)!=1: raise refused()
+                v=selected[0]; info=os.statvfs(m["Path"])
+                options={"nodev","nosuid","noswap",f'nr_inodes={m["Inodes"]}',f'size={m["Bytes"]//1024}k'}
+                if (v["id"]!=m["MountID"] or v["device"]!=m["Device"] or v["type"]!="tmpfs" or v["root"]!="/" or not options<=v["options"]
+                        or identity(e.protected(m["Path"],directory=True))!=m["Identity"] or info.f_blocks*info.f_frsize!=m["Bytes"] or info.f_files!=m["Inodes"]): raise refused()
+        return actual
+
+    @staticmethod
+    def _accounting_sibling(context,local_id,state):
+        target=context.get("renewal_target")
+        if target is None: return False
+        if execution.renewal_matches(target,state,local_id): return False
+        return state is not None and (state["phase"]=="creation-consumed"
+            or state["phase"]=="retired" and state["phase_revision"] in {4,5})
 
     def _owner(self,e,c,state,*,clean=False,scope_hash=None):
         directory,owner,epoch,guardian,host,guard,limits,scope,actual=self._records(e,c,state)
@@ -499,6 +571,9 @@ class LinuxPartitionProvider:
         self._image(e,c,proof["qualified_image"],lease)
         state=context["binding_state"]
         if state is None: return
+        if self._accounting_sibling(context,local["id"],state):
+            self._accounted_owner(e,c,state)
+            return
         key,directory,owner,epoch,guardian,host=self._paths(c,state["binding"]["ref"])
         if state["phase"] in {"committed","creation-issued"}:
             if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
@@ -548,7 +623,8 @@ class LinuxPartitionProvider:
     def verify_host_accounting(self,capacity,held,scope):
         e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c)
         if capacity!=b["capacity"] or scope.get("accounting_version")!=ephemeral.ACCOUNTING or scope["authority_incarnation"]!=b["authority_incarnation"] or len(held)>b["max_claims"]: raise refused()
-        expected=set(); retired=scope.get("retired",[])
+        expected=set(); retired=scope.get("retired",[]);target=scope.get("renewal_target")
+        if target is not None and sum(execution.renewal_matches(target,item["binding_state"],item["lease"]["id"]) for item in held)!=1: raise refused()
         if not isinstance(retired,list) or len(retired)>256: raise refused()
         for item in [*held,*retired]:
             row=item.get("provider_row");state=item.get("binding_state")
@@ -558,12 +634,15 @@ class LinuxPartitionProvider:
             if key in expected: raise refused()
             if item in retired:
                 if state["phase"]!="retired": raise refused()
-            if state["phase"]=="retired": self._retired_owner(e,c,state)
+            if item not in retired and self._accounting_sibling(scope,item["lease"]["id"],state):
+                self._accounted_owner(e,c,state)
+            elif state["phase"]=="retired": self._retired_owner(e,c,state)
             if any(os.path.lexists(p) for p in (directory,owner,host)): expected.add(key)
         root=path(b["root"]["path"])
         for directory in (root/"nodus-scoped-owners",root/"nodus-scoped-host",path(c["fifo_dir"])/"guardians"):
             names=e.names(directory,320,dirs=directory != path(c["fifo_dir"])/"guardians") if directory.exists() else set()
             if names!=expected: raise refused()
+        if target is not None: self._envelope(e,c)
         return True
 
     def verify_clean(self,local,lease,*,context):

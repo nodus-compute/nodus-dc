@@ -245,6 +245,78 @@ class Partitions(unittest.TestCase):
                 self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
             finally:
                 self.executor.verify_reservation = original
+        def published_renewal(held, base):
+            # Real HTTP/SQLite and provider routing; finite/live kernel observations are synthetic.
+            from nodus_dc.partition_host import LinuxPartitionProvider, refused
+            other, other_base = acquire("renewal-sibling")
+            status, issued = call("begin",begin(other_base,"issue")); self.assertEqual(status,200)
+            status, consumed = call("begin",begin(other_base,"consume",creation_token=issued["creation_token"])); self.assertEqual(status,200)
+            reader=object.__new__(LinuxPartitionProvider); reader.sha256="7"*64; reader._immutable_hashes={}
+            kernel=self.root/"renewal-kernel"; fifo=self.root/"renewal-fifo"
+            for parent in (kernel/"nodus-scoped-owners",kernel/"nodus-scoped-host",fifo/"guardians"):
+                parent.mkdir(parents=True)
+            def paths(c,ref):
+                key=ref["attempt_id"]; owner=kernel/"nodus-scoped-owners"/key
+                return key,fifo/"guardians"/key,owner,owner/"epoch",owner/"guardian",kernel/"nodus-scoped-host"/key
+            reader._paths=paths;reader._image=lambda *args:None
+            for ref in (base["ref"],other_base["ref"]):
+                for directory in (paths(None,ref)[1],paths(None,ref)[2],paths(None,ref)[5]): directory.mkdir()
+            observed=[]; live=[True]; finite=[True]; cleaned=[False]
+            def owner(e,c,state,*,clean=False):
+                observed.append(("strict",state["binding"]["ref"],clean))
+                if state["binding"]["ref"]==other_base["ref"]:
+                    if not clean or not cleaned[0]: raise refused()
+                elif not live[0]: raise refused()
+            def accounted(e,c,state):
+                observed.append(("finite",state["binding"]["ref"],False))
+                self.assertEqual(state["binding"]["ref"],other_base["ref"])
+                if not finite[0]: raise refused()
+            reader._owner=owner;reader._accounted_owner=accounted
+            state=saved(held)[0]; budget=copy.deepcopy(state["binding"]["host_budget"])
+            budget["root"]["path"]=str(kernel)
+            config={"host_budget":budget,"fifo_dir":str(fifo)}
+            reader._configuration=lambda e:config;reader._envelope=lambda e,c:budget
+            original_verify=self.executor.verify_reservation;original_account=self.executor.verify_host_accounting
+            def verify(local,row,*,context):
+                proof=json.loads(row["enforcement"]);proof["provider_config_sha256"]=reader.sha256
+                reader._reservation(None,{"host_budget":proof["host_budget"]},local,{**row,"enforcement":json.dumps(proof)},context)
+                return True
+            def account(capacity,rows,scope):
+                reader.verify_host_accounting(capacity,rows,scope)
+                return original_account(capacity,rows,scope)
+            self.executor.verify_reservation=verify;self.executor.verify_host_accounting=account
+            request={**held,"published_ref":base["ref"]}
+            try:
+                for bad in (None,{**base["ref"],"epoch":2},{**base["ref"],"extra":True}):
+                    self.assertNotEqual(call("check",{**held,"published_ref":bad})[0],200)
+                self.assertNotEqual(call("check",{**request,"creation_token":None})[0],200)
+                self.assertFalse(call("check",{**held,"published_ref":other_base["ref"]})[1]["authorized"])
+                self.assertFalse(call("check",{**other,"published_ref":other_base["ref"]})[1]["authorized"])
+                self.assertFalse(call("check",held)[1]["authorized"])
+                self.assertFalse(call("check",{**other,"creation_token":consumed["creation_token"]})[1]["authorized"])
+                self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1],{"offers":[],"host_budget":None})
+                before=saved(other); prepares=self.executor.prepares
+                self.assertTrue(call("check",request)[1]["authorized"])
+                self.assertIn(("finite",other_base["ref"],False),observed)
+                self.assertNotIn(("finite",base["ref"],False),observed)
+                self.assertEqual(saved(other),before);self.assertEqual(self.executor.prepares,prepares)
+                target=self.executor.accounting[-1][2]["renewal_target"]
+                self.assertEqual(target,{"local_lease_id":state["binding"]["local_lease_id"],"binding_sha256":state["binding_sha256"],"ref":base["ref"],"phase_revision":4})
+                finite[0]=False;self.assertFalse(call("check",request)[1]["authorized"]);finite[0]=True
+                live[0]=False;self.assertFalse(call("check",request)[1]["authorized"]);live[0]=True
+                self.assertTrue(call("reclaim",other)[1]["retired"])
+                self.assertTrue(call("check",request)[1]["authorized"])
+                self.executor.clean=False
+                self.assertFalse(call("complete",{"lease":other,"cleanup_verified":True})[1]["released"])
+                self.assertTrue(call("inspect",other)[1]["held"])
+                self.assertEqual(saved(other)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+                self.executor.clean=True;cleaned[0]=True
+                self.assertTrue(call("complete",{"lease":other,"cleanup_verified":True})[1]["released"])
+                cleaned[0]=False
+                self.assertFalse(call("check",request)[1]["authorized"])  # Released history never uses finite-only evidence.
+                cleaned[0]=True;self.assertTrue(call("check",request)[1]["authorized"])
+            finally:
+                self.executor.verify_reservation=original_verify;self.executor.verify_host_accounting=original_account
         def finish(held):
             prior = saved(held)[0]
             self.assertTrue(call("reclaim",held)[1]["retired"])
@@ -263,6 +335,7 @@ class Partitions(unittest.TestCase):
             self.assertNotEqual(call("begin",begin({"lease":held,"ref":prior["binding"]["ref"],
                 "binding_sha256":prior["binding_sha256"]},"issue"))[0],200)
             self.assertFalse(call("check",held)[1]["authorized"])
+            self.assertFalse(call("check",{**held,"published_ref":prior["binding"]["ref"]})[1]["authorized"])
             strict_retired_accounting(held,retired)
             self.executor.clean = False
             self.assertFalse(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
@@ -336,6 +409,7 @@ r=c.getresponse();r.read();print(r.status);c.close()
             self.assertTrue(call("check",held)[1]["authorized"])
             self.assertFalse(call("check",{**held,"creation_token":b})[1]["authorized"])
             self.assertNotEqual(call("begin",publish)[0],200)
+            published_renewal(held,base)
             self.executor.published = False
             self.assertFalse(call("check",held)[1]["authorized"])
             finish(held)

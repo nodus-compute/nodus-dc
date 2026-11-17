@@ -255,7 +255,7 @@ class PartitionAuthority:
             for row in db.execute("SELECT parent_uuid FROM partition_configurations WHERE state='committed'").fetchall():
                 self.quarantine(db,row["parent_uuid"],reason)
 
-    def _host_account(self, db, ignore=None, accounting_version=None):
+    def _host_account(self, db, ignore=None, accounting_version=None, renewal_target=None):
         if self.executor is None:
             raise Error("partition_executor_unqualified", "no qualified partition executor is installed", 503)
         from . import ephemeral
@@ -273,7 +273,10 @@ class PartitionAuthority:
         local_reserved = {key: 0 for key in capacity}
         held = []
         from .partition_binding import split_reservation
-        from .partition_execution import PROVIDER
+        from .partition_execution import PROVIDER, renewal_matches
+        targets = 0
+        if renewal_target is not None and (ignore is not None or accounting_version != ephemeral.ACCOUNTING):
+            raise Error("host_resources_unaccounted", "published renewal requires complete aggregate accounting", 409)
         live = db.execute("SELECT id FROM leases WHERE state!='released'" + (" LIMIT 65" if accounting_version else "")).fetchall()
         if accounting_version and len(live) > 64:
             raise Error("host_resources_unaccounted", "bounded live ownership inventory is exhausted", 409)
@@ -289,6 +292,10 @@ class PartitionAuthority:
             provider, state = split_reservation(reservation, lease)
             qualified = json.loads(provider["enforcement"]).get("contract") == PROVIDER
             context = {"lease":profile["lease"], "binding_state":state, "purpose":"account"} if qualified and profile else None
+            if renewal_target is not None:
+                if context is None: raise Error("host_resources_unaccounted", "renewal ownership is unqualified", 409)
+                targets += int(renewal_matches(renewal_target, state, lease["id"]))
+                context["renewal_target"] = copy.deepcopy(renewal_target)
             verified = self.executor.verify_reservation(lease, provider, context=context) if context else self.executor.verify_reservation(lease, provider)
             if verified is not True:
                 raise Error("host_resources_unenforced", "a concurrent host resource limit is unverified", 503)
@@ -303,10 +310,13 @@ class PartitionAuthority:
         anchor = self.service.store.fence.verify(db) if self.service.store.fence else None
         if not anchor:
             raise Error("authority_continuity_lost", "host accounting requires durable allocation authority", 503)
+        if renewal_target is not None and targets != 1:
+            raise Error("host_resources_unaccounted", "published renewal target is not held exactly once", 409)
         scope = {"authority_incarnation": anchor["incarnation"], "configurations": [dict(row) for row in db.execute(
             "SELECT parent_uuid,generation,boot_id,state FROM partition_configurations ORDER BY parent_uuid")]}
         if accounting_version is not None:
             scope["accounting_version"] = accounting_version
+            if renewal_target is not None: scope["renewal_target"] = copy.deepcopy(renewal_target)
             # Exact released tombstones remain in the same rows; they consume no A twice.
             # Bound history rather than accepting a truncated runtime-owner inventory.
             retired = db.execute("SELECT r.* FROM host_reservations r JOIN leases l ON l.id=r.lease_id WHERE l.state='released' ORDER BY l.generation LIMIT 257").fetchall()
@@ -327,8 +337,8 @@ class PartitionAuthority:
         if accounting_version is not None: account["accounting_version"] = accounting_version
         return account
 
-    def _capacity(self, db, ignore=None, accounting_version=None):
-        return self._host_account(db, ignore, accounting_version)["available"]
+    def _capacity(self, db, ignore=None, accounting_version=None, renewal_target=None):
+        return self._host_account(db, ignore, accounting_version, renewal_target)["available"]
 
     def reserve_local(self, db, lease, resources):
         resources = budget(resources)
@@ -542,7 +552,7 @@ class PartitionAuthority:
                     if lease["state"]!="released": Store.update(db,lease,now,state="draining",error="partition_reclaim")
             return {"lease":self._echo(self._lookup(db,request)),"retired":True}
 
-    def _checked(self, db, request, row, *, purpose="check", peer=None, token=None, host_scope_sha256=None):
+    def _checked(self, db, request, row, *, purpose="check", peer=None, token=None, host_scope_sha256=None, published_ref=None):
         from .partition_binding import split_reservation
         from . import ephemeral, partition_execution as execution
         profile = "ephemeral" in request
@@ -565,7 +575,15 @@ class PartitionAuthority:
                     and qualification.get("continuous_configuration_authority") is True
                     and qualification.get("runtime_sha256")==request["offer"]["runtime_sha256"]
                     and digest({"device":binding,"runtime_sha256":qualification["runtime_sha256"]})==request["offer"]["partition"]["binding_sha256"])
-                capacity=self._capacity(db, accounting_version=ephemeral.ACCOUNTING if profile else None)
+                target = None
+                if published_ref is not None:
+                    if not profile or purpose != "check": raise execution._denied()
+                    reservation=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(lease["id"],)).fetchone()
+                    if reservation is None: raise execution._denied()
+                    provider, state = split_reservation(reservation, lease)
+                    execution.qualified_proof(json.loads(provider["enforcement"]), request)
+                    target = execution.renewal_target(state, request, published_ref)
+                capacity=self._capacity(db, accounting_version=ephemeral.ACCOUNTING if profile else None, renewal_target=target)
                 matching=matching and all(v>=0 for v in capacity.values())
                 matching=matching and request["resources"]==request["offer"]["capacity"] and self._shape(
                     policy,request["offer"]["accelerator"],request["offer"]["profile"],
@@ -600,15 +618,22 @@ class PartitionAuthority:
 
     def check(self, *, _peer=None, **request):
         creation = "creation_token" in request
+        published = "published_ref" in request
         token = request.pop("creation_token", None)
+        ref = request.pop("published_ref", None)
+        if creation and published: raise Error("invalid_request", "creation and published renewal are distinct", 400)
         request=validate_lease(request); self._active()
+        if published:
+            from .partition_binding import reference
+            if "ephemeral" not in request: raise Error("invalid_request", "published renewal requires the qualified profile", 400)
+            ref = reference(ref, request["platform_epoch"])
         if creation and "ephemeral" not in request: raise Error("invalid_request", "creation context requires the qualified profile", 400)
         if not request["generation"]: raise Error("stale_generation","check requires a held generation",409)
         with self.service.authority():
             self.service._inventory()
             with self._admission_transaction() as db:
                 row=self._lookup(db,request)
-                checked=self._checked(db,request,row,purpose="create" if creation else "check",peer=_peer,token=token)
+                checked=self._checked(db,request,row,purpose="create" if creation else "check",peer=_peer,token=token,published_ref=ref)
                 if checked and checked[0]["state"]=="reserved": Store.update(db,checked[0],self.service.clock(),state="active")
                 return {"lease":self._echo(row) if row else request,"authorized":checked is not None}
 
