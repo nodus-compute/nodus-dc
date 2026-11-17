@@ -226,6 +226,8 @@ class Partitions(unittest.TestCase):
             self.assertTrue(call("check",held_b)[1]["authorized"])
             self.executor.clean = True
             self.assertTrue(call("complete",{"lease":winner,"cleanup_verified":True})[1]["released"])
+            self.assertTrue(call("check",held_b)[1]["authorized"])
+            self.assertEqual(call("inspect",held_b),(200,{"lease":held_b,"held":True}))
             self.assertEqual(self.executor.verified[-2:],[(winner["offer"]["partition"]["resource_id"],)]*2)
             self.assertEqual(self.service.get(local["id"])["state"],"active")
             status, response = call("claim",loser); self.assertEqual(status,200)
