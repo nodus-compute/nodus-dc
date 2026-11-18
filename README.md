@@ -12,6 +12,8 @@ end-to-end qualification are still in progress; see the [support matrix](docs/su
 
 ## Start locally
 
+For dashboard monitoring only, use the [monitoring-only connection](docs/operator-workflows.md#monitoring-only-dashboard-connection); skip the local package steps below.
+
 Use a Linux GPU host with a supported NVIDIA driver, Docker and NVIDIA Container
 Toolkit. Run as the trusted host operator with GPU and Docker permissions.
 
