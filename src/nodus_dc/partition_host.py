@@ -203,7 +203,7 @@ class LinuxPartitionProvider:
             if artifacts and e.file_hash(name) != config["runtime_identity"][key]: raise refused()
         qualification, qhash = e.record(config["qualification_path"])
         fields(qualification,"version retirement_contract runtime_identity creator_sha256 devices artifacts")
-        if (type(qualification["version"]) is not int or qualification["version"] != 1 or qualification["retirement_contract"] != "scoped-host-positive-retirement.v1"
+        if (type(qualification["version"]) is not int or qualification["version"] != 1 or qualification["retirement_contract"] != "scoped-host-positive-retirement.v2"
                 or qhash != config["runtime_identity"]["qualification_sha256"]
                 or qualification["creator_sha256"] != config["creator_sha256"]
                 or qualification["devices"] != config["devices"]
@@ -375,8 +375,8 @@ class LinuxPartitionProvider:
         key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
         if os.path.lexists(directory/"creation-retired.json"): raise refused()
         if e.protected(directory,directory=True).st_mode & 0o077: raise refused()
-        scope,shash=e.record(directory/"host-scope.json",32768)
-        fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls Visible Stage Internal")
+        scope,shash,_=self._creation_record(e,directory,"host-scope.json",32768)
+        fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls CreationIntentSHA256 WorkerPath Worker WorkerControls Visible Stage Internal")
         original=scope["Guard"]
         fields(original,"Version Executor Ref Namespace BootID TimeNamespace HostScope CgroupPath Freeze Kill ScopeSHA256")
         if type(original["Version"]) is not int or original["Version"]!=4: raise refused()
@@ -399,7 +399,7 @@ class LinuxPartitionProvider:
                   "Task":{"CPUMillis":lease["resources"]["cpu_millis"],"MemoryBytes":lease["resources"]["memory_bytes"],"PIDs":512},
                   "HostScratchBytes":ch["host_memory_bytes"],"OwnerOverheadBytes":ch["owner_overhead_bytes"],"OwnerOverheadCPUMillis":ch["owner_cpu_millis"]}
         if limits["Plan"]!=expected: raise refused()
-        if type(scope["Version"]) is not int or scope["Version"]!=2 or scope["Root"]!=limits["Root"] or scope["GroupPath"]!=str(host) or scope["GuardianPath"]!=str(guardian): raise refused()
+        if type(scope["Version"]) is not int or scope["Version"]!=3 or scope["Root"]!=limits["Root"] or scope["GroupPath"]!=str(host) or scope["GuardianPath"]!=str(guardian): raise refused()
         plan=scope["Plan"]; fields(plan,"Version SpecSHA256 DeviceSHA256 VisibleBytes StageBytes")
         if plan["Version"]!=2 or plan["SpecSHA256"]!=lease["ephemeral"]["spec_sha256"] or plan["VisibleBytes"]!=lease["resources"]["scratch_bytes"] or plan["StageBytes"]!=ch["stage_bytes"]: raise refused()
         if plan["DeviceSHA256"] != self._grant_digest(binding): raise refused()
@@ -409,9 +409,10 @@ class LinuxPartitionProvider:
         for name,want in ((owner,limits["Owner"]),(epoch,limits["Epoch"]),(guardian,limits["Guardian"]),(host,scope["Group"])):
             if identity(e.protected(name,directory=True))!=want: raise refused()
         if identity(e.protected(directory/"bootstrap.lock"))!=scope["CreatorLock"]: raise refused()
-        if os.path.lexists(directory/"creation-intent.json"):
-            intent=self._creation_intent(e,c,state)[0]
-            if intent["Limits"]!=limits["Plan"] or intent["Plan"]!=scope["Plan"]: raise refused()
+        intent,ihash,_=self._creation_intent(e,c,state)
+        if (intent["Limits"]!=limits["Plan"] or intent["Plan"]!=scope["Plan"]
+                or ihash!=scope["CreationIntentSHA256"] or scope["WorkerPath"]!=str(host/"worker")): raise refused()
+        self._host_identities(scope,b["root"]["device"])
         for group, freeze, kill in ((epoch,guard["Freeze"],guard["Kill"]),(host,scope["Freeze"],scope["Kill"])):
             if identity(e.protected(group/"cgroup.freeze"))!=freeze or identity(e.protected(group/"cgroup.kill"))!=kill: raise refused()
         return directory,owner,epoch,guardian,host,guard,limits,scope,shash
@@ -433,6 +434,160 @@ class LinuxPartitionProvider:
         self._metadata(e,c,state,directory,guard)
         return records
 
+    @staticmethod
+    def _host_identities(scope,device):
+        base={"cgroup.type","memory.max","memory.swap.max","memory.oom.group","pids.max","cpu.max.burst","cpu.max",
+              "memory.events.local","memory.high","cgroup.subtree_control"}
+        fields(scope["Controls"]," ".join(base));fields(scope["WorkerControls"]," ".join(base|{"cgroup.freeze"}))
+        seen=set()
+        for item in (scope["Group"],scope["Worker"],scope["Freeze"],scope["Kill"],
+                     *scope["Controls"].values(),*scope["WorkerControls"].values()):
+            fields(item,"Device Inode")
+            if any(type(v) is not int or not 0<v<2**64 for v in item.values()) or item["Device"]!=device: raise refused()
+            if item["Inode"] in seen: raise refused()
+            seen.add(item["Inode"])
+
+    def _shared_ancestry(self,e,c,intent):
+        """Reconstruct the fixed Go vector; never cache current ancestry or controls."""
+        budget=c["host_budget"];shared=budget["shared"];root=path(budget["root"]["path"])
+        start=path(shared["path"]);leaf=path(intent["SharedLeafPath"])
+        if start!=root/"node" or start not in leaf.parents or len(str(leaf))>4096: raise refused()
+        allocation=budget["root"]
+        if e.controls(root,{"cgroup.type":"domain","memory.max":str(allocation["memory_bytes"]),"memory.swap.max":"0",
+                "cpu.max":f'{allocation["cpu_millis"]*100} 100000',"cpu.max.burst":"0","pids.max":str(allocation["pids"]),
+                "memory.oom.group":"1"})!={"Device":allocation["device"],"Inode":allocation["inode"]}: raise refused()
+        chain=[start];current=start
+        for part in leaf.relative_to(start).parts:
+            current=current/part;chain.append(current)
+        if not 2<=len(chain)<=128 or type(intent["SharedAncestryCount"]) is not int or intent["SharedAncestryCount"]!=len(chain): raise refused()
+        keys=sorted(("cgroup.type","memory.max","memory.swap.max","cpu.max","cpu.max.burst","pids.max",
+                     "cgroup.freeze","memory.high","memory.oom.group","cgroup.subtree_control"))
+        shared_keys={"cgroup.type","memory.max","memory.swap.max","cpu.max","cpu.max.burst","pids.max","cgroup.freeze"}
+        fields(intent["SharedControls"]," ".join(shared_keys))
+        if intent["SharedBudget"]!=shared: raise refused()
+        vector=[];seen=set();mounts=e.mounts()
+        for index,directory in enumerate(chain):
+            if any(m["path"]==str(directory) for m in mounts): raise refused()
+            node=identity(e.protected(directory,directory=True))
+            if node["Device"]!=budget["root"]["device"] or node["Inode"] in seen: raise refused()
+            seen.add(node["Inode"]);controls={}
+            for name in keys:
+                raw,ident=e.read(directory/name,4096,kernel=True);value=raw.decode("ascii").strip()
+                if ident["Device"]!=node["Device"]: raise refused()
+                controls[name]={"Identity":ident,"Value":value}
+            values={k:v["Value"] for k,v in controls.items()}
+            if (values["cgroup.type"]!="domain" or values["memory.swap.max"]!="0" or values["cpu.max.burst"]!="0"
+                    or values["cgroup.freeze"]!="0" or values["memory.oom.group"] not in {"0","1"}
+                    or e.numbers(directory/"cgroup.events").get("frozen")!=0): raise refused()
+            for name in ("memory.max","pids.max","memory.high"):
+                value=values[name]
+                if value!="max" and (not re.fullmatch(r"0|[1-9][0-9]*",value)
+                        or not (0 if name=="memory.high" else 1)<=int(value)<=2**63-1): raise refused()
+            quota=re.fullmatch(r"(max|[1-9][0-9]*) 100000",values["cpu.max"])
+            if not quota or quota[1]!="max" and int(quota[1])>2**63-1: raise refused()
+            if index==0:
+                expected={"cgroup.type":"domain","memory.max":str(shared["memory_bytes"]),"memory.swap.max":"0",
+                          "cpu.max":f'{shared["cpu_millis"]*100} 100000',"cpu.max.burst":"0","pids.max":str(shared["pids"]),"cgroup.freeze":"0"}
+                if (node!={"Device":shared["device"],"Inode":shared["inode"]}
+                        or any(values[k]!=v or controls[k]["Identity"]!=intent["SharedControls"][k] for k,v in expected.items())): raise refused()
+            if index==len(chain)-1:
+                if node!=intent["SharedLeaf"] or values["cgroup.subtree_control"] or e.names(directory,128,dirs=True): raise refused()
+            elif e.text(directory/"cgroup.procs") or not {"cpu","memory","pids"}<=set(values["cgroup.subtree_control"].split()): raise refused()
+            vector.append({"Path":str(directory),"Identity":node,"Controls":controls})
+        # Struct declaration order, lexicographically sorted Go map keys, HTML escapes.
+        raw=json.dumps(vector,separators=(",",":"),ensure_ascii=False).replace("&","\\u0026").replace("<","\\u003c").replace(">","\\u003e")
+        if hashlib.sha256(raw.encode()).hexdigest()!=intent["SharedAncestrySHA256"]: raise refused()
+        return vector
+
+    def _host_progress(self,e,c,state,records,*,mode):
+        """Active permission, held finite accounting and positive cleanup are distinct."""
+        if mode not in {"active","held","clean"}: raise refused()
+        directory,owner,epoch,guardian,parent,guard,limits,scope,shash=records
+        worker=path(scope["WorkerPath"]);plan=limits["Plan"]
+        base={"cgroup.type":"domain","memory.max":str(plan["HostScratchBytes"]),"memory.swap.max":"0",
+              "memory.oom.group":"1","pids.max":"64","cpu.max.burst":"0","cpu.max":"25000 100000"}
+        offline_path=directory/"host-worker-offline.json";high_path=directory/"host-high-intent.json";outcome_path=directory/"host-high-outcome.json"
+        terminal=any(os.path.lexists(directory/name) for name in ("host-retired.json","owner-empty.json","removed.json"))
+        closed=mode=="clean" or terminal
+        if terminal:
+            if e.record(directory/"host-retired.json")[0]!=scope: raise refused()
+            if os.path.lexists(directory/"removed.json") and e.record(directory/"owner-empty.json")[0]!=guard: raise refused()
+        if any(name.startswith(("host-worker-","host-high-")) and name not in {
+                offline_path.name,high_path.name,outcome_path.name} for name in e.names(directory)): raise refused()
+        offline=high=outcome=None;offline_hash=""
+        if mode=="active" and any(os.path.lexists(directory/name) for name in (
+                "host-worker-offline.json","host-high-intent.json","host-high-outcome.json","revoked.json","expired.json",
+                "retired.json","removed.json","owner-empty.json","host-retired.json",
+                "host-unmount-visible.json","host-unmount-stage.json","host-unmount-internal.json")): raise refused()
+        if os.path.lexists(offline_path):
+            offline,offline_hash,_=self._creation_record(e,directory,offline_path.name,16384)
+            fields(offline,"Version Guard ScopeSHA256 CreationIntentSHA256 ParentPath Parent WorkerPath Worker CreatorLock WorkerPopulated WorkerMemoryCurrent")
+            expected={"Version":1,"Guard":guard,"ScopeSHA256":shash,"CreationIntentSHA256":scope["CreationIntentSHA256"],
+                      "ParentPath":str(parent),"Parent":scope["Group"],"WorkerPath":str(worker),"Worker":scope["Worker"],
+                      "CreatorLock":scope["CreatorLock"],"WorkerPopulated":0,"WorkerMemoryCurrent":offline["WorkerMemoryCurrent"]}
+            if offline!=expected or type(offline["WorkerMemoryCurrent"]) is not int or not 0<=offline["WorkerMemoryCurrent"]<2**64: raise refused()
+            for name,want in (("revoked.json",guard),("intent.json",guard),
+                              ("retired.json",{"Guard":guard,"Group":limits["Guardian"]}),
+                              ("guardian.json",{"Guard":guard,"Group":limits["Guardian"]})):
+                if e.record(directory/name)[0]!=want: raise refused()
+            self._metadata(e,c,state,directory,guard)
+            current=e.mounts()
+            for title in ("Visible","Stage","Internal"):
+                m=scope[title]
+                if e.record(directory/("host-unmount-"+Path(m["Path"]).name+".json"))[0]!=m: raise refused()
+                if any(v["path"]==m["Path"] or v["path"].startswith(m["Path"]+"/")
+                       or v["id"]==m["MountID"] or v["device"]==m["Device"] for v in current): raise refused()
+        if os.path.lexists(high_path):
+            if offline is None: raise refused()
+            high,hhash,_=self._creation_record(e,directory,high_path.name,16384)
+            fields(high,"Version Guard ScopeSHA256 CreationIntentSHA256 WorkerOfflineSHA256 DeadlineBootNS ParentPath Parent High CreatorLock SharedBudget SharedControls SharedLeafPath SharedLeaf SharedAncestryCount SharedAncestrySHA256 Value")
+            expected={"Version":1,"Guard":guard,"ScopeSHA256":shash,"CreationIntentSHA256":scope["CreationIntentSHA256"],
+                      "WorkerOfflineSHA256":offline_hash,"ParentPath":str(parent),"Parent":scope["Group"],
+                      "High":scope["Controls"]["memory.high"],"CreatorLock":scope["CreatorLock"],"SharedBudget":c["host_budget"]["shared"],"Value":0}
+            if (any(high[k]!=v for k,v in expected.items()) or type(high["DeadlineBootNS"]) is not int
+                    or not 0<high["DeadlineBootNS"]<2**63): raise refused()
+            sha(high["SharedAncestrySHA256"])
+            self._shared_ancestry(e,c,high)
+            if os.path.lexists(outcome_path):
+                outcome,_,_=self._creation_record(e,directory,outcome_path.name,16384)
+                fields(outcome,"Version IntentSHA256 WaitStatus")
+                if (outcome!={"Version":1,"IntentSHA256":hhash,"WaitStatus":outcome["WaitStatus"]}
+                        or type(outcome["WaitStatus"]) is not int or not 0<=outcome["WaitStatus"]<2**32): raise refused()
+                if closed and outcome["WaitStatus"]!=0: raise refused()
+            elif closed: raise refused()
+        elif os.path.lexists(outcome_path): raise refused()
+        high_value=e.text(parent/"memory.high")
+        if high_value not in ({"max","0"} if high is not None else {"max"}): raise refused()
+        if outcome is not None and outcome["WaitStatus"]==0 and high_value!="0": raise refused()
+        e.controls(parent,{**base,"memory.high":high_value},scope["Controls"])
+        raw,subtree_id=e.read(parent/"cgroup.subtree_control",4096,kernel=True)
+        subtree=raw.decode("ascii").split()
+        if len(subtree)!=3 or set(subtree)!={"cpu","memory","pids"} or subtree_id!=scope["Controls"]["cgroup.subtree_control"]: raise refused()
+        if e.text(parent/"cgroup.procs"): raise refused()
+        freeze=e.text(parent/"cgroup.freeze")
+        if freeze not in ({"0"} if mode=="active" else {"1"} if offline is not None or closed else {"0","1"}): raise refused()
+        if (mode=="active" or offline is not None) and e.numbers(parent/"cgroup.events").get("frozen")!=int(freeze): raise refused()
+        groups=[(parent,scope["Controls"])]
+        exists=os.path.lexists(worker)
+        if e.names(parent,dirs=True)!=({"worker"} if exists else set()): raise refused()
+        if exists:
+            expected={**base,"memory.max":"max","memory.oom.group":"0","memory.high":"max","cgroup.subtree_control":"","cgroup.freeze":"0"}
+            if e.controls(worker,expected,scope["WorkerControls"])!=scope["Worker"] or e.names(worker,dirs=True): raise refused()
+            if mode=="active" and e.numbers(worker/"cgroup.events").get("frozen")!=0: raise refused()
+            groups.append((worker,scope["WorkerControls"]))
+            if offline is not None and (e.numbers(worker/"cgroup.events").get("populated")!=0 or e.text(worker/"cgroup.procs")): raise refused()
+            if closed or high is not None: raise refused()
+        elif offline is None: raise refused()
+        for group,controls in groups:
+            if identity(e.protected(group/"memory.events.local"))!=controls["memory.events.local"]: raise refused()
+            events=e.numbers(group/"memory.events.local")
+            if any(k not in events for k in ("oom","oom_kill","oom_group_kill")): raise refused()
+            if mode=="active" and any(events[k]!=0 for k in ("oom","oom_kill","oom_group_kill")): raise refused()
+        if closed:
+            if offline is None: raise refused()
+            e.empty(parent,scope["Group"])
+        return offline,high,outcome
+
     def _accounted_owner(self,e,c,state):
         """Prove retained finite charges, without granting creation, execution or cleanup."""
         records=self._record_pair(e,c,state)
@@ -442,7 +597,7 @@ class LinuxPartitionProvider:
         expected={"cgroup.type":"domain","memory.max":str(task["MemoryBytes"]+plan["OwnerOverheadBytes"]),
                   "memory.swap.max":"0","memory.oom.group":"1","pids.max":"512","cpu.max.burst":"0",
                   "cpu.max":f'{(task["CPUMillis"]+plan["OwnerOverheadCPUMillis"])*100} 100000'}
-        if set(limits["Controls"])!=set(expected)|{"memory.events.local"} or set(scope["Controls"])!=set(expected)|{"memory.events.local"}: raise refused()
+        if set(limits["Controls"])!=set(expected)|{"memory.events.local"}: raise refused()
         for _ in range(2):
             for name,want in (("intent.json",guard),("revoked.json",guard),("expired.json",guard),
                               ("removed.json",guard),("owner-empty.json",guard),("host-retired.json",scope),
@@ -453,12 +608,11 @@ class LinuxPartitionProvider:
                 self._metadata(e,c,state,directory,guard)
             if self._record_pair(e,c,state)!=records: raise refused()
             e.controls(owner,expected,limits["Controls"])
-            e.controls(host,{**expected,"memory.max":str(plan["HostScratchBytes"]),"pids.max":"64","cpu.max":"25000 100000"},scope["Controls"])
-            for group,controls in ((owner,limits["Controls"]),(host,scope["Controls"])):
+            self._host_progress(e,c,state,records,mode="held")
+            for group,controls in ((owner,limits["Controls"]),):
                 if identity(e.protected(group/"memory.events.local"))!=controls["memory.events.local"]: raise refused()
             if (e.names(owner,dirs=True)!={"nodus-epochs","nodus-guardians"}
-                    or e.names(epoch.parent,dirs=True)!={epoch.name} or e.names(guardian.parent,dirs=True)!={guardian.name}
-                    or e.names(host,dirs=True)): raise refused()
+                    or e.names(epoch.parent,dirs=True)!={epoch.name} or e.names(guardian.parent,dirs=True)!={guardian.name}): raise refused()
             for group in (owner,epoch.parent,guardian.parent):
                 if e.text(group/"cgroup.procs"): raise refused()
             for root,maximum in ((owner,512),(host,64)):
@@ -495,9 +649,16 @@ class LinuxPartitionProvider:
             or state["phase"]=="retired" and state["phase_revision"] in {4,5})
 
     def _owner(self,e,c,state,*,clean=False,scope_hash=None):
-        directory,owner,epoch,guardian,host,guard,limits,scope,actual=self._records(e,c,state)
+        records=self._records(e,c,state)
+        directory,owner,epoch,guardian,host,guard,limits,scope,actual=records
         if scope_hash is not None and actual!=scope_hash: raise refused()
         if state["host_scope_sha256"] and actual!=state["host_scope_sha256"]: raise refused()
+        task=limits["Plan"]["Task"]; plan=limits["Plan"]
+        expected={"cgroup.type":"domain","memory.max":str(task["MemoryBytes"]+plan["OwnerOverheadBytes"]),
+                  "memory.swap.max":"0","memory.oom.group":"1","pids.max":"512","cpu.max.burst":"0",
+                  "cpu.max":f'{(task["CPUMillis"]+plan["OwnerOverheadCPUMillis"])*100} 100000'}
+        if set(limits["Controls"])!=set(expected)|{"memory.events.local"}: raise refused()
+        e.controls(owner,expected,limits["Controls"])
         mounts=e.mounts()
         if clean:
             for filename,want in (("removed.json",guard),("revoked.json",guard),("owner-empty.json",guard),
@@ -506,7 +667,9 @@ class LinuxPartitionProvider:
                 if e.record(directory/filename)[0]!=want: raise refused()
             lock=os.open(directory/"bootstrap.lock",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
             try:
+                if identity(os.fstat(lock))!=scope["CreatorLock"]: raise refused()
                 fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self._host_progress(e,c,state,records,mode="clean")
                 for group,want in ((owner,limits["Owner"]),(epoch,limits["Epoch"]),(guardian,limits["Guardian"]),(host,scope["Group"])):
                     e.empty(group,want)
                 for title in ("Visible","Stage","Internal"):
@@ -517,17 +680,12 @@ class LinuxPartitionProvider:
             return actual
         for filename in ("revoked.json","expired.json","retired.json","removed.json"):
             if os.path.lexists(directory/filename): raise refused()
-        task=limits["Plan"]["Task"]; plan=limits["Plan"]
-        expected={"cgroup.type":"domain","memory.max":str(task["MemoryBytes"]+plan["OwnerOverheadBytes"]),
-                  "memory.swap.max":"0","memory.oom.group":"1","pids.max":"512","cpu.max.burst":"0",
-                  "cpu.max":f'{(task["CPUMillis"]+plan["OwnerOverheadCPUMillis"])*100} 100000'}
-        if set(limits["Controls"]) != set(expected)|{"memory.events.local"} or set(scope["Controls"]) != set(expected)|{"memory.events.local"}: raise refused()
-        e.controls(owner,expected,limits["Controls"])
-        e.controls(host,{**expected,"memory.max":str(plan["HostScratchBytes"]),"pids.max":"64","cpu.max":"25000 100000"},scope["Controls"])
-        for group, controls in ((owner,limits["Controls"]),(host,scope["Controls"])):
-            if identity(e.protected(group/"memory.events.local"))!=controls["memory.events.local"]: raise refused()
-            events=e.numbers(group/"memory.events.local")
-            if any(events.get(key)!=0 for key in ("oom","oom_kill","oom_group_kill")): raise refused()
+        self._host_progress(e,c,state,records,mode="active")
+        if identity(e.protected(owner/"memory.events.local"))!=limits["Controls"]["memory.events.local"]: raise refused()
+        events=e.numbers(owner/"memory.events.local")
+        if any(events.get(key)!=0 for key in ("oom","oom_kill","oom_group_kill")): raise refused()
+        for member in e.text(path(scope["WorkerPath"])/"cgroup.procs",16384).split():
+            if e.text(f"/proc/{int(member)}/oom_score_adj")=="-1000": raise refused()
         queue=[owner]; count=0; processes=0
         while queue:
             group=queue.pop(); count+=1
@@ -572,10 +730,10 @@ class LinuxPartitionProvider:
     def _has_creation_retired(self,c,state):
         return os.path.lexists(self._paths(c,state["binding"]["ref"])[1]/"creation-retired.json")
 
-    def _creation_record(self,e,directory,name):
+    def _creation_record(self,e,directory,name,limit=65536):
         info=e.protected(directory/name)
         if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o600: raise refused()
-        raw,observed=e.read(directory/name)
+        raw,observed=e.read(directory/name,limit)
         if observed!=identity(info): raise refused()
         def integer(text):
             if not re.fullmatch(r"0|-?[1-9][0-9]*",text): raise refused()
@@ -600,7 +758,7 @@ class LinuxPartitionProvider:
         if state["issue_sha256"]==state["start_sha256"]: raise refused()
         key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
         topology={"Owner":str(owner),"EpochParent":str(epoch.parent),"Epoch":str(epoch),
-                  "GuardianParent":str(guardian.parent),"Guardian":str(guardian),"Host":str(host),
+                  "GuardianParent":str(guardian.parent),"Guardian":str(guardian),"Host":str(host),"Worker":str(host/"worker"),
                   "GuardDirectory":str(directory),"HostDirectory":str(directory/"host"),
                   "Visible":str(directory/"host/visible"),"Stage":str(directory/"host/stage"),"Internal":str(directory/"host/internal")}
         for parent in (owner.parent,host.parent,directory.parent): e.protected(parent,directory=True)
@@ -610,14 +768,14 @@ class LinuxPartitionProvider:
         lock_info=e.protected(directory/"bootstrap.lock")
         if not stat.S_ISREG(lock_info.st_mode) or stat.S_IMODE(lock_info.st_mode)!=0o600: raise refused()
         result=self._creation_record(e,directory,"creation-intent.json");intent=result[0]
-        fields(intent,"Version Ref Namespace Executor BindingSHA256 LocalLeaseID QualificationSHA256 RunscSHA256 Creator IssueSHA256 StartSHA256 ConsumedRevision HostBudgetSHA256 HostScope TimeNamespace Shared Limits Plan DeadlineBootNS Directory BootstrapLock Topology")
+        fields(intent,"Version Ref Namespace Executor BindingSHA256 LocalLeaseID QualificationSHA256 RunscSHA256 Creator IssueSHA256 StartSHA256 ConsumedRevision HostBudgetSHA256 HostScope TimeNamespace Shared SharedBudget Limits Plan DeadlineBootNS Directory BootstrapLock Topology")
         ch=lease["ephemeral"]["charge"]
         plan={"Version":2,"SpecSHA256":lease["ephemeral"]["spec_sha256"],"DeviceSHA256":self._grant_digest(binding),
               "VisibleBytes":lease["resources"]["scratch_bytes"],"StageBytes":ch["stage_bytes"]}
         limits={"Version":1,"BindingSHA256":state["binding_sha256"],"HostBudgetSHA256":digest(b),
                 "Task":{"CPUMillis":lease["resources"]["cpu_millis"],"MemoryBytes":lease["resources"]["memory_bytes"],"PIDs":512},
                 "HostScratchBytes":ch["host_memory_bytes"],"OwnerOverheadBytes":ch["owner_overhead_bytes"],"OwnerOverheadCPUMillis":ch["owner_cpu_millis"]}
-        expected={"Version":1,"Ref":{"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]},
+        expected={"Version":2,"Ref":{"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]},
                   "Namespace":c["namespace"],"Executor":2,"BindingSHA256":state["binding_sha256"],"LocalLeaseID":binding["local_lease_id"],
                   "QualificationSHA256":c["runtime_identity"]["qualification_sha256"],"RunscSHA256":c["runtime_identity"]["runsc_sha256"],
                   "Creator":who,"IssueSHA256":state["issue_sha256"],"StartSHA256":state["start_sha256"],"ConsumedRevision":3,
@@ -625,7 +783,7 @@ class LinuxPartitionProvider:
                   "UserNamespace":b["user_namespace"],"PIDNamespace":b["pid_namespace"],"AllocationRoot":b["root"]["path"],
                   "AllocationDevice":b["root"]["device"],"AllocationInode":b["root"]["inode"]},
                   "TimeNamespace":os.readlink("/proc/self/ns/time"),"Shared":{"Path":b["shared"]["path"],"Device":b["shared"]["device"],"Inode":b["shared"]["inode"]},
-                  "Limits":limits,"Plan":plan,"DeadlineBootNS":intent["DeadlineBootNS"],"Directory":directory_id,
+                  "SharedBudget":b["shared"],"Limits":limits,"Plan":plan,"DeadlineBootNS":intent["DeadlineBootNS"],"Directory":directory_id,
                   "BootstrapLock":identity(lock_info),"Topology":topology}
         if type(intent["DeadlineBootNS"]) is not int or not 0<intent["DeadlineBootNS"]<=2**63-1: raise refused()
         if intent!=expected: raise refused()
@@ -658,10 +816,10 @@ class LinuxPartitionProvider:
             topology=intent["Topology"];limits=intent["Limits"];plan=intent["Plan"]
             fields(retired,"Version IntentSHA256 Ref BindingSHA256 LocalLeaseID Creator IssueSHA256 StartSHA256 RetiredRevision QualificationSHA256 ProofContract Cgroups Mounts OwnedDirectories")
             common={k:intent[k] for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
-            common.update(IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v1")
+            common.update(IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v2")
             if any(retired[k]!=v for k,v in common.items()): raise refused()
             groups=retired["Cgroups"];mounts=retired["Mounts"];dirs=retired["OwnedDirectories"]
-            fields(groups,"Owner EpochParent Epoch GuardianParent Guardian Host")
+            fields(groups,"Owner EpochParent Epoch GuardianParent Guardian Host Worker")
             fields(mounts,"Visible Stage Internal");fields(dirs,"Host Visible Stage Internal")
             seen=set()
             for role,value in groups.items():
@@ -671,7 +829,7 @@ class LinuxPartitionProvider:
                 if ident["Device"]!=b["root"]["device"] or ident["Inode"] in seen or ident["Inode"] in {b["root"]["inode"],b["shared"]["inode"]}: raise refused()
                 seen.add(ident["Inode"])
                 if value["Populated"]!=0 or value["MemoryCurrent"]!=0: raise refused()
-            for child,parent in (("EpochParent","Owner"),("Epoch","EpochParent"),("GuardianParent","Owner"),("Guardian","GuardianParent")):
+            for child,parent in (("EpochParent","Owner"),("Epoch","EpochParent"),("GuardianParent","Owner"),("Guardian","GuardianParent"),("Worker","Host")):
                 if groups[child] is not None and groups[parent] is None: raise refused()
             directory_inodes={directory_id["Inode"],identity(lock_info)["Inode"]}
             for role,value in dirs.items():

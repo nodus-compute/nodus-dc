@@ -363,24 +363,24 @@ class Partitions(unittest.TestCase):
             directory.mkdir(mode=0o700);lock=directory/"bootstrap.lock";lock.touch(mode=0o600)
             ident=lambda p:host.identity(p.stat())
             topology={"Owner":str(owner),"EpochParent":str(epoch.parent),"Epoch":str(epoch),"GuardianParent":str(guardian.parent),
-                      "Guardian":str(guardian),"Host":str(group),"GuardDirectory":str(directory),"HostDirectory":str(directory/"host"),
+                      "Guardian":str(guardian),"Host":str(group),"Worker":str(group/"worker"),"GuardDirectory":str(directory),"HostDirectory":str(directory/"host"),
                       **{k:str(directory/"host"/k.lower()) for k in ("Visible","Stage","Internal")}}
             plan={"Version":2,"SpecSHA256":held["ephemeral"]["spec_sha256"],"DeviceSHA256":reader._grant_digest(b),
                   "VisibleBytes":task["scratch_bytes"],"StageBytes":charge["stage_bytes"]}
             limits={"Version":1,"BindingSHA256":retired["binding_sha256"],"HostBudgetSHA256":digest(budget),
                     "Task":{"CPUMillis":task["cpu_millis"],"MemoryBytes":task["memory_bytes"],"PIDs":512},
                     "HostScratchBytes":charge["host_memory_bytes"],"OwnerOverheadBytes":charge["owner_overhead_bytes"],"OwnerOverheadCPUMillis":charge["owner_cpu_millis"]}
-            intent={"Version":1,"Ref":{"AttemptID":b["ref"]["attempt_id"],"Epoch":b["ref"]["epoch"]},"Namespace":config["namespace"],"Executor":2,
+            intent={"Version":2,"Ref":{"AttemptID":b["ref"]["attempt_id"],"Epoch":b["ref"]["epoch"]},"Namespace":config["namespace"],"Executor":2,
                     "BindingSHA256":retired["binding_sha256"],"LocalLeaseID":b["local_lease_id"],"QualificationSHA256":b["runtime_identity"]["qualification_sha256"],
                     "RunscSHA256":b["runtime_identity"]["runsc_sha256"],"Creator":retired["creator"],"IssueSHA256":retired["issue_sha256"],
                     "StartSHA256":retired["start_sha256"],"ConsumedRevision":3,"HostBudgetSHA256":digest(budget),
                     "HostScope":{"BootID":budget["boot_id"],"CgroupNamespace":budget["cgroup_namespace"],"UserNamespace":budget["user_namespace"],
                     "PIDNamespace":budget["pid_namespace"],"AllocationRoot":budget["root"]["path"],"AllocationDevice":budget["root"]["device"],"AllocationInode":budget["root"]["inode"]},
                     "TimeNamespace":os.readlink("/proc/self/ns/time"),"Shared":{"Path":budget["shared"]["path"],"Device":budget["shared"]["device"],"Inode":budget["shared"]["inode"]},
-                    "Limits":limits,"Plan":plan,"DeadlineBootNS":1,"Directory":ident(directory),"BootstrapLock":ident(lock),"Topology":topology}
+                    "SharedBudget":budget["shared"],"Limits":limits,"Plan":plan,"DeadlineBootNS":1,"Directory":ident(directory),"BootstrapLock":ident(lock),"Topology":topology}
             proof={k:copy.deepcopy(intent[k]) for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
-            proof.update(IntentSHA256="",RetiredRevision=4,ProofContract="scoped-host-original-abort.v1",
-                         Cgroups=dict.fromkeys(("Owner","EpochParent","Epoch","GuardianParent","Guardian","Host")),
+            proof.update(IntentSHA256="",RetiredRevision=4,ProofContract="scoped-host-original-abort.v2",
+                         Cgroups=dict.fromkeys(("Owner","EpochParent","Epoch","GuardianParent","Guardian","Host","Worker")),
                          Mounts=dict.fromkeys(("Visible","Stage","Internal")),OwnedDirectories=dict.fromkeys(("Host","Visible","Stage","Internal")))
             def put(name,value):
                 raw=value if isinstance(value,bytes) else json.dumps(value,separators=(",",":")).encode()
@@ -390,6 +390,100 @@ class Partitions(unittest.TestCase):
                 put("creation-retired.json",value)
             class Files(host.Evidence):
                 def mounts(self): return []  # No kernel/mount qualification in this protocol journey.
+            def worker_records():
+                # Actual protected record parsing and unchanged SQL hold; cgroup files/daemon facts are synthetic.
+                fixture=root/"worker-proof";record_dir=fixture/"records";parent=fixture/"H";worker=parent/"worker"
+                shared=fixture/"node";leaf=shared/"agent"
+                for p in (record_dir,parent,worker,shared,leaf): p.mkdir(parents=True,mode=0o700,exist_ok=True)
+                def write(p,value):
+                    p.write_text(value);p.chmod(0o600)
+                def record(name,value):
+                    raw=json.dumps(value,separators=(",",":")).encode();p=record_dir/name
+                    p.write_bytes(raw);p.chmod(0o600);return hashlib.sha256(raw).hexdigest()
+                controls={"cgroup.type":"domain","memory.max":str(charge["host_memory_bytes"]),"memory.swap.max":"0",
+                          "memory.oom.group":"1","pids.max":"64","cpu.max.burst":"0","cpu.max":"25000 100000",
+                          "memory.high":"max","cgroup.subtree_control":"cpu memory pids","memory.events.local":"oom 0\noom_kill 0\noom_group_kill 0"}
+                for p,values in ((parent,controls),(worker,{**controls,"memory.max":"max","memory.oom.group":"0","cgroup.subtree_control":""})):
+                    for name,value in {**values,"cgroup.freeze":"0","cgroup.kill":"","cgroup.procs":"","memory.current":"0","cgroup.events":"populated 0\nfrozen 0"}.items(): write(p/name,value)
+                scope={"CreationIntentSHA256":"a"*64,"Group":ident(parent),"WorkerPath":str(worker),"Worker":ident(worker),
+                       "Freeze":ident(parent/"cgroup.freeze"),"Kill":ident(parent/"cgroup.kill"),"CreatorLock":ident(lock),
+                       "Controls":{k:ident(parent/k) for k in controls},"WorkerControls":{k:ident(worker/k) for k in (*controls,"cgroup.freeze")}}
+                for index,title in enumerate(("Visible","Stage","Internal")):
+                    scope[title]={"Path":str(fixture/title.lower()),"MountID":9000+index,"Device":"0:"+str(9100+index)}
+                guard={"Version":5,"Ref":intent["Ref"],"HostSHA256":"b"*64};owner_limits={"Plan":limits,"Guardian":{"Device":1,"Inode":91}}
+                records=(record_dir,owner,epoch,guardian,parent,guard,owner_limits,scope,"b"*64)
+                config2={**config,"host_budget":copy.deepcopy(budget)}
+                config2["host_budget"]["root"].update(path=str(fixture),device=ident(fixture)["Device"],inode=ident(fixture)["Inode"])
+                allocation=config2["host_budget"]["root"]
+                for k,v in {"cgroup.type":"domain","memory.max":str(allocation["memory_bytes"]),"memory.swap.max":"0",
+                            "cpu.max":f'{allocation["cpu_millis"]*100} 100000',"cpu.max.burst":"0","pids.max":str(allocation["pids"]),"memory.oom.group":"1"}.items(): write(fixture/k,v)
+                sb=config2["host_budget"]["shared"];sb.update(path=str(shared),device=ident(shared)["Device"],inode=ident(shared)["Inode"])
+                parser=copy.copy(reader);parser._metadata=lambda *args:None
+                check=lambda mode:parser._host_progress(Files(),config2,retired,records,mode=mode)
+                parser._host_identities(scope,ident(parent)["Device"])
+                self.assertEqual(check("active"),(None,None,None))
+                write(worker/"memory.max",controls["memory.max"])
+                with self.assertRaises(Error): check("active")  # A narrower child OOM domain is forbidden.
+                write(worker/"memory.max","max");write(parent/"memory.events.local","oom 1\noom_kill 1\noom_group_kill 1")
+                with self.assertRaises(Error): check("active")
+                self.assertEqual(check("held"),(None,None,None))  # Historical OOM cannot veto finite retirement.
+                write(parent/"cgroup.freeze","1");write(parent/"cgroup.events","populated 0\nfrozen 1")
+                offline={"Version":1,"Guard":guard,"ScopeSHA256":"b"*64,"CreationIntentSHA256":"a"*64,
+                         "ParentPath":str(parent),"Parent":ident(parent),"WorkerPath":str(worker),"Worker":ident(worker),
+                         "CreatorLock":ident(lock),"WorkerPopulated":0,"WorkerMemoryCurrent":4096}
+                ohash=record("host-worker-offline.json",offline)
+                with self.assertRaises((Error,OSError)): check("held")  # Missing predecessor joins.
+                for name,value in (("revoked.json",guard),("intent.json",guard),
+                                   ("retired.json",{"Guard":guard,"Group":owner_limits["Guardian"]}),
+                                   ("guardian.json",{"Guard":guard,"Group":owner_limits["Guardian"]})):
+                    record(name,value)
+                for title in ("Visible","Stage","Internal"): record("host-unmount-"+title.lower()+".json",scope[title])
+                self.assertEqual(check("held")[0],offline)
+                with self.assertRaises(Error): check("clean")  # Original worker still exists.
+                worker.rename(parent/"replacement")
+                with self.assertRaises(Error): check("held")
+                (parent/"replacement").rename(worker)
+                for p in worker.iterdir(): p.unlink()
+                worker.rmdir()
+                (record_dir/"host-worker-offline.json").unlink()
+                with self.assertRaises(Error): check("held")  # Missing worker is not evidence of offlining.
+                record("host-worker-offline.json",offline);write(parent/"memory.current","4096")
+                self.assertEqual(check("held")[0],offline)
+                with self.assertRaises(Error): check("clean")
+                shared_values={"cgroup.type":"domain","memory.max":str(sb["memory_bytes"]),"memory.swap.max":"0",
+                               "cpu.max":f'{sb["cpu_millis"]*100} 100000',"cpu.max.burst":"0","pids.max":str(sb["pids"]),
+                               "cgroup.freeze":"0","memory.high":"max","memory.oom.group":"0","cgroup.subtree_control":"cpu memory pids"}
+                vector=[]
+                for p,values in ((shared,shared_values),(leaf,{**shared_values,"memory.max":"max","pids.max":"max","cgroup.subtree_control":""})):
+                    for k,v in {**values,"cgroup.events":"populated 0\nfrozen 0","cgroup.procs":""}.items(): write(p/k,v)
+                    vector.append({"Path":str(p),"Identity":ident(p),"Controls":{k:{"Identity":ident(p/k),"Value":values[k]} for k in sorted(values)}})
+                high={"Version":1,"Guard":guard,"ScopeSHA256":"b"*64,"CreationIntentSHA256":"a"*64,"WorkerOfflineSHA256":ohash,
+                      "DeadlineBootNS":1,"ParentPath":str(parent),"Parent":ident(parent),"High":scope["Controls"]["memory.high"],
+                      "CreatorLock":ident(lock),"SharedBudget":sb,"SharedControls":{k:ident(shared/k) for k in ("cgroup.type","memory.max","memory.swap.max","cpu.max","cpu.max.burst","pids.max","cgroup.freeze")},
+                      "SharedLeafPath":str(leaf),"SharedLeaf":ident(leaf),"SharedAncestryCount":2,
+                      "SharedAncestrySHA256":hashlib.sha256(json.dumps(vector,separators=(",",":"),ensure_ascii=False).encode()).hexdigest(),"Value":0}
+                hhash=record("host-high-intent.json",high);write(parent/"memory.high","0")
+                self.assertEqual(check("held")[1],high)
+                for key,value in (("DeadlineBootNS",None),("DeadlineBootNS",2**63),("SharedAncestryCount",None),
+                                  ("SharedBudget",{**sb,"memory_bytes":sb["memory_bytes"]+4096}),("Value",1)):
+                    record("host-high-intent.json",{**high,key:value})
+                    with self.assertRaises(Error): check("held")
+                record("host-high-intent.json",high)
+                with self.assertRaises(Error): check("clean")  # No joined outcome, even if parent reaches zero.
+                write(parent/"memory.current","0")
+                with self.assertRaises(Error): check("clean")
+                for wrong in ({"Version":1,"IntentSHA256":hhash,"WaitStatus":9},
+                              {"Version":1,"IntentSHA256":"f"*64,"WaitStatus":0}):
+                    record("host-high-outcome.json",wrong)
+                    with self.assertRaises(Error): check("clean")
+                outcome={"Version":1,"IntentSHA256":hhash,"WaitStatus":0};record("host-high-outcome.json",outcome)
+                self.assertEqual(check("clean"),(offline,high,outcome))
+                write(leaf/"pids.max","1")
+                with self.assertRaises(Error): check("clean")  # Even tighter changed ancestry cannot replay.
+                write(leaf/"pids.max","max");write(parent/"memory.current","4096")
+                with self.assertRaises(Error): check("clean")
+                self.assertTrue(call("inspect",held)[1]["held"])
+                self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
             old_clean=self.executor.verify_clean;old_account=self.executor.verify_host_accounting;old_verify=self.executor.verify_reservation
             def clean(local,request,*,context):
                 p=json.loads(context["provider_row"]["enforcement"]);p["provider_config_sha256"]=reader.sha256
@@ -407,11 +501,14 @@ class Partitions(unittest.TestCase):
                     self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
                     self.assertTrue(call("inspect",held)[1]["held"])
                     install()
+                    worker_records()
                     for which,key,value in (("intent","DeadlineBootNS",0),("intent","DeadlineBootNS",2**63),
-                            ("intent","Version",True),("intent","Creator",{**retired["creator"],"pid":retired["creator"]["pid"]+1}),
+                            ("intent","Version",True),("intent","Version",1),
+                            ("intent","SharedBudget",{**budget["shared"],"memory_bytes":budget["shared"]["memory_bytes"]+4096}),("intent","Creator",{**retired["creator"],"pid":retired["creator"]["pid"]+1}),
                             ("intent","Topology",{**topology,"Host":str(root/"foreign")}),
                             ("proof","StartSHA256","8"*64),("proof","RetiredRevision",5),("proof","Creators",[]),
-                            ("proof","Cgroups",{"Owner":None})):
+                            ("proof","Cgroups",{"Owner":None}),
+                            ("proof","Cgroups",{k:v for k,v in proof["Cgroups"].items() if k!="Worker"})):
                         a=copy.deepcopy(intent);z=copy.deepcopy(proof);(a if which=="intent" else z)[key]=value;install(a,z)
                         self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
                         self.assertTrue(call("inspect",held)[1]["held"])
@@ -462,6 +559,10 @@ class Partitions(unittest.TestCase):
                     put("scoped-limits.json",partial)
                     with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,{**retired,"phase_revision":5})
                     wrong=copy.deepcopy(present);wrong["Cgroups"]["Host"]["MemoryCurrent"]=4096;install(z=wrong)
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    wrong=copy.deepcopy(present);wrong["Cgroups"]["Worker"]["MemoryCurrent"]=4096;install(z=wrong)
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    wrong=copy.deepcopy(present);wrong["Cgroups"]["Host"]=None;install(z=wrong)
                     with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
                     install(z=present)
                     wrong=copy.deepcopy(partial);wrong["Plan"]["HostScratchBytes"]+=4096;put("scoped-limits.json",wrong)

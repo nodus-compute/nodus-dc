@@ -19,7 +19,7 @@ root-owned regular JSON file with protected ancestry. Its strict fields are:
   `qualification_path`.
 
 The qualification record has exact fields `version:1`,
-`retirement_contract:"scoped-host-positive-retirement.v1"`, `runtime_identity`
+`retirement_contract:"scoped-host-positive-retirement.v2"`, `runtime_identity`
 (excluding its own qualification digest), `creator_sha256`, `devices` and
 `artifacts`. Its raw file hash equals `runtime_identity.qualification_sha256`.
 Artifacts are at most128 unique `{path,sha256}` entries covering every CDI mount
@@ -157,7 +157,7 @@ registration remains absent.
 ## Original-call pre-pair retirement
 
 Only a retired consumed revision4 can use `creation-intent.json` and
-`creation-retired.json`, strict version1 records in its existing guard directory.
+`creation-retired.json`, strict version2 records in its existing guard directory.
 The qualified node binds its handle to the one opaque successful issue invocation
 before consume. The reader does not reconstruct that handle or verify past joins
 from absence: the pinned node record attests the original in-process join and prior
@@ -166,14 +166,14 @@ The exact creator executable, qualification, full binding/lease, Creator, issue/
 hashes, limits, Plan2, shared domain and boot/time namespaces must agree.
 
 Both records are bounded to 64 KiB, have exact fixed fields and integer forms, and
-bind the retained raw intent digest. Six original cgroup slots, three mount slots
+bind the retained raw intent digest. Seven original cgroup slots, three mount slots
 and four underlying directory slots are fixed nullable identities. Null means
 the original invocation never created that object and its exact path is now
 absent; it cannot encode an unknown outcome. Present slots require prior empty
 teardown and current absence. Optional pre-pair `scoped-limits.json` must match
 the original slots/plan; complete scope, metadata, guardian or later retirement
 records prohibit the abort proof. Malformed or mixed proofs never fall back to
-normal scope cleanup. Successful v5 publication retains the optional original
+normal scope cleanup. Successful v5 publication retains the required original
 intent and validates it with the same strict tuple/codec; it never accepts a
 `creation-retired.json` alongside that full scope.
 
@@ -198,3 +198,52 @@ source qualification must reject incompatible admission. Managed runsc/shim byte
 are unchanged. The HTTP/SQLite owning case uses real files/flock but synthetic
 kernel history and envelope evidence; native original-cancellation/retirement and
 the full Agent path remain unqualified.
+
+
+## Finite H parent and one worker
+
+Scope version3 retains the finite H parent and binds one exact `worker` child;
+Plan2 and task M, S, T, O and aggregate A are unchanged. Older scope2 and original
+abort1 records are refused, never inferred or upgraded. The same qualification
+file now requires `scoped-host-positive-retirement.v2`. Scope3 commits the exact
+raw creation-intent2 digest, including immutable numeric SharedBudget from the
+original issue; the seventh nullable original-abort slot is Worker under Host.
+Every present pre-pair slot still requires recorded zero charge and current
+absence. Unknown creation and missing predecessor evidence retain A.
+
+Active checks require empty direct H-parent membership, exactly one child without
+descendants, parent finite H/group-OOM1 and worker memory.max=max/group-OOM0.
+Parent controls have exactly10 keys; worker controls have11 including its local
+freeze. Both retain fixed CPU/pids/swap/burst, zero active OOM counters and exact
+control identities. The worker inherits the parent's finite ceiling; it does not
+have a separate child OOM memory limit. Active execution refuses every retirement
+marker and requires unfrozen state and high=max. No local writes or cleanup
+commands are performed by this provider.
+
+Held accounting accepts historical OOM and exact retirement progress while keeping
+the full C/A/S. A protected worker-offline record joins the original Guard, scope,
+creation intent, lock, worker identity and zero population; its recorded post-pair
+worker charge may be positive. Missing worker without that intent, replacement,
+extra children, missing mount intents or contradictory later records refuse.
+The parent remains present, frozen and capped. This post-pair rule does not weaken
+the original-abort zero-charge rule.
+
+An optional protected high intent authorizes only the qualified runtime's single
+fixed cleanup command. The reader joins its exact raw offline digest, original
+SharedBudget, finite deadline, pinned parent high FD and Shared-to-leaf ancestry.
+It reconstructs the bounded ordered Go JSON vector of path, identity and10 fixed
+control identities/values, with sorted map keys; dynamic process/current/event
+observations are checked separately, never hashed or cached. Changed ancestry,
+foreign placement or partial intent refuses. No outcome retains the reservation;
+a failed joined status cannot prove clean. A zero wait status also does not prove
+zero charge: Complete requires fresh parent memory.current0/populated0, absent
+worker and all three mounts, exact metadata/creator/guardian retirement and the
+original protected lock. Parent high may stay0 after successful retirement.
+
+Complete remains exact-target cleanup, not an additional all-owner census.
+Existing admission and published-renewal accounting retain the full all-owner
+check and held A until actual Complete. The owning HTTP/SQLite case adds real
+protected record parsing with explicitly synthetic cgroup files/daemon evidence;
+it does not qualify Linux offlining, ancestry latency, high-write completion,
+actual parent-zero feasibility, or full Agent/MIG behavior. Production construction
+and qualification remain closed pending the joined native proof.
