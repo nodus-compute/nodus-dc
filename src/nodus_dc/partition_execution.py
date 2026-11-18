@@ -15,6 +15,7 @@ from . import ephemeral
 
 CONTRACT = "partition-execution-binding.v2"
 PROVIDER = "partition-trusted-host.v1"
+HOST_ACCOUNTING = "partition-host-headroom.v1"
 STATE_FIELDS = "binding binding_sha256 phase phase_revision creator issue_sha256 start_sha256 host_scope_sha256"
 CREATOR_FIELDS = "boot_id pid start_ticks uid gid pid_namespace user_namespace cgroup_namespace executable_sha256"
 IMAGE_FIELDS = "version reference manifest_sha256 config_sha256 rootfs_chain_sha256 os architecture user workdir namespace snapshotter spec_sha256"

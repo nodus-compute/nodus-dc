@@ -2,7 +2,7 @@
 
 This is unregistered source for the experimental trusted-host profile. It does
 not create a host envelope or establish host confidentiality. No installer,
-CLI or connection flow constructs it. Full task M remains available; the same
+CLI or connection flow constructs it. The full task M limit is unchanged; the same
 finite profile reserves A=M+H+O once, with S as total customer data and Internal
 charged within H. Numerical sizing and the complete Agent path need their native
 owning proof.
@@ -19,7 +19,7 @@ root-owned regular JSON file with protected ancestry. Its strict fields are:
   `qualification_path`.
 
 The qualification record has exact fields `version:1`,
-`retirement_contract:"scoped-host-positive-retirement.v2"`, `runtime_identity`
+`retirement_contract:"scoped-host-workload-retirement.v3"`, `runtime_identity`
 (excluding its own qualification digest), `creator_sha256`, `devices` and
 `artifacts`. Its raw file hash equals `runtime_identity.qualification_sha256`.
 Artifacts are at most128 unique `{path,sha256}` entries covering every CDI mount
@@ -42,8 +42,9 @@ finite CPU/RAM/PID root/shared controls by device/inode. Shared is one direct ch
 of the managed allocation root. The provider requires the authority and every
 shared process to be inside that bounded domain with an admitted executable hash.
 This is bounded cgroup membership verification, not a free-RAM or whole-host process
-scan. Root and shared CPU/RAM are subtracted once; each held row contributes its
-aggregate C/A/S. Mixed legacy/profile owners refuse. Unknown root children,
+scan. Immutable capacity is root minus Shared; each held row contributes its complete
+aggregate C/A/S. Additional memory admission also subtracts a fresh root.current
+observation, as specified below. Mixed legacy/profile owners refuse. Unknown root children,
 partial owners, truncated inventories and unaccounted work close admission.
 At most64 live claims and256 historical reservation rows are supported by this
 initial profile; exhausting that finite history refuses rather than truncates.
@@ -80,16 +81,15 @@ domain. The socket alone may be root:root group-writable with no world-write bit
 its ancestry and all non-socket protected paths reject group/world writes.
 Daemon restart, socket replacement or store-FD drift refuses, including cleanup.
 
-Cleanup is independent of equality to current limit values or current image bytes.
-For a published/consumed owner it joins exact intent/removed/revoked/owner-empty,
-guardian/retired, host-retired and all three per-mount unmount intents. It takes
-the existing creator lock nonblocking, proves actual original cgroup identities,
-no members, zero remaining owner/H charges and mount absence. Limit tampering
-cannot turn that positive retirement into permission to execute. Missing/foreign
-identities or a creator still holding the lock keep the reservation. A never-bound
-or never-consumed row can release only because no creation capability has existed;
-a consumed row with missing scope remains held unless its original source-qualified
-call left the exact positive abort proof below. Missing files alone never suffice.
+Normal consumed/published cleanup requires the strict scope4 workload-retirement
+pair described below. It preserves exact source/guard/metadata, original lock,
+seven cgroup identities and mount retirement joins while allowing recorded
+nonzero residual kernel charge. It does not claim instant physical freeing or
+no future deferred charge. Missing/foreign identities or incomplete proof keep
+the complete reservation. A never-bound or never-consumed row can release only
+because no creation capability has existed; a consumed row with missing scope
+remains held unless its original source-qualified call left the exact positive
+abort proof below. Missing files alone never suffice.
 
 The corrected, pinned runtime is responsible for actual container, task and exact
 original snapshotter/key NotFound checks before durably publishing removed.json.
@@ -201,9 +201,9 @@ Both sidecars use the existing 64 KiB / 512-node protected record parser with
 closed fields, duplicate/type/integer rejection and repeated raw-hash/inode reads.
 OSS does not impose a new JSON field-order or whitespace encoding; the qualified
 Go writer is canonical and the exact retained raw bytes are hash-bound. Normal
-scope3 and qualification version1 / `scoped-host-positive-retirement.v2` stay
-unchanged, but the new node/reader/source/artifact identities must be qualified
-together. Normal v5 cleanup refuses all original drain files and temporaries.
+scope4 uses qualification version1 / `scoped-host-workload-retirement.v3`;
+original intent2/retired3 remains the strict-zero contract. Exact new
+node/reader/source/artifact identities must be qualified together. Normal v5 cleanup refuses all original drain files and temporaries.
 
 Under the retained protected bootstrap lock, the reader checks exact record and
 directory identities twice, original topology absence and the absence of recorded
@@ -230,53 +230,78 @@ the full Agent path remain unqualified.
 
 ## Finite H parent and one worker
 
-Scope version3 retains the finite H parent and binds one exact `worker` child;
-Plan2 and task M, S, T, O and aggregate A are unchanged. Older scope2 and original
-abort1 records are refused, never inferred or upgraded. The same qualification
-file now requires `scoped-host-positive-retirement.v2`. Scope3 commits the exact
-raw creation-intent2 digest, including immutable numeric SharedBudget from the
-original issue; the seventh nullable original-abort slot is Worker under Host.
-Every present pre-pair slot still requires recorded zero charge and current
-absence. Unknown creation and missing predecessor evidence retain A.
+Scope version4 retains the finite H parent and one exact `worker` child, and
+captures EpochParent and GuardianParent identities before publication. Plan2 and
+M/S/T/O/A are unchanged. Older normal scope/terminal records are refused, never
+upgraded. The existing qualification file now requires
+`scoped-host-workload-retirement.v3`. Scope4 commits the raw creation-intent2
+hash and all seven group identities on the allocation device. Original abort3
+remains separate: every present pre-pair slot still requires recorded zero charge
+and current absence.
 
-Active checks require empty direct H-parent membership, exactly one child without
-descendants, parent finite H/group-OOM1 and worker memory.max=max/group-OOM0.
-Parent controls have exactly10 keys; worker controls have11 including its local
-freeze. Both retain fixed CPU/pids/swap/burst, zero active OOM counters and exact
-control identities. The worker inherits the parent's finite ceiling; it does not
-have a separate child OOM memory limit. Active execution refuses every retirement
-marker and requires unfrozen state and high=max. No local writes or cleanup
-commands are performed by this provider.
+Active checks require empty direct H-parent membership, exactly one worker
+without descendants, finite parent H/group-OOM1 and worker max/group-OOM0.
+Existing CPU/PID/swap/burst controls, exact control identities, effective unfrozen
+state, high=max and zero active OOM counters remain mandatory. Historical OOM may
+be accepted for finite held accounting, retaining the complete A. Worker absence
+requires its exact worker-offline record, source/guardian/mount joins and observed
+zero population; its recorded charge may be nonzero.
 
-Held accounting accepts historical OOM and exact retirement progress while keeping
-the full C/A/S. A protected worker-offline record joins the original Guard, scope,
-creation intent, lock, worker identity and zero population; its recorded post-pair
-worker charge may be positive. Missing worker without that intent, replacement,
-extra children, missing mount intents or contradictory later records refuse.
-The parent remains present, frozen and capped. This post-pair rule does not weaken
-the original-abort zero-charge rule.
+Normal retirement uses protected `workload-offline.json` version1, then
+`workload-retired.json` version1 committing its exact raw hash. The offline record
+joins Guard, raw scope/creation hashes, creator lock and seven required nonnull
+`{Identity,Populated,MemoryCurrent}` objects. Population is zero; memory values
+are strict uint64 observations, not freed-byte claims. Worker memory agrees with
+its earlier offline record. The source-qualified runtime attests creator/task/
+helper/guardian joins and actual metadata/device closure before normal offlining.
+The reader independently requires current absence of all seven exact paths and
+all three mount identities, the current protected root/Shared envelope, original
+daemon provenance, exact removed/owner-empty receipts and the locked final pair.
+Fixed backing directories remain empty and protected. Unknown or temporary guard
+entries, path recreation, owner-empty alone, missing/lost pair, older host-retired
+or normal high files, and mixed original-abort files refuse. Incomplete offlining
+cannot be resumed by this reader; no first final proof is reconstructed.
 
-An optional protected high intent authorizes only the qualified runtime's single
-fixed cleanup command. The reader joins its exact raw offline digest, original
-SharedBudget, finite deadline, pinned parent high FD and Shared-to-leaf ancestry.
-It reconstructs the bounded ordered Go JSON vector of path, identity and10 fixed
-control identities/values, with sorted map keys; dynamic process/current/event
-observations are checked separately, never hashed or cached. Changed ancestry,
-foreign placement or partial intent refuses. No outcome retains the reservation;
-a failed joined status cannot prove clean. A zero wait status also does not prove
-zero charge: Complete requires fresh parent memory.current0/populated0, absent
-worker and all three mounts, exact metadata/creator/guardian retirement and the
-original protected lock. Parent high may stay0 after successful retirement.
+Complete validates this exact target and retained root/Shared infrastructure;
+it does not add an all-owner scan. The same SQL rows retain released history.
+Admission/renewal census accepts a guard-only normal history entry only after
+fresh validation of the complete workload proof, preserving the ordinary
+all-three-root rule for a late partial creator. Unknown retirement retains full A.
+Root and Shared must remain unchanged for the entire authority/history lifetime.
 
-Complete remains exact-target cleanup, not an additional all-owner census.
-Every consumed cleanup route rereads the current root/Shared envelope before
-accepting positive owner evidence, including ordinary worker offlining without a
-high command. All scope3 historical mounts use the same strict identity codec as
-original-abort mounts: bounded positive IDs, canonical device numbers, exact
-device/inode agreement and distinct mount identities, before any state branch.
-Existing admission and published-renewal accounting retain the full all-owner
-check and held A until actual Complete. The owning HTTP/SQLite case adds real
-protected record parsing with explicitly synthetic cgroup files/daemon evidence;
-it does not qualify Linux offlining, ancestry latency, high-write completion,
-actual parent-zero feasibility, or full Agent/MIG behavior. Production construction
-and qualification remain closed pending the joined native proof.
+## Conservative additional admission
+
+The private profile hook `verify_host_accounting` now returns exactly
+`{contract:"partition-host-headroom.v1",host_budget,memory_current}`. The budget
+is the existing immutable shape; current is a freshly read, protected uint64
+counter with FD/path identity checks and surrounding envelope validation. Bool,
+float, negative or oversized values refuse. Old bool-only profile providers
+refuse; ordinary nil-profile hooks remain unchanged. No public endpoint, SQL
+column, ledger or caller-selected mode is added.
+
+Only the authority's offers/new-Claim call site selects admission. After all
+existing owner/history/census checks, available memory is the lesser of the
+static root-minus-Shared-minus-full-held-A value and
+`floor(max(0, root.max - Shared - sum(full held A) - root.current)/4096)*4096`.
+Arithmetic is checked before fitting the complete new A, never raw task M.
+Counter overflow or exhausted headroom closes new admission. Existing Check and
+private creation continuation select continuation internally: every immutable
+cap, exact target, owner, phase, deadline and all-owner check still applies, but
+current usage exceeding max or leaving no additional headroom does not itself
+revoke a valid owner. No live observation is cached.
+
+This deliberately double-counts live and Shared usage, reducing utilization.
+Deferred kernel charges may grow after the snapshot; cgroup memory.max can
+transiently overshoot. This is finite containment plus conservative sampling,
+not a universal no-OOM, physical-free or no-future-charge guarantee. The retained
+ancestor's group-OOM policy can terminate Shared and sibling workloads. Full task
+M/CPU/PID/scratch caps remain unchanged, but unconditional neighbor QoS or full-M
+availability under ancestor pressure is not promised.
+
+The existing HTTP/SQLite owning case covers typed values, byte/page headroom,
+refused additional Claim with valid continuation, protected final-pair parsing,
+nonzero historical counters, partial/lost/mixed records, replay/census and full A
+on refusal. Kernel/history/runtime evidence in that protocol case is explicitly
+synthetic. Static checks do not qualify native offlining, counter behavior, the
+full Agent/MIG path or production registration; those remain closed pending the
+joined native proof.

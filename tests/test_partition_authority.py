@@ -109,6 +109,25 @@ class Partitions(unittest.TestCase):
             "accounting_version":ephemeral.ACCOUNTING,"capacity":dict(capacity)}
         self.executor.prepare_reservation = lambda lease, resources: {
             "enforcement_ready":True,"synthetic":True,"accounting_version":ephemeral.ACCOUNTING}
+        self.executor.memory_current = 0
+        def host_budget(scope):
+            return {"version":1,"accounting_version":ephemeral.ACCOUNTING,
+                    "boot_id":Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                    "authority_incarnation":scope["authority_incarnation"],
+                    **{name+"_namespace":os.readlink("/proc/self/ns/"+name) for name in ("pid","user","cgroup")},
+                    "root":{"path":"/sys/fs/cgroup/synthetic","device":31,"inode":32,
+                            "cpu_millis":capacity["cpu_millis"]+1000,"memory_bytes":capacity["memory_bytes"]+1024**3,"pids":2048},
+                    "shared":{"path":"/sys/fs/cgroup/synthetic/shared","device":31,"inode":33,
+                              "cpu_millis":1000,"memory_bytes":1024**3,"pids":512},
+                    "capacity":dict(capacity),"max_claims":2}
+        self.executor.accounting_budget = host_budget
+        original_account = self.executor.verify_host_accounting
+        def account(capacity, held, scope):
+            from nodus_dc.partition_execution import HOST_ACCOUNTING
+            verified = original_account(capacity, held, scope)
+            if scope.get("accounting_version") is None or verified is not True: return verified
+            return {"contract":HOST_ACCOUNTING,"host_budget":self.executor.accounting_budget(scope),"memory_current":self.executor.memory_current}
+        self.executor.verify_host_accounting = account
         return dict(task)
 
     def enable_trusted_profile(self):
@@ -130,15 +149,7 @@ class Partitions(unittest.TestCase):
         def prepare(local, resources, *, context):
             self.executor.prepares += 1
             self.assertEqual(resources, context["lease"]["ephemeral"]["charge"]["aggregate"])
-            capacity = self.executor.host_capacity(accounting_version=ephemeral.ACCOUNTING)["capacity"]
-            host = {"version":1,"accounting_version":ephemeral.ACCOUNTING,"boot_id":boot,
-                    "authority_incarnation":context["authority_scope"]["authority_incarnation"],
-                    **{name+"_namespace":os.readlink("/proc/self/ns/"+name) for name in ("pid","user","cgroup")},
-                    "root":{"path":"/sys/fs/cgroup/synthetic","device":31,"inode":32,
-                            "cpu_millis":capacity["cpu_millis"]+1000,"memory_bytes":capacity["memory_bytes"]+1024**3,"pids":2048},
-                    "shared":{"path":"/sys/fs/cgroup/synthetic/shared","device":31,"inode":33,
-                              "cpu_millis":1000,"memory_bytes":1024**3,"pids":512},
-                    "capacity":capacity,"max_claims":2}
+            host = self.executor.accounting_budget(context["authority_scope"])
             return {"contract":PROVIDER,"accounting_version":ephemeral.ACCOUNTING,"enforcement_ready":True,
                     "synthetic":True,"qualified_image":context["qualified_image"],"host_budget":host}
         def check(local, request, *, context):
@@ -195,6 +206,30 @@ class Partitions(unittest.TestCase):
             return held, {"lease":held,"ref":ref,"binding_sha256":state["binding_sha256"]}
         def begin(base, operation, **kw):
             return {**base,"operation":operation,"expected_phase_revision":{"issue":1,"consume":2,"publish":3}[operation],**kw}
+        def headroom(held, check):
+            # Actual serialized offers/Claim/Check; the kernel counter is explicitly synthetic.
+            query={"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
+            offer=call("offers",query)[1]["offers"][0]
+            candidate={**held,"generation":0,"platform_lease_id":"headroom-refusal","offer":offer,"qualified_image":image}
+            before=saved(held)[:2];prepares=self.executor.prepares
+            available=self.executor.host_capacity(accounting_version=ephemeral.ACCOUNTING)["capacity"]["memory_bytes"]
+            aggregate=descriptor["charge"]["aggregate"]["memory_bytes"]
+            try:
+                self.executor.memory_current=available-2*aggregate+1
+                self.assertEqual(call("offers",query)[1]["offers"],[])  # One byte short rounds down; task M alone would fit.
+                self.assertNotEqual(call("claim",candidate)[0],200)
+                self.assertNotEqual(call("offers",{**query,"purpose":"continuation"})[0],200)
+                self.executor.memory_current=available+1024**3
+                self.assertEqual(call("offers",query)[1]["offers"],[])
+                self.assertTrue(call("check",check)[1]["authorized"])
+                self.assertEqual(self.executor.accounting[-1][2]["purpose"],"continuation")
+                self.executor.memory_current=2**64-1
+                self.assertTrue(call("check",check)[1]["authorized"])  # A uint64 observation is not a continuation quota.
+                for invalid in (True,1.0,-1,2**64):
+                    self.executor.memory_current=invalid
+                    self.assertEqual(call("offers",query)[1],{"offers":[],"host_budget":None})
+                self.assertEqual(saved(held)[:2],before);self.assertEqual(self.executor.prepares,prepares)
+            finally: self.executor.memory_current=0
         def retirement(held, ref):
             prepares, contexts = self.executor.prepares, len(self.executor.contexts)
             with patch.object(self.service,"_inventory",side_effect=AssertionError("retirement must not observe inventory")), \
@@ -260,6 +295,7 @@ class Partitions(unittest.TestCase):
                     reservation = db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(claim["lease_id"],)).fetchone()
                     return dict(claim), dict(lease), dict(reservation)
             reader=object.__new__(LinuxPartitionProvider); reader.sha256="7"*64; reader._immutable_hashes={}
+            reader._memory_current=lambda *args:0
             kernel=self.root/"renewal-kernel"; fifo=self.root/"renewal-fifo"
             for parent in (kernel/"nodus-scoped-owners",kernel/"nodus-scoped-host",fifo/"guardians"):
                 parent.mkdir(parents=True)
@@ -333,6 +369,7 @@ class Partitions(unittest.TestCase):
             from nodus_dc.model import digest
             b=consumed["binding"];budget=b["host_budget"];charge=held["ephemeral"]["charge"]
             reader=object.__new__(host.LinuxPartitionProvider);reader.sha256="7"*64;reader.clock=self.clock;reader._immutable_hashes={}
+            reader._memory_current=lambda *args:0
             root=self.root/"original-abort";fifo=root/"fifo";owners=root/"owners";hosts=root/"hosts"
             for parent in (fifo/"guardians",owners,hosts): parent.mkdir(parents=True,mode=0o700)
             config={"host_budget":budget,"namespace":b["image"]["namespace"],"fifo_dir":str(fifo),
@@ -355,7 +392,7 @@ class Partitions(unittest.TestCase):
             with self.assertRaises(Error):
                 reader.verify_host_accounting(budget["capacity"],
                     [{"lease":local,"provider_row":provider,"binding_state":current,"resources":charge["aggregate"]}],
-                    {"accounting_version":ephemeral.ACCOUNTING,"authority_incarnation":budget["authority_incarnation"],"retired":[]})
+                    {"accounting_version":ephemeral.ACCOUNTING,"authority_incarnation":budget["authority_incarnation"],"purpose":"admission","retired":[]})
             directory.rmdir()
             self.assertTrue(call("inspect",held)[1]["held"])
             self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
@@ -462,26 +499,12 @@ class Partitions(unittest.TestCase):
                       "CreatorLock":ident(lock),"SharedBudget":sb,"SharedControls":{k:ident(shared/k) for k in ("cgroup.type","memory.max","memory.swap.max","cpu.max","cpu.max.burst","pids.max","cgroup.freeze")},
                       "SharedLeafPath":str(leaf),"SharedLeaf":ident(leaf),"SharedAncestryCount":2,
                       "SharedAncestrySHA256":hashlib.sha256(json.dumps(vector,separators=(",",":"),ensure_ascii=False).encode()).hexdigest(),"Value":0}
-                hhash=record("host-high-intent.json",high);write(parent/"memory.high","0")
-                self.assertEqual(check("held")[1],high)
-                for key,value in (("DeadlineBootNS",None),("DeadlineBootNS",2**63),("SharedAncestryCount",None),
-                                  ("SharedBudget",{**sb,"memory_bytes":sb["memory_bytes"]+4096}),("Value",1)):
-                    record("host-high-intent.json",{**high,key:value})
-                    with self.assertRaises(Error): check("held")
+                # Old normal high/zero evidence cannot satisfy the new workload-retirement contract.
                 record("host-high-intent.json",high)
-                with self.assertRaises(Error): check("clean")  # No joined outcome, even if parent reaches zero.
-                write(parent/"memory.current","0")
+                with self.assertRaises(Error): check("held")
                 with self.assertRaises(Error): check("clean")
-                for wrong in ({"Version":1,"IntentSHA256":hhash,"WaitStatus":9},
-                              {"Version":1,"IntentSHA256":"f"*64,"WaitStatus":0}):
-                    record("host-high-outcome.json",wrong)
-                    with self.assertRaises(Error): check("clean")
-                outcome={"Version":1,"IntentSHA256":hhash,"WaitStatus":0};record("host-high-outcome.json",outcome)
-                self.assertEqual(check("clean"),(offline,high,outcome))
-                write(leaf/"pids.max","1")
-                with self.assertRaises(Error): check("clean")  # Even tighter changed ancestry cannot replay.
-                write(leaf/"pids.max","max");write(parent/"memory.current","4096")
-                with self.assertRaises(Error): check("clean")
+                (record_dir/"host-high-intent.json").unlink()
+                self.assertEqual(check("held")[0],offline)
                 self.assertTrue(call("inspect",held)[1]["held"])
                 self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
                 return config2,high
@@ -516,26 +539,27 @@ class Partitions(unittest.TestCase):
                     guard={"Version":4,"Executor":2,"Ref":intent["Ref"],"Namespace":config["namespace"],
                            "BootID":budget["boot_id"],"TimeNamespace":intent["TimeNamespace"],"HostScope":intent["HostScope"],
                            "CgroupPath":str(epoch),"Freeze":{"Device":31,"Inode":104},"Kill":{"Device":31,"Inode":105},"ScopeSHA256":lhash}
-                    scope={"Version":3,"Guard":guard,"Plan":plan,"Root":limit_record["Root"],"GroupPath":str(group),
+                    scope={"Version":4,"Guard":guard,"Plan":plan,"Root":limit_record["Root"],"GroupPath":str(group),
                            "GuardianPath":str(guardian),"Group":{"Device":31,"Inode":106},"Freeze":{"Device":31,"Inode":107},
                            "Kill":{"Device":31,"Inode":108},"CreatorLock":ident(lock),"Controls":{},
                            "CreationIntentSHA256":hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest(),
-                           "WorkerPath":str(group/"worker"),"Worker":{"Device":31,"Inode":109},"WorkerControls":{}}
+                           "WorkerPath":str(group/"worker"),"Worker":{"Device":31,"Inode":109},"WorkerControls":{},
+                           "EpochParent":{"Device":31,"Inode":110},"GuardianParent":{"Device":31,"Inode":111}}
                     for index,role in enumerate(("Visible","Stage","Internal")):
                         scope[role]={"Path":topology[role],"Bytes":{"Visible":plan["VisibleBytes"],"Stage":plan["StageBytes"],"Internal":8192}[role],
                                      "Inodes":8 if role=="Internal" else 256,"MountID":3000+index,"Device":"0:"+str(4000+index),
                                      "Identity":{"Device":os.makedev(0,4000+index),"Inode":1}}
                     boundary=[]
-                    class MountFiles(Files):
-                        def protected(self,p,*,directory=False):
-                            if str(p)==str(owner):
-                                boundary.append("after-all-mounts")
-                                raise OSError("synthetic kernel boundary after complete historical mount validation")
-                            return super().protected(p,directory=directory)
-                    with patch.object(host,"Evidence",MountFiles):
+                    def after_mounts(*args):
+                        boundary.append("after-all-mounts")
+                        raise OSError("synthetic boundary after historical mount validation")
+                    with patch.object(reader,"_creation_intent",side_effect=after_mounts):
                         put("host-scope.json",scope)
                         self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
                         self.assertEqual(boundary,["after-all-mounts"]);boundary.clear()
+                        put("host-scope.json",{**scope,"Version":3})
+                        self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                        self.assertEqual(boundary,[]);put("host-scope.json",scope)
                         for name in host.ORIGINAL_HIGH_FILES:
                             put(name,{})
                             self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
@@ -559,6 +583,23 @@ class Partitions(unittest.TestCase):
                             self.assertEqual(boundary,[])
                             self.assertTrue(call("inspect",held)[1]["held"])
                             self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+                    # Complete historical scope4 decoder, including the new captured parents.
+                    owner_keys=("cgroup.type","cpu.max","cpu.max.burst","memory.max","memory.swap.max","memory.oom.group","pids.max","memory.events.local")
+                    host_keys=(*owner_keys,"memory.high","cgroup.subtree_control")
+                    limit_record["Controls"]={k:{"Device":31,"Inode":200+i} for i,k in enumerate(owner_keys)}
+                    guard["ScopeSHA256"]=hashlib.sha256(put("scoped-limits.json",limit_record)).hexdigest()
+                    scope["Guard"]=guard
+                    scope["Controls"]={k:{"Device":31,"Inode":300+i} for i,k in enumerate(host_keys)}
+                    scope["WorkerControls"]={k:{"Device":31,"Inode":400+i} for i,k in enumerate((*host_keys,"cgroup.freeze"))}
+                    put("host-scope.json",scope)
+                    self.assertEqual(reader._record_pair(Files(),config,retired,retired=True)[7],scope)
+                    for role in ("EpochParent","GuardianParent"):
+                        for value in (None,{"Device":31,"Inode":0},limit_record["Owner"],scope["Worker"],scope["Controls"]["memory.max"],
+                                      {"Device":31,"Inode":budget["root"]["inode"]}):
+                            put("host-scope.json",{**scope,role:value})
+                            with self.assertRaises((Error,OSError)):reader._record_pair(Files(),config,retired,retired=True)
+                    self.assertTrue(call("inspect",held)[1]["held"])
+                    self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
                 finally:
                     for name in ("host-scope.json","scoped-limits.json"):
                         (directory/name).unlink(missing_ok=True)
@@ -754,6 +795,101 @@ class Partitions(unittest.TestCase):
                     drain_records(present,partial,shared_config,shared_high)
             finally:
                 self.executor.verify_clean=old_clean;self.executor.verify_host_accounting=old_account;self.executor.verify_reservation=old_verify
+        def workload_retirement(held,base,consumed):
+            # Actual protected records, lock, HTTP/SQLite and released-history routing.
+            # Historical scope/kernel/daemon evidence is explicitly synthetic.
+            import hashlib
+            from nodus_dc import partition_host as host
+            self.assertTrue(call("reclaim",held)[1]["retired"]);state=saved(held)[0]
+            root=self.root/"workload-closure";fifo=root/"fifo";key=base["ref"]["attempt_id"]
+            directory=fifo/"guardians"/key;owner=root/"nodus-scoped-owners"/key;parent=root/"nodus-scoped-host"/key
+            for p in (directory,owner.parent,parent.parent,directory/"host",*(directory/"host"/k for k in ("visible","stage","internal"))):
+                p.mkdir(parents=True,mode=0o700,exist_ok=True)
+            lock=directory/"bootstrap.lock";lock.touch(mode=0o600)
+            budget=copy.deepcopy(state["binding"]["host_budget"]);budget["root"]["path"]=str(root)
+            config={"host_budget":budget,"fifo_dir":str(fifo)}
+            epoch=owner/"nodus-epochs"/key;guardian=owner/"nodus-guardians"/key
+            groups={k:{"Device":31,"Inode":100+i} for i,k in enumerate(("Owner","EpochParent","Epoch","GuardianParent","Guardian","Host","Worker"))}
+            scope={"Version":4,"CreationIntentSHA256":"a"*64,"Group":groups["Host"],"Worker":groups["Worker"],
+                   "WorkerPath":str(parent/"worker"),"EpochParent":groups["EpochParent"],"GuardianParent":groups["GuardianParent"],
+                   "CreatorLock":host.identity(lock.stat())}
+            for i,title in enumerate(("Visible","Stage","Internal")):
+                scope[title]={"Path":str(directory/"host"/title.lower()),"MountID":200+i,"Device":"0:"+str(300+i)}
+            shash=state["host_scope_sha256"] or "b"*64
+            guard={"Version":5,"Ref":{"AttemptID":base["ref"]["attempt_id"],"Epoch":1},"HostSHA256":shash}
+            limits={k:groups[k] for k in ("Owner","Epoch","Guardian")}
+            records=(directory,owner,epoch,guardian,parent,guard,limits,scope,shash)
+            def put(name,value):
+                raw=json.dumps(value,separators=(",",":")).encode();p=directory/name;p.write_bytes(raw);p.chmod(0o600)
+                return hashlib.sha256(raw).hexdigest()
+            for name,value in (("creation-intent.json",{}),("scoped-limits.json",limits),("host-scope.json",scope),
+                    ("intent.json",guard),("revoked.json",guard),("owner-empty.json",guard),("removed.json",guard),
+                    ("guardian.json",{"Guard":guard,"Group":limits["Guardian"]}),("retired.json",{"Guard":guard,"Group":limits["Guardian"]})):
+                put(name,value)
+            for title in ("Visible","Stage","Internal"):put("host-unmount-"+title.lower()+".json",scope[title])
+            worker={"Version":1,"Guard":guard,"ScopeSHA256":shash,"CreationIntentSHA256":"a"*64,
+                    "ParentPath":str(parent),"Parent":groups["Host"],"WorkerPath":scope["WorkerPath"],"Worker":groups["Worker"],
+                    "CreatorLock":scope["CreatorLock"],"WorkerPopulated":0,"WorkerMemoryCurrent":4096}
+            put("host-worker-offline.json",worker)
+            offline={"Version":1,"Guard":guard,"ScopeSHA256":shash,"CreationIntentSHA256":"a"*64,"CreatorLock":scope["CreatorLock"],
+                     "Groups":{k:{"Identity":v,"Populated":0,"MemoryCurrent":4096} for k,v in groups.items()}}
+            final={"Version":1,"Guard":guard,"ScopeSHA256":shash,"CreationIntentSHA256":"a"*64,"OfflineSHA256":put("workload-offline.json",offline)}
+            def install(value=offline):
+                put("workload-retired.json",{**final,"OfflineSHA256":put("workload-offline.json",value)})
+            reader=object.__new__(host.LinuxPartitionProvider);reader.sha256="7"*64;reader.clock=self.clock;reader._immutable_hashes={}
+            reader._configuration=lambda e,**kw:config;reader._paths=lambda c,r:(key,directory,owner,epoch,guardian,parent)
+            reader._record_pair=lambda *args,**kw:records;reader._metadata=lambda *args:None;reader._memory_current=lambda *args:4096
+            envelope=[True]
+            def current_envelope(e,c):
+                if not envelope[0]:raise host.refused()
+                return budget
+            reader._envelope=current_envelope
+            class Files(host.Evidence):
+                def mounts(self):return []
+            counter=root/"memory.current";counter.touch(mode=0o600)
+            counter_budget={"root":{"path":str(root),"device":root.stat().st_dev}}
+            for raw in ("-1\n","1.0\n","00\n",str(2**64)+"\n"):
+                counter.write_text(raw)
+                with self.assertRaises(Error):host.LinuxPartitionProvider._memory_current(Files(),counter_budget)
+            counter.write_text("4096\n")
+            self.assertEqual(host.LinuxPartitionProvider._memory_current(Files(),counter_budget),4096)
+            original_clean=self.executor.verify_clean;original_account=self.executor.verify_host_accounting
+            def clean(local,request,*,context):
+                if local["id"]!=state["binding"]["local_lease_id"]:return original_clean(local,request,context=context)
+                proof=json.loads(context["provider_row"]["enforcement"]);proof["provider_config_sha256"]=reader.sha256
+                return reader.verify_clean(local,request,context={**context,"provider_row":{**context["provider_row"],"enforcement":json.dumps(proof)}})
+            def account(capacity,rows,context):
+                select=lambda items:[v for v in items if v["lease"]["id"]==state["binding"]["local_lease_id"]]
+                reader.verify_host_accounting(capacity,select(rows),{**context,"retired":select(context["retired"])})
+                return original_account(capacity,rows,context)
+            def held_refusal():
+                self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                self.assertTrue(call("inspect",held)[1]["held"])
+                self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+            self.executor.verify_clean=clean;self.executor.verify_host_accounting=account
+            try:
+                with patch.object(host,"Evidence",Files):
+                    held_refusal()  # owner-empty plus intent is not a final workload proof.
+                    install()
+                    for role in groups:
+                        for field,value in (("MemoryCurrent",True),("MemoryCurrent",1.0),("MemoryCurrent",-1),("MemoryCurrent",2**64),("Populated",1),("Identity",None)):
+                            bad=copy.deepcopy(offline);bad["Groups"][role][field]=value;install(bad);held_refusal()
+                    install();envelope[0]=False;held_refusal();envelope[0]=True
+                    for name in ("host-retired.json","host-high-intent.json","creation-retired.json","workload-offline.json.tmp"):
+                        put(name,{});held_refusal();(directory/name).unlink()
+                    parent.mkdir();held_refusal();parent.rmdir()
+                    (directory/"workload-offline.json").unlink();held_refusal();install()
+                    put("workload-retired.json",{**final,"OfflineSHA256":"f"*64});held_refusal();install()
+                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                    self.assertFalse(call("inspect",held)[1]["held"])
+                    query={"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
+                    self.assertIsNotNone(call("offers",query)[1]["host_budget"])
+                    (directory/"workload-retired.json").unlink();self.assertIsNone(call("offers",query)[1]["host_budget"])
+                    (directory/"workload-offline.json").unlink();self.assertIsNone(call("offers",query)[1]["host_budget"])
+                    install();envelope[0]=False;self.assertIsNone(call("offers",query)[1]["host_budget"])
+                    envelope[0]=True;self.assertIsNotNone(call("offers",query)[1]["host_budget"])
+            finally:self.executor.verify_clean=original_clean;self.executor.verify_host_accounting=original_account
+
         def finish(held):
             prior = saved(held)[0]
             self.assertTrue(call("reclaim",held)[1]["retired"])
@@ -818,6 +954,7 @@ class Partitions(unittest.TestCase):
             self.assertNotEqual(retirement(held,base["ref"])[0],200)
             self.assertEqual(self.service.store.fence.read()["reader_schema"],8)
             self.assertTrue(call("check",held)[1]["authorized"])  # reservation, never creation
+            headroom(held,held)
             status, issued = call("begin",begin(base,"issue")); self.assertEqual(status,200,"creator transition failed")
             a = issued["creation_token"]
             self.assertEqual(issued["state"]["creator"]["pid"],os.getpid())
@@ -839,6 +976,7 @@ r=c.getresponse();r.read();print(r.status);c.close()
             self.assertFalse(call("check",held)[1]["authorized"])
             self.assertFalse(call("check",{**held,"creation_token":a})[1]["authorized"])
             self.assertTrue(call("check",{**held,"creation_token":b})[1]["authorized"])
+            headroom(held,{**held,"creation_token":b})
             state, _, dump = saved(held)
             self.assertEqual(state["phase"],"creation-consumed")
             self.assertTrue(a not in "\n".join(dump) and b not in "\n".join(dump),"plaintext capability persisted")
@@ -848,12 +986,17 @@ r=c.getresponse();r.read();print(r.status);c.close()
             status, published = call("begin",publish); self.assertEqual(status,200,"creator transition failed")
             self.assertTrue(published["creation_token"] == "","publish returned a creation capability")
             self.assertTrue(call("check",held)[1]["authorized"])
+            headroom(held,{**held,"published_ref":base["ref"]})
             self.assertFalse(call("check",{**held,"creation_token":b})[1]["authorized"])
             self.assertNotEqual(call("begin",publish)[0],200)
             published_renewal(held,base)
             self.executor.published = False
             self.assertFalse(call("check",held)[1]["authorized"])
             finish(held)
+            held,base=acquire("workload-retirement")
+            status,issued=call("begin",begin(base,"issue"));self.assertEqual(status,200)
+            status,consumed=call("begin",begin(base,"consume",creation_token=issued["creation_token"]));self.assertEqual(status,200)
+            workload_retirement(held,base,consumed["state"])
             # A committed transition followed by transport loss must not return its token on replay.
             for phase in ("committed","creation-issued","creation-consumed","host-published"):
                 held, base = acquire("lost-"+phase)

@@ -255,7 +255,7 @@ class PartitionAuthority:
             for row in db.execute("SELECT parent_uuid FROM partition_configurations WHERE state='committed'").fetchall():
                 self.quarantine(db,row["parent_uuid"],reason)
 
-    def _host_account(self, db, ignore=None, accounting_version=None, renewal_target=None):
+    def _host_account(self, db, ignore=None, accounting_version=None, renewal_target=None, *, continuation=False):
         if self.executor is None:
             raise Error("partition_executor_unqualified", "no qualified partition executor is installed", 503)
         from . import ephemeral
@@ -273,6 +273,7 @@ class PartitionAuthority:
         local_reserved = {key: 0 for key in capacity}
         held = []
         from .partition_binding import split_reservation
+        from . import partition_execution as execution
         from .partition_execution import PROVIDER, renewal_matches
         targets = 0
         if renewal_target is not None and (ignore is not None or accounting_version != ephemeral.ACCOUNTING):
@@ -316,6 +317,8 @@ class PartitionAuthority:
             "SELECT parent_uuid,generation,boot_id,state FROM partition_configurations ORDER BY parent_uuid")]}
         if accounting_version is not None:
             scope["accounting_version"] = accounting_version
+            # This purpose comes only from the authority call site, never the request body.
+            scope["purpose"] = "continuation" if continuation else "admission"
             if renewal_target is not None: scope["renewal_target"] = copy.deepcopy(renewal_target)
             # Exact released tombstones remain in the same rows; they consume no A twice.
             # Bound history rather than accepting a truncated runtime-owner inventory.
@@ -328,17 +331,42 @@ class PartitionAuthority:
                 provider, state = split_reservation(row,local)
                 if json.loads(provider["enforcement"]).get("contract") == PROVIDER:
                     scope["retired"].append({"lease":local,"provider_row":provider,"binding_state":state})
-        if verify(copy.deepcopy(capacity), copy.deepcopy(held), scope) is not True:
+        observed = verify(copy.deepcopy(capacity), copy.deepcopy(held), scope)
+        if accounting_version is None and observed is not True:
             raise Error("host_resources_unaccounted", "complete enforced host accounting is unavailable", 409)
         if any(value < 0 for value in available.values()):
             raise Error("host_resources_unaccounted", "retained host reservations exceed enforced capacity", 409)
+        if accounting_version is not None:
+            fields(observed,"contract host_budget memory_current")
+            if observed["contract"] != execution.HOST_ACCOUNTING:
+                raise Error("host_resources_unaccounted", "versioned host headroom is unavailable", 409)
+            value=observed["host_budget"]
+            if not isinstance(value,dict): raise execution._denied()
+            b=execution.host_budget(value,{"offer":{"partition":{"boot_id":value.get("boot_id"),
+                "authority_incarnation":scope["authority_incarnation"]}}})
+            if b["capacity"]!=capacity or len(held)>b["max_claims"]: raise execution._denied()
+            for item in held:
+                provider=item.get("provider_row")
+                if provider is not None and json.loads(provider["enforcement"])["host_budget"]!=b:
+                    raise execution._denied()
+            current=observed["memory_current"]
+            if type(current) is not int or not 0<=current<2**64: raise execution._denied()
+            charged=b["shared"]["memory_bytes"]+sum(item["resources"]["memory_bytes"] for item in held)
+            if charged>=2**64: raise execution._denied()
+            if not continuation:
+                if charged+current>=2**64: raise execution._denied()
+                # Count current usage AND complete live reservations; no physical-free promise.
+                headroom=max(0,b["root"]["memory_bytes"]-charged-current)//4096*4096
+                available["memory_bytes"]=min(available["memory_bytes"],headroom)
+                if len(held)>=b["max_claims"]:
+                    available={key:0 for key in available}
         available["scratch_bytes"] = min(available["scratch_bytes"], available["memory_bytes"])
         account = {"capacity": capacity, "local_reserved": local_reserved, "available": available}
         if accounting_version is not None: account["accounting_version"] = accounting_version
         return account
 
-    def _capacity(self, db, ignore=None, accounting_version=None, renewal_target=None):
-        return self._host_account(db, ignore, accounting_version, renewal_target)["available"]
+    def _capacity(self, db, ignore=None, accounting_version=None, renewal_target=None, *, continuation=False):
+        return self._host_account(db, ignore, accounting_version, renewal_target, continuation=continuation)["available"]
 
     def reserve_local(self, db, lease, resources):
         resources = budget(resources)
@@ -583,7 +611,7 @@ class PartitionAuthority:
                     provider, state = split_reservation(reservation, lease)
                     execution.qualified_proof(json.loads(provider["enforcement"]), request)
                     target = execution.renewal_target(state, request, published_ref)
-                capacity=self._capacity(db, accounting_version=ephemeral.ACCOUNTING if profile else None, renewal_target=target)
+                capacity=self._capacity(db, accounting_version=ephemeral.ACCOUNTING if profile else None, renewal_target=target, continuation=True)
                 matching=matching and all(v>=0 for v in capacity.values())
                 matching=matching and request["resources"]==request["offer"]["capacity"] and self._shape(
                     policy,request["offer"]["accelerator"],request["offer"]["profile"],
