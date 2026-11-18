@@ -205,7 +205,7 @@ class LinuxPartitionProvider:
             if artifacts and e.file_hash(name) != config["runtime_identity"][key]: raise refused()
         qualification, qhash = e.record(config["qualification_path"])
         fields(qualification,"version retirement_contract runtime_identity creator_sha256 devices artifacts")
-        if (type(qualification["version"]) is not int or qualification["version"] != 1 or qualification["retirement_contract"] != "scoped-host-workload-retirement.v3"
+        if (type(qualification["version"]) is not int or qualification["version"] != 1 or qualification["retirement_contract"] != "scoped-host-workload-retirement.v4"
                 or qhash != config["runtime_identity"]["qualification_sha256"]
                 or qualification["creator_sha256"] != config["creator_sha256"]
                 or qualification["devices"] != config["devices"]
@@ -925,8 +925,8 @@ class LinuxPartitionProvider:
             topology=intent["Topology"];limits=intent["Limits"];plan=intent["Plan"]
             fields(retired,"Version IntentSHA256 Ref BindingSHA256 LocalLeaseID Creator IssueSHA256 StartSHA256 RetiredRevision QualificationSHA256 ProofContract Cgroups Mounts OwnedDirectories Drain")
             common={k:intent[k] for k in ("Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
-            common.update(Version=3,IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v3")
-            if any(retired[k]!=v for k,v in common.items()): raise refused()
+            common.update(Version=4,IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-workload-abort.v4")
+            if any(retired[k]!=v for k,v in common.items()) or retired["Drain"] is not None: raise refused()
             groups=retired["Cgroups"];mounts=retired["Mounts"];dirs=retired["OwnedDirectories"]
             fields(groups,"Owner EpochParent Epoch GuardianParent Guardian Host Worker")
             fields(mounts,"Visible Stage Internal");fields(dirs,"Host Visible Stage Internal")
@@ -937,7 +937,8 @@ class LinuxPartitionProvider:
                 ident=value["Identity"]
                 if ident["Device"]!=b["root"]["device"] or ident["Inode"] in seen or ident["Inode"] in {b["root"]["inode"],b["shared"]["inode"]}: raise refused()
                 seen.add(ident["Inode"])
-                if value["Populated"]!=0 or value["MemoryCurrent"]!=0: raise refused()
+                number(value["Populated"],maximum=0,minimum=0)
+                number(value["MemoryCurrent"],minimum=0)
             for child,parent in (("EpochParent","Owner"),("Epoch","EpochParent"),("GuardianParent","Owner"),("Guardian","GuardianParent"),("Worker","Host")):
                 if groups[child] is not None and groups[parent] is None: raise refused()
             directory_inodes={directory_id["Inode"],identity(lock_info)["Inode"]}
@@ -964,23 +965,16 @@ class LinuxPartitionProvider:
                     if groups[role] is None or value[role]!=groups[role]["Identity"]: raise refused()
                 controls=value["Controls"]
                 fields(controls,"cgroup.type cpu.max cpu.max.burst memory.max memory.swap.max memory.oom.group pids.max memory.events.local")
+                control_ids={v["Identity"]["Inode"] for v in groups.values() if v is not None}|{b["root"]["inode"],b["shared"]["inode"]}
                 for v in controls.values():
                     file_identity(v)
-                    if v["Device"]!=b["root"]["device"]: raise refused()
-            drain=self._creation_drain(e,c,directory,intent,ihash,retired)
-            if drain is not None and partial is not None:
-                for role,target in drain[0][0]["Targets"].items():
-                    if target is None: continue
-                    controls=target["Controls"]
-                    for name,ident in partial[0]["Controls"].items():
-                        if target["Identity"]==ident: raise refused()
-                        if role=="Owner" and name in controls and controls[name]["Identity"]!=ident: raise refused()
-                        if any(v["Identity"]==ident for key,v in controls.items() if role!="Owner" or key!=name): raise refused()
-            # Only the joined fixed cleanup child is permitted; later execution cannot be downgraded.
+                    if v["Device"]!=b["root"]["device"] or v["Inode"] in control_ids: raise refused()
+                    control_ids.add(v["Inode"])
+            # No high helper or normal execution evidence can become original workload retirement.
             forbidden={"host-scope.json","metadata-intent.json","intent.json","guardian.json","revoked.json","expired.json",
                        "removed.json","owner-empty.json","host-retired.json","retired.json","control"}
             for _ in range(2):
-                if e.names(directory)-{"creation-intent.json","creation-retired.json","bootstrap.lock","scoped-limits.json",*ORIGINAL_HIGH_FILES[:2]}: raise refused()
+                if e.names(directory)-{"creation-intent.json","creation-retired.json","bootstrap.lock","scoped-limits.json"}: raise refused()
                 if any(os.path.lexists(directory/name) for name in forbidden): raise refused()
                 if any(os.path.lexists(value) for role,value in topology.items() if role!="GuardDirectory"): raise refused()
                 current=e.mounts()
@@ -991,7 +985,6 @@ class LinuxPartitionProvider:
                 if identity(e.protected(directory,directory=True))!=directory_id or identity(e.protected(lock_path))!=identity(lock_info): raise refused()
                 if record("creation-intent.json")!=(intent,ihash,iid) or record("creation-retired.json")!=(retired,rhash,rid): raise refused()
                 if (record("scoped-limits.json") if os.path.lexists(directory/"scoped-limits.json") else None)!=partial: raise refused()
-                if self._creation_drain(e,c,directory,intent,ihash,retired)!=drain: raise refused()
             return ihash
         except Error as exc:
             # Shared field validators inspect protected records here, not a client request.
@@ -1131,4 +1124,4 @@ class LinuxPartitionProvider:
                 clean=True
         return CleanupProof(clean,self.clock(),local["id"],local["generation"],tuple(local["resources"]),
                             {"provider_config_sha256":self.sha256,"workload_retirement_verified":clean,
-                             "retirement_contract":"scoped-host-workload-retirement.v3"})
+                             "retirement_contract":"scoped-host-workload-retirement.v4"})

@@ -19,7 +19,7 @@ root-owned regular JSON file with protected ancestry. Its strict fields are:
   `qualification_path`.
 
 The qualification record has exact fields `version:1`,
-`retirement_contract:"scoped-host-workload-retirement.v3"`, `runtime_identity`
+`retirement_contract:"scoped-host-workload-retirement.v4"`, `runtime_identity`
 (excluding its own qualification digest), `creator_sha256`, `devices` and
 `artifacts`. Its raw file hash equals `runtime_identity.qualification_sha256`.
 Artifacts are at most128 unique `{path,sha256}` entries covering every CDI mount
@@ -158,52 +158,47 @@ registration remains absent.
 
 Only a retired consumed revision4 can use `creation-intent.json` and
 `creation-retired.json` in its existing guard directory. The intent remains strict
-version2; the final record requires version3 / `scoped-host-original-abort.v3`
-and the explicit nullable `Drain` field. Original proof2 is refused, not upgraded.
+version2; the final record requires version4 /
+`scoped-host-original-workload-abort.v4` and explicit `Drain: null`. Older original
+proofs are refused, not relabeled or upgraded. The shared qualification remains
+version1 with `retirement_contract: "scoped-host-workload-retirement.v4"`; normal
+scope4 and its workload-offline/workload-retired version1 pair are unchanged.
+
 The qualified node binds its handle to the one opaque successful issue invocation
-before consume. The reader does not reconstruct that handle or verify past joins
-from absence: the pinned node record attests the original in-process join and prior
-zero-charge observations. Only the fixed, joined original cleanup child is allowed
-before this proof; it cannot create a guardian, runtime or workload.
-The exact creator executable, qualification, full binding/lease, Creator, issue/start
-hashes, limits, Plan2, shared domain and boot/time namespaces must agree.
+before consume. Its source-qualified proof attests cancellation and join of that
+original creator, exclusion under the epoch/bootstrap locks, identity-checked
+normal offlining and timely publication within the original first cleanup bound.
+The reader cannot reconstruct the handle or infer those historical facts from
+absence. Unknown capture, partial teardown and publication uncertainty retain A.
+The exact creator executable, qualification, full binding/lease, Creator,
+issue/start hashes, limits, Plan2, shared domain and boot/time namespaces agree.
 
-Both records are bounded to 64 KiB, have exact fixed fields and integer forms, and
-bind the retained raw intent digest. Seven original cgroup slots, three mount slots
-and four underlying directory slots are fixed nullable identities. Null means
-the original invocation never created that object and its exact path is now
-absent; it cannot encode an unknown outcome. Present slots require prior empty
-teardown and current absence. Optional pre-pair `scoped-limits.json` must match
-the original slots/plan; complete scope, metadata, guardian or later retirement
-records prohibit the abort proof. Malformed or mixed proofs never fall back to
-normal scope cleanup. Successful v5 publication retains the required original
-intent and validates it with the same strict tuple/codec; it never accepts a
-`creation-retired.json` alongside that full scope.
+Both records are bounded to 64 KiB with exact fixed fields and integer forms.
+Seven cgroup slots, three mount slots and four underlying directory slots retain
+fixed nullable identities. Null means the original invocation never created the
+object and its exact path is now absent; it cannot encode an unknown outcome.
+Present groups require strict integer `Populated: 0` and strict uint64
+`MemoryCurrent` observations, including nonzero values. These counters are
+historical diagnostics, not evidence that memory is physically free or cannot
+receive deferred charges. Existing task/H/owner caps and the retained finite
+Root/Shared envelope remain unchanged; conservative admission below accounts for
+current ancestor usage and complete held reservations.
 
-`Drain: null` forbids `original-high-intent.json`, `original-high-outcome.json`
-and their exact `.json.tmp` files. Nonnull Drain commits both raw file hashes:
-losing either or both files refuses. The closed intent binds the original raw
-creation intent, retained lock, retired revision4 and first cleanup boot interval
-(positive int64, at most 10 seconds), plus at least one fixed Host/Owner target.
-Each selected target joins its exact original path/identity and ten control values,
-including the original finite caps, to a nonnull final populated0/current0 slot.
-Retained Owner controls must also agree with any completed `scoped-limits.json`. Only joined outcome status0
-qualifies; it does not replace actual zero-charge teardown and current absence.
-The existing source-qualified runtime attests the historical child/proxy join and
-timely first proof; the reader cannot derive either from present absence.
+Optional pre-pair `scoped-limits.json` must match the captured groups and plan;
+its eight controls have distinct positive same-allocation-device identities,
+disjoint from every captured group and Root/Shared. Original or normal high
+intent/outcome files, their temporaries, normal scope/metadata/guardian/retirement
+proofs and every unknown guard entry refuse. Nonnull or missing Drain refuses.
+There is no helper to drain charges or alternate proof fallback in this contract.
+Successful v5 publication retains the required original intent but never accepts
+`creation-retired.json` alongside the full scope. Root and Shared remain present
+and unchanged through authority and released-history replay. Test infrastructure
+may be disposed only after final checks, without reusing that authority state.
 
-The exact Shared leaf and ordered 2..128-node ancestry remain present and unchanged
-through every authority/tombstone replay. Existing canonical `max` descendants
-remain bounded by the finite Shared root. Missing/replaced ancestry or changed
-control identities/values refuse, even after Complete. Test-host disposal may
-remove Shared only after final checks and without reusing that authority state.
-Both sidecars use the existing 64 KiB / 512-node protected record parser with
-closed fields, duplicate/type/integer rejection and repeated raw-hash/inode reads.
-OSS does not impose a new JSON field-order or whitespace encoding; the qualified
-Go writer is canonical and the exact retained raw bytes are hash-bound. Normal
-scope4 uses qualification version1 / `scoped-host-workload-retirement.v3`;
-original intent2/retired3 remains the strict-zero contract. Exact new
-node/reader/source/artifact identities must be qualified together. Normal v5 cleanup refuses all original drain files and temporaries.
+The reader preserves the existing duplicate/type/integer parser and repeated raw
+hash/inode checks. It does not add a JSON text-order or whitespace rule; the Go
+writer remains canonical and its exact raw bytes are bound. New source, node,
+reader and artifact identities must be qualified together.
 
 Under the retained protected bootstrap lock, the reader checks exact record and
 directory identities twice, original topology absence and the absence of recorded
@@ -239,10 +234,10 @@ Scope version4 retains the finite H parent and one exact `worker` child, and
 captures EpochParent and GuardianParent identities before publication. Plan2 and
 M/S/T/O/A are unchanged. Older normal scope/terminal records are refused, never
 upgraded. The existing qualification file now requires
-`scoped-host-workload-retirement.v3`. Scope4 commits the raw creation-intent2
-hash and all seven group identities on the allocation device. Original abort3
-remains separate: every present pre-pair slot still requires recorded zero charge
-and current absence.
+`scoped-host-workload-retirement.v4`. Scope4 commits the raw creation-intent2
+hash and all seven group identities on the allocation device. Original workload
+abort4 remains separate: present pre-pair slots require zero population and
+current absence, while their recorded memory observations may be nonzero.
 
 Active checks require empty direct H-parent membership, exactly one worker
 without descendants, finite parent H/group-OOM1 and worker max/group-OOM0.

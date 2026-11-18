@@ -429,7 +429,7 @@ class Partitions(unittest.TestCase):
                     "TimeNamespace":os.readlink("/proc/self/ns/time"),"Shared":{"Path":budget["shared"]["path"],"Device":budget["shared"]["device"],"Inode":budget["shared"]["inode"]},
                     "SharedBudget":budget["shared"],"Limits":limits,"Plan":plan,"DeadlineBootNS":1,"Directory":ident(directory),"BootstrapLock":ident(lock),"Topology":topology}
             proof={k:copy.deepcopy(intent[k]) for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
-            proof.update(Version=3,IntentSHA256="",RetiredRevision=4,ProofContract="scoped-host-original-abort.v3",Drain=None,
+            proof.update(Version=4,IntentSHA256="",RetiredRevision=4,ProofContract="scoped-host-original-workload-abort.v4",Drain=None,
                          Cgroups=dict.fromkeys(("Owner","EpochParent","Epoch","GuardianParent","Guardian","Host","Worker")),
                          Mounts=dict.fromkeys(("Visible","Stage","Internal")),OwnedDirectories=dict.fromkeys(("Host","Visible","Stage","Internal")))
             def put(name,value):
@@ -617,109 +617,66 @@ class Partitions(unittest.TestCase):
                     for name in ("host-scope.json","scoped-limits.json"):
                         (directory/name).unlink(missing_ok=True)
                     install()
-            def drain_records(present,partial,shared_config,shared_high):
-                # Real protected pair/Complete/census; the existing file-backed Shared fixture maps synthetic host paths.
-                high={"Version":1,"CreationIntentSHA256":hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest(),
-                      "RetiredRevision":4,"RetirementStartedBootNS":1,"DeadlineBootNS":10_000_000_001,
-                      "CreatorLock":ident(lock),"Targets":{},"SharedBudget":budget["shared"],"Value":0,
-                      **{k:copy.deepcopy(shared_high[k]) for k in ("SharedControls","SharedLeafPath","SharedLeaf","SharedAncestryCount","SharedAncestrySHA256")}}
-                for i,role in enumerate(("Host","Owner")):
-                    memory=limits["HostScratchBytes"] if role=="Host" else task["memory_bytes"]+limits["OwnerOverheadBytes"]
-                    cpu=25000 if role=="Host" else (task["cpu_millis"]+limits["OwnerOverheadCPUMillis"])*100
-                    values={"cgroup.type":"domain","cgroup.freeze":"0","cgroup.subtree_control":"cpu memory pids",
-                            "memory.max":str(memory),"memory.swap.max":"0","memory.oom.group":"1","memory.high":"max",
-                            "pids.max":"64" if role=="Host" else "512","cpu.max":f"{cpu} 100000","cpu.max.burst":"0"}
-                    high["Targets"][role]={"Path":topology[role],"Identity":present["Cgroups"][role]["Identity"],
-                        "Controls":{k:{"Identity":{"Device":budget["root"]["device"],"Inode":6000+i*10+j},"Value":v} for j,(k,v) in enumerate(values.items())}}
-                for name,control in high["Targets"]["Owner"]["Controls"].items():
-                    if name in partial["Controls"]: control["Identity"]=copy.deepcopy(partial["Controls"][name])
-                outcome={"Version":1,"IntentSHA256":"","WaitStatus":0}
-                def install_drain(h=high,o=outcome,z=present):
-                    a=hashlib.sha256(put(host.ORIGINAL_HIGH_FILES[0],h)).hexdigest()
-                    result=copy.deepcopy(o);result["IntentSHA256"]=a
-                    b=hashlib.sha256(put(host.ORIGINAL_HIGH_FILES[1],result)).hexdigest()
-                    value=copy.deepcopy(z);value["Drain"]={"IntentSHA256":a,"OutcomeSHA256":b};install(z=value)
-                def ancestry(e,c,value):
-                    self.assertEqual(c,config);self.assertEqual(value["SharedBudget"],budget["shared"])
-                    return host.LinuxPartitionProvider._shared_ancestry(reader,e,shared_config,
-                        {**value,"SharedBudget":shared_config["host_budget"]["shared"]})
+            def workload_abort_records(present,partial):
+                # Actual record/HTTP/SQLite boundary; historical counters and live envelope remain synthetic.
+                query={"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
                 def refused_held():
                     status,response=call("complete",{"lease":held,"cleanup_verified":True})
                     self.assertEqual(status,503,response)
                     self.assertEqual(response["error"]["code"],"host_resources_unenforced")
-                    self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}),
-                                     (200,{"offers":[],"host_budget":None}))
+                    self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
                     self.assertTrue(call("inspect",held)[1]["held"])
                     self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
-                with patch.object(reader,"_shared_ancestry",ancestry):
-                    install_drain()
-                    self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])
-                    self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])
-                    self.assertTrue(call("inspect",held)[1]["held"])
-                    status,response=call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING,"unknown":True})
-                    self.assertEqual(status,400,response);self.assertEqual(response["error"]["code"],"invalid_request")
-                    unrelated=Error("partition_execution_denied","synthetic unrelated verifier failure",403)
-                    with patch.object(reader,"_creation_drain",side_effect=unrelated):
-                        self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}),
-                                         (unrelated.status,unrelated.as_dict()))
-                    for role in ("Host","Owner"):
-                        only=copy.deepcopy(high);only["Targets"][role]=None;install_drain(only)
-                        self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])
-                    for key,value in (("Version",2),("RetiredRevision",5),("CreationIntentSHA256","f"*64),
-                                      ("RetirementStartedBootNS",0),("DeadlineBootNS",1),("DeadlineBootNS",10_000_000_002),
-                                      ("DeadlineBootNS",2**63),("Value",1),("SharedAncestryCount",1),
-                                      ("SharedAncestrySHA256","f"*64),("Targets",{"Host":None,"Owner":None})):
-                        install_drain({**high,key:value});refused_held()
-                    for key,value in (("Path",topology["Owner"]),("Identity",present["Cgroups"]["Worker"]["Identity"]),
-                                      ("Controls",{})):
-                        bad=copy.deepcopy(high);bad["Targets"]["Host"][key]=value;install_drain(bad);refused_held()
-                    for key,value in (("Value","0"),("Identity",{"Device":0,"Inode":6000}),
-                                      ("Identity",present["Cgroups"]["Host"]["Identity"]),
-                                      ("Identity",high["Targets"]["Owner"]["Controls"]["memory.high"]["Identity"])):
-                        bad=copy.deepcopy(high);bad["Targets"]["Host"]["Controls"]["memory.high"][key]=value
-                        install_drain(bad);refused_held()
-                    for status in (9,2**32): install_drain(o={**outcome,"WaitStatus":status});refused_held()
-                    bad=copy.deepcopy(high);bad["Targets"]["Owner"]["Controls"]["memory.max"]["Identity"]["Inode"]=7000
-                    install_drain(bad);refused_held()  # The same captured Owner file cannot change identity across records.
-                    for role,name,null_owner in (("Host","memory.events.local",False),
-                                                 ("Host","memory.max",True),("Owner","memory.events.local",False)):
-                        bad=copy.deepcopy(high)
-                        if null_owner: bad["Targets"]["Owner"]=None
-                        bad["Targets"][role]["Controls"]["memory.high"]["Identity"]=copy.deepcopy(partial["Controls"][name])
-                        install_drain(bad);refused_held()  # Distinct objects cannot alias even when Owner was not selected.
-                    for inode in (partial["Controls"]["memory.events.local"]["Inode"],
-                                  high["SharedLeaf"]["Inode"],high["SharedControls"]["memory.max"]["Inode"]):
-                        bad=copy.deepcopy(high);prior=copy.deepcopy(present)
-                        alias_identity={"Device":budget["root"]["device"],"Inode":inode}
-                        bad["Targets"]["Host"]["Identity"]=alias_identity;prior["Cgroups"]["Host"]["Identity"]=alias_identity
-                        install_drain(bad,z=prior);refused_held()  # A matching final slot cannot alias a retained control or Shared object.
-                    for role in ("Host","Owner"):
-                        bad=copy.deepcopy(present);bad["Cgroups"][role]["MemoryCurrent"]=4096
-                        install_drain(z=bad);refused_held()
-                    for names in (host.ORIGINAL_HIGH_FILES[:1],host.ORIGINAL_HIGH_FILES[1:2],host.ORIGINAL_HIGH_FILES[:2]):
-                        install_drain()
-                        for name in names: (directory/name).unlink()
-                        refused_held()  # Losing both sidecars cannot become the no-drain path.
-                    for name in host.ORIGINAL_HIGH_FILES[2:]:
-                        install_drain();put(name,{});refused_held();(directory/name).unlink()
-                    install_drain();install(z=present);refused_held()  # Null Drain with sidecars refuses.
-                    install_drain();bad=json.loads((directory/"creation-retired.json").read_text());bad["Drain"]["OutcomeSHA256"]="f"*64
-                    put("creation-retired.json",bad);refused_held()
-                    leaf=Path(high["SharedLeafPath"])
-                    install_drain();leaf.rename(leaf.with_name("replacement"));refused_held();leaf.with_name("replacement").rename(leaf)
-                    # Even tighter changed ancestry is not an interchangeable replay context.
-                    (leaf/"pids.max").write_text("1");refused_held();(leaf/"pids.max").write_text("max")
-                    install_drain()
-                    self.assertIsNotNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
-                    self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
-                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
-                    self.assertFalse(call("inspect",held)[1]["held"])
-                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
-                    self.assertFalse(call("check",held)[1]["authorized"])
-                    self.assertIsNotNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
-                    (directory/host.ORIGINAL_HIGH_FILES[1]).unlink()
-                    self.assertIsNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
-                    install_drain()
+                observed=copy.deepcopy(present)
+                for index,value in enumerate(observed["Cgroups"].values()): value["MemoryCurrent"]=4096*(index+1)
+                install(z=observed)
+                ihash=hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest()
+                self.assertEqual(reader._creation_retired(Files(),config,retired),ihash)
+                self.assertEqual(reader._creation_retired(Files(),config,retired),ihash)
+                status,response=call("offers",{**query,"unknown":True})
+                self.assertEqual(status,400,response);self.assertEqual(response["error"]["code"],"invalid_request")
+                unrelated=Error("partition_execution_denied","synthetic unrelated verifier failure",403)
+                with patch.object(reader,"_creation_intent",side_effect=unrelated):
+                    self.assertEqual(call("offers",query),(unrelated.status,unrelated.as_dict()))
+                for key,value in (("Version",3),("ProofContract","scoped-host-original-abort.v3"),
+                                  ("Drain",{}),("Drain",{"IntentSHA256":"a"*64,"OutcomeSHA256":"b"*64}),
+                                  ("Cgroups",{})):
+                    install(z={**observed,key:value});refused_held()
+                missing=copy.deepcopy(observed);del missing["Drain"];install(z=missing);refused_held()
+                for role in observed["Cgroups"]:
+                    for key,values in (("Populated",(True,0.0,-1,1,2**32)),("MemoryCurrent",(True,1.0,-1,2**64))):
+                        for value in values:
+                            bad=copy.deepcopy(observed);bad["Cgroups"][role][key]=value;install(z=bad);refused_held()
+                    for value in (0,2**64-1):
+                        good=copy.deepcopy(observed);good["Cgroups"][role]["MemoryCurrent"]=value;install(z=good)
+                        self.assertEqual(reader._creation_retired(Files(),config,retired),ihash)
+                install(z=observed)
+                for controls in ({},{**partial["Controls"],"memory.max":{}},
+                                 {**partial["Controls"],"memory.max":partial["Controls"]["cpu.max"]},
+                                 {**partial["Controls"],"memory.max":observed["Cgroups"]["Host"]["Identity"]},
+                                 {**partial["Controls"],"memory.max":{"Device":budget["root"]["device"],"Inode":budget["shared"]["inode"]}}):
+                    put("scoped-limits.json",{**partial,"Controls":controls});refused_held()
+                put("scoped-limits.json",partial)
+                for name in (*host.ORIGINAL_HIGH_FILES,"host-high-intent.json","host-high-outcome.json",
+                             "host-high-intent.json.tmp","host-high-outcome.json.tmp","host-scope.json","host-retired.json",
+                             "workload-offline.json","workload-retired.json","metadata-intent.json","owner-empty.json",
+                             "creation-intent.json.tmp","creation-retired.json.tmp","scoped-limits.json.tmp"):
+                    put(name,{});refused_held();(directory/name).unlink()
+                with patch.object(reader,"_envelope",side_effect=host.refused()): refused_held()
+                self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+                self.assertIsNotNone(call("offers",query)[1]["host_budget"])
+                self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                self.assertFalse(call("inspect",held)[1]["held"])
+                self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                self.assertFalse(call("check",held)[1]["authorized"])
+                self.assertIsNotNone(call("offers",query)[1]["host_budget"])
+                # Released history still requires the same v4 proof and current finite envelope.
+                install(z={**observed,"Version":3})
+                self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                install(z=observed)
+                with patch.object(reader,"_envelope",side_effect=host.refused()):
+                    self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                self.assertIsNotNone(call("offers",query)[1]["host_budget"])
             old_clean=self.executor.verify_clean;old_account=self.executor.verify_host_accounting;old_verify=self.executor.verify_reservation
             def clean(local,request,*,context):
                 p=json.loads(context["provider_row"]["enforcement"]);p["provider_config_sha256"]=reader.sha256
@@ -737,7 +694,7 @@ class Partitions(unittest.TestCase):
                     self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
                     self.assertTrue(call("inspect",held)[1]["held"])
                     install()
-                    shared_config,shared_high=worker_records()
+                    worker_records()
                     consumed_clean_guards()
                     for which,key,value in (("intent","DeadlineBootNS",0),("intent","DeadlineBootNS",2**63),
                             ("intent","Version",True),("intent","Version",1),
@@ -798,10 +755,6 @@ class Partitions(unittest.TestCase):
                              "Controls":{k:{"Device":budget["root"]["device"],"Inode":5000+i} for i,k in enumerate(("cgroup.type","cpu.max","cpu.max.burst","memory.max","memory.swap.max","memory.oom.group","pids.max","memory.events.local"))}}
                     put("scoped-limits.json",partial)
                     with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,{**retired,"phase_revision":5})
-                    wrong=copy.deepcopy(present);wrong["Cgroups"]["Host"]["MemoryCurrent"]=4096;install(z=wrong)
-                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
-                    wrong=copy.deepcopy(present);wrong["Cgroups"]["Worker"]["MemoryCurrent"]=4096;install(z=wrong)
-                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
                     wrong=copy.deepcopy(present);wrong["Cgroups"]["Host"]=None;install(z=wrong)
                     with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
                     install(z=present)
@@ -814,7 +767,7 @@ class Partitions(unittest.TestCase):
                             return [{"id":m["MountID"],"device":m["Device"],"path":str(root/"moved")}]
                     with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Mounted(),config,retired)
                     self.assertEqual(reader._creation_retired(Files(),config,retired),hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest())
-                    drain_records(present,partial,shared_config,shared_high)
+                    workload_abort_records(present,partial)
             finally:
                 self.executor.verify_clean=old_clean;self.executor.verify_host_accounting=old_account;self.executor.verify_reservation=old_verify
         def workload_retirement(held,base,consumed):
