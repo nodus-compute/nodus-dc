@@ -325,23 +325,41 @@ class Partitions(unittest.TestCase):
                 cleaned[0]=True;self.assertTrue(call("check",request)[1]["authorized"])
             finally:
                 self.executor.verify_reservation=original_verify;self.executor.verify_host_accounting=original_account
-        def original_abort(held, retired):
+        def original_abort(held, consumed):
             # Actual protected files/flock and HTTP/SQLite; historical kernel slots/envelope are synthetic.
             import fcntl
             import hashlib
             from nodus_dc import partition_host as host
             from nodus_dc.model import digest
-            b=retired["binding"];budget=b["host_budget"];charge=held["ephemeral"]["charge"]
+            b=consumed["binding"];budget=b["host_budget"];charge=held["ephemeral"]["charge"]
             reader=object.__new__(host.LinuxPartitionProvider);reader.sha256="7"*64;reader.clock=self.clock;reader._immutable_hashes={}
             root=self.root/"original-abort";fifo=root/"fifo";owners=root/"owners";hosts=root/"hosts"
             for parent in (fifo/"guardians",owners,hosts): parent.mkdir(parents=True,mode=0o700)
             config={"host_budget":budget,"namespace":b["image"]["namespace"],"fifo_dir":str(fifo),
-                    "runtime_identity":b["runtime_identity"],"creator_sha256":retired["creator"]["executable_sha256"]}
+                    "runtime_identity":b["runtime_identity"],"creator_sha256":consumed["creator"]["executable_sha256"]}
             def paths(c,ref):
                 key=host.LinuxPartitionProvider._paths(c,ref)[0];owner=owners/key
                 return key,fifo/"guardians"/key,owner,owner/"nodus-epochs"/key,owner/"nodus-guardians"/key,hosts/key
             reader._paths=paths;reader._configuration=lambda e,**kw:config;reader._envelope=lambda e,c:budget;reader._image=lambda *args:None
             key,directory,owner,epoch,guardian,group=paths(config,b["ref"])
+            # Deterministic verifier→census interleaving: the actual held row is still consumed.
+            with self.service.store.connection() as db:
+                local=Store.lease(db,b["local_lease_id"])
+                row=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(local["id"],)).fetchone()
+                provider,current=split_reservation(row,local)
+            self.assertEqual(current,consumed)
+            proof=json.loads(provider["enforcement"]);proof["provider_config_sha256"]=reader.sha256
+            provider={**provider,"enforcement":json.dumps(proof)}
+            reader._reservation(host.Evidence(),config,local,provider,{"lease":held,"binding_state":current})
+            directory.mkdir(mode=0o700)  # A late first mkdir must not become an accepted per-root shape.
+            with self.assertRaises(Error):
+                reader.verify_host_accounting(budget["capacity"],
+                    [{"lease":local,"provider_row":provider,"binding_state":current,"resources":charge["aggregate"]}],
+                    {"accounting_version":ephemeral.ACCOUNTING,"authority_incarnation":budget["authority_incarnation"],"retired":[]})
+            directory.rmdir()
+            self.assertTrue(call("inspect",held)[1]["held"])
+            self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+            self.assertTrue(call("reclaim",held)[1]["retired"]);retired=saved(held)[0]
             directory.mkdir(mode=0o700);lock=directory/"bootstrap.lock";lock.touch(mode=0o600)
             ident=lambda p:host.identity(p.stat())
             topology={"Owner":str(owner),"EpochParent":str(epoch.parent),"Epoch":str(epoch),"GuardianParent":str(guardian.parent),
@@ -520,8 +538,7 @@ class Partitions(unittest.TestCase):
             held,base=acquire("original-abort")
             status,issued=call("begin",begin(base,"issue"));self.assertEqual(status,200)
             status,consumed=call("begin",begin(base,"consume",creation_token=issued["creation_token"]));self.assertEqual(status,200)
-            self.assertTrue(call("reclaim",held)[1]["retired"])
-            original_abort(held,saved(held)[0])
+            original_abort(held,consumed["state"])
             held, base = acquire("creator-full")
             self.assertNotEqual(retirement(held,base["ref"])[0],200)
             self.assertEqual(self.service.store.fence.read()["reader_schema"],8)

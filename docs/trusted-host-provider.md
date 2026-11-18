@@ -180,7 +180,10 @@ intent and validates it with the same strict tuple/codec; it never accepts a
 Under the retained protected bootstrap lock, the reader checks exact record and
 directory identities twice, original topology absence and the absence of recorded
 mount IDs/devices. Guard directory, lock and proof remain. Their retained name is
-accounted separately from absent owner/H roots; unexpected names still refuse.
+accounted separately from absent owner/H roots only after fresh positive proof;
+unexpected names still refuse. Every other row preserves the all-three-root key
+check, so a late ordinary guard-only/owner-only creation cannot be normalized by
+sampling separate expected root sets after its earlier reservation validation.
 All held C/A/S remains charged until Complete. Complete validates the exact target
 plus root/shared envelope; it does not perform a second all-owner row scan. The
 existing admission/renewal accounting still verifies every held owner and released

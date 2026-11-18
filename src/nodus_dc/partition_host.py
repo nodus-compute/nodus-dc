@@ -799,11 +799,14 @@ class LinuxPartitionProvider:
                 if state["phase"]!="retired": raise refused()
             if state["phase"]=="retired" and self._has_creation_retired(c,state):
                 self._retired_owner(e,c,state)
-            elif item not in retired and self._accounting_sibling(scope,item["lease"]["id"],state):
+                expected[2].add(key)  # Only a verified original abort retains a guard-only name.
+                continue
+            if item not in retired and self._accounting_sibling(scope,item["lease"]["id"],state):
                 self._accounted_owner(e,c,state)
             elif state["phase"]=="retired": self._retired_owner(e,c,state)
-            for index,p in enumerate((owner,host,directory)):
-                if os.path.lexists(p): expected[index].add(key)
+            # Preserve the cross-root check if a creator changed paths after reservation validation.
+            if any(os.path.lexists(p) for p in (owner,host,directory)):
+                for names in expected: names.add(key)
         root=path(b["root"]["path"])
         for directory,wanted in zip((root/"nodus-scoped-owners",root/"nodus-scoped-host",path(c["fifo_dir"])/"guardians"),expected):
             names=e.names(directory,320,dirs=directory != path(c["fifo_dir"])/"guardians") if directory.exists() else set()
