@@ -157,11 +157,14 @@ registration remains absent.
 ## Original-call pre-pair retirement
 
 Only a retired consumed revision4 can use `creation-intent.json` and
-`creation-retired.json`, strict version2 records in its existing guard directory.
+`creation-retired.json` in its existing guard directory. The intent remains strict
+version2; the final record requires version3 / `scoped-host-original-abort.v3`
+and the explicit nullable `Drain` field. Original proof2 is refused, not upgraded.
 The qualified node binds its handle to the one opaque successful issue invocation
 before consume. The reader does not reconstruct that handle or verify past joins
 from absence: the pinned node record attests the original in-process join and prior
-zero-charge observations. No child launch is reachable in this pre-pair proof.
+zero-charge observations. Only the fixed, joined original cleanup child is allowed
+before this proof; it cannot create a guardian, runtime or workload.
 The exact creator executable, qualification, full binding/lease, Creator, issue/start
 hashes, limits, Plan2, shared domain and boot/time namespaces must agree.
 
@@ -176,6 +179,31 @@ records prohibit the abort proof. Malformed or mixed proofs never fall back to
 normal scope cleanup. Successful v5 publication retains the required original
 intent and validates it with the same strict tuple/codec; it never accepts a
 `creation-retired.json` alongside that full scope.
+
+`Drain: null` forbids `original-high-intent.json`, `original-high-outcome.json`
+and their exact `.json.tmp` files. Nonnull Drain commits both raw file hashes:
+losing either or both files refuses. The closed intent binds the original raw
+creation intent, retained lock, retired revision4 and first cleanup boot interval
+(positive int64, at most 10 seconds), plus at least one fixed Host/Owner target.
+Each selected target joins its exact original path/identity and ten control values,
+including the original finite caps, to a nonnull final populated0/current0 slot.
+Retained Owner controls must also agree with any completed `scoped-limits.json`. Only joined outcome status0
+qualifies; it does not replace actual zero-charge teardown and current absence.
+The existing source-qualified runtime attests the historical child/proxy join and
+timely first proof; the reader cannot derive either from present absence.
+
+The exact Shared leaf and ordered 2..128-node ancestry remain present and unchanged
+through every authority/tombstone replay. Existing canonical `max` descendants
+remain bounded by the finite Shared root. Missing/replaced ancestry or changed
+control identities/values refuse, even after Complete. Test-host disposal may
+remove Shared only after final checks and without reusing that authority state.
+Both sidecars use the existing 64 KiB / 512-node protected record parser with
+closed fields, duplicate/type/integer rejection and repeated raw-hash/inode reads.
+OSS does not impose a new JSON field-order or whitespace encoding; the qualified
+Go writer is canonical and the exact retained raw bytes are hash-bound. Normal
+scope3 and qualification version1 / `scoped-host-positive-retirement.v2` stay
+unchanged, but the new node/reader/source/artifact identities must be qualified
+together. Normal v5 cleanup refuses all original drain files and temporaries.
 
 Under the retained protected bootstrap lock, the reader checks exact record and
 directory identities twice, original topology absence and the absence of recorded

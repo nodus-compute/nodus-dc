@@ -24,6 +24,8 @@ from .partition_binding import runtime_identity
 from .partitions import fields, sha
 
 MIB = 1024**2
+ORIGINAL_HIGH_FILES = ("original-high-intent.json", "original-high-outcome.json",
+                       "original-high-intent.json.tmp", "original-high-outcome.json.tmp")
 
 
 def refused():
@@ -373,7 +375,7 @@ class LinuxPartitionProvider:
     def _record_pair(self,e,c,state):
         binding=state["binding"]; lease=binding["lease"]; ch=lease["ephemeral"]["charge"]
         key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
-        if os.path.lexists(directory/"creation-retired.json"): raise refused()
+        if any(os.path.lexists(directory/name) for name in ("creation-retired.json",*ORIGINAL_HIGH_FILES)): raise refused()
         if e.protected(directory,directory=True).st_mode & 0o077: raise refused()
         scope,shash,_=self._creation_record(e,directory,"host-scope.json",32768)
         fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls CreationIntentSHA256 WorkerPath Worker WorkerControls Visible Stage Internal")
@@ -805,6 +807,56 @@ class LinuxPartitionProvider:
         if self._creation_record(e,directory,"creation-intent.json")!=result: raise refused()
         return result
 
+    def _creation_drain(self,e,c,directory,intent,ihash,retired):
+        """Join optional original-only cleanup; neither its outcome nor absence grants execution."""
+        drain=retired["Drain"]
+        if drain is None:
+            if any(os.path.lexists(directory/name) for name in ORIGINAL_HIGH_FILES): raise refused()
+            return None
+        fields(drain,"IntentSHA256 OutcomeSHA256")
+        for value in drain.values(): sha(value)
+        if any(os.path.lexists(directory/name) for name in ORIGINAL_HIGH_FILES[2:]): raise refused()
+        high_record=self._creation_record(e,directory,ORIGINAL_HIGH_FILES[0])
+        outcome_record=self._creation_record(e,directory,ORIGINAL_HIGH_FILES[1])
+        high,hhash,_=high_record;outcome,ohash,_=outcome_record
+        if hhash!=drain["IntentSHA256"] or ohash!=drain["OutcomeSHA256"]: raise refused()
+        fields(high,"Version CreationIntentSHA256 RetiredRevision RetirementStartedBootNS DeadlineBootNS CreatorLock Targets SharedBudget SharedControls SharedLeafPath SharedLeaf SharedAncestryCount SharedAncestrySHA256 Value")
+        if (high["Version"]!=1 or high["CreationIntentSHA256"]!=ihash or high["RetiredRevision"]!=4
+                or high["CreatorLock"]!=intent["BootstrapLock"] or high["SharedBudget"]!=intent["SharedBudget"] or high["Value"]!=0): raise refused()
+        start,end=high["RetirementStartedBootNS"],high["DeadlineBootNS"]
+        if (type(start) is not int or type(end) is not int or not 0<start<end<2**63 or end-start>10_000_000_000): raise refused()
+        fields(outcome,"Version IntentSHA256 WaitStatus")
+        if outcome!={"Version":1,"IntentSHA256":hhash,"WaitStatus":0}: raise refused()
+        sha(high["SharedAncestrySHA256"])
+        ancestry=self._shared_ancestry(e,c,high)  # Exact Shared infrastructure remains live through every replay.
+        budget=c["host_budget"];groups=retired["Cgroups"];limits=intent["Limits"]
+        seen={budget["root"]["inode"],budget["shared"]["inode"]}
+        seen.update(value["Identity"]["Inode"] for value in groups.values() if value is not None)
+        for node in ancestry:
+            seen.add(node["Identity"]["Inode"])
+            seen.update(value["Identity"]["Inode"] for value in node["Controls"].values())
+        fields(high["Targets"],"Host Owner")
+        if all(value is None for value in high["Targets"].values()): raise refused()
+        for role,target in high["Targets"].items():
+            if target is None: continue
+            fields(target,"Path Identity Controls");fields(target["Identity"],"Device Inode")
+            if (target["Path"]!=intent["Topology"][role] or groups[role] is None
+                    or target["Identity"]!=groups[role]["Identity"]
+                    or groups[role]["Populated"]!=0 or groups[role]["MemoryCurrent"]!=0): raise refused()
+            memory=limits["HostScratchBytes"] if role=="Host" else limits["Task"]["MemoryBytes"]+limits["OwnerOverheadBytes"]
+            cpu=25000 if role=="Host" else (limits["Task"]["CPUMillis"]+limits["OwnerOverheadCPUMillis"])*100
+            values={"cgroup.type":"domain","cgroup.freeze":"0","cgroup.subtree_control":"cpu memory pids",
+                    "memory.max":str(memory),"memory.swap.max":"0","memory.oom.group":"1","memory.high":"max",
+                    "pids.max":"64" if role=="Host" else "512","cpu.max":f"{cpu} 100000","cpu.max.burst":"0"}
+            fields(target["Controls"]," ".join(values))
+            for name,want in values.items():
+                control=target["Controls"][name];fields(control,"Identity Value");fields(control["Identity"],"Device Inode")
+                ident=control["Identity"]
+                if (control["Value"]!=want or any(type(v) is not int or not 0<v<2**64 for v in ident.values())
+                        or ident["Device"]!=budget["root"]["device"] or ident["Inode"] in seen): raise refused()
+                seen.add(ident["Inode"])
+        return high_record,outcome_record
+
     def _creation_retired(self,e,c,state):
         """Verify a source-qualified original abort; never reconstruct its original handle."""
         if state["phase"]!="retired" or type(state["phase_revision"]) is not int or state["phase_revision"]!=4 or state["host_scope_sha256"]:
@@ -829,9 +881,9 @@ class LinuxPartitionProvider:
             intent,ihash,iid=self._creation_intent(e,c,state)
             retired,rhash,rid=record("creation-retired.json")
             topology=intent["Topology"];limits=intent["Limits"];plan=intent["Plan"]
-            fields(retired,"Version IntentSHA256 Ref BindingSHA256 LocalLeaseID Creator IssueSHA256 StartSHA256 RetiredRevision QualificationSHA256 ProofContract Cgroups Mounts OwnedDirectories")
-            common={k:intent[k] for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
-            common.update(IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v2")
+            fields(retired,"Version IntentSHA256 Ref BindingSHA256 LocalLeaseID Creator IssueSHA256 StartSHA256 RetiredRevision QualificationSHA256 ProofContract Cgroups Mounts OwnedDirectories Drain")
+            common={k:intent[k] for k in ("Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
+            common.update(Version=3,IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v3")
             if any(retired[k]!=v for k,v in common.items()): raise refused()
             groups=retired["Cgroups"];mounts=retired["Mounts"];dirs=retired["OwnedDirectories"]
             fields(groups,"Owner EpochParent Epoch GuardianParent Guardian Host Worker")
@@ -873,11 +925,15 @@ class LinuxPartitionProvider:
                 for v in controls.values():
                     file_identity(v)
                     if v["Device"]!=b["root"]["device"]: raise refused()
-            # No daemon/child launch is reachable in this proof; later records cannot be downgraded.
+            drain=self._creation_drain(e,c,directory,intent,ihash,retired)
+            if drain is not None and partial is not None and drain[0][0]["Targets"]["Owner"] is not None:
+                controls=drain[0][0]["Targets"]["Owner"]["Controls"]
+                if any(controls[name]["Identity"]!=ident for name,ident in partial[0]["Controls"].items() if name in controls): raise refused()
+            # Only the joined fixed cleanup child is permitted; later execution cannot be downgraded.
             forbidden={"host-scope.json","metadata-intent.json","intent.json","guardian.json","revoked.json","expired.json",
                        "removed.json","owner-empty.json","host-retired.json","retired.json","control"}
             for _ in range(2):
-                if e.names(directory)-{"creation-intent.json","creation-retired.json","bootstrap.lock","scoped-limits.json"}: raise refused()
+                if e.names(directory)-{"creation-intent.json","creation-retired.json","bootstrap.lock","scoped-limits.json",*ORIGINAL_HIGH_FILES[:2]}: raise refused()
                 if any(os.path.lexists(directory/name) for name in forbidden): raise refused()
                 if any(os.path.lexists(value) for role,value in topology.items() if role!="GuardDirectory"): raise refused()
                 current=e.mounts()
@@ -888,6 +944,7 @@ class LinuxPartitionProvider:
                 if identity(e.protected(directory,directory=True))!=directory_id or identity(e.protected(lock_path))!=identity(lock_info): raise refused()
                 if record("creation-intent.json")!=(intent,ihash,iid) or record("creation-retired.json")!=(retired,rhash,rid): raise refused()
                 if (record("scoped-limits.json") if os.path.lexists(directory/"scoped-limits.json") else None)!=partial: raise refused()
+                if self._creation_drain(e,c,directory,intent,ihash,retired)!=drain: raise refused()
             return ihash
         finally: os.close(lock)
 
