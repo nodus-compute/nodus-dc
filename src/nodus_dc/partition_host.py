@@ -926,9 +926,13 @@ class LinuxPartitionProvider:
                     file_identity(v)
                     if v["Device"]!=b["root"]["device"]: raise refused()
             drain=self._creation_drain(e,c,directory,intent,ihash,retired)
-            if drain is not None and partial is not None and drain[0][0]["Targets"]["Owner"] is not None:
-                controls=drain[0][0]["Targets"]["Owner"]["Controls"]
-                if any(controls[name]["Identity"]!=ident for name,ident in partial[0]["Controls"].items() if name in controls): raise refused()
+            if drain is not None and partial is not None:
+                for role,target in drain[0][0]["Targets"].items():
+                    if target is None: continue
+                    controls=target["Controls"]
+                    for name,ident in partial[0]["Controls"].items():
+                        if role=="Owner" and name in controls and controls[name]["Identity"]!=ident: raise refused()
+                        if any(v["Identity"]==ident for key,v in controls.items() if role!="Owner" or key!=name): raise refused()
             # Only the joined fixed cleanup child is permitted; later execution cannot be downgraded.
             forbidden={"host-scope.json","metadata-intent.json","intent.json","guardian.json","revoked.json","expired.json",
                        "removed.json","owner-empty.json","host-retired.json","retired.json","control"}

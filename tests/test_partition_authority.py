@@ -618,6 +618,12 @@ class Partitions(unittest.TestCase):
                     for status in (9,2**32): install_drain(o={**outcome,"WaitStatus":status});refused_held()
                     bad=copy.deepcopy(high);bad["Targets"]["Owner"]["Controls"]["memory.max"]["Identity"]["Inode"]=7000
                     install_drain(bad);refused_held()  # The same captured Owner file cannot change identity across records.
+                    for role,name,null_owner in (("Host","memory.events.local",False),
+                                                 ("Host","memory.max",True),("Owner","memory.events.local",False)):
+                        bad=copy.deepcopy(high)
+                        if null_owner: bad["Targets"]["Owner"]=None
+                        bad["Targets"][role]["Controls"]["memory.high"]["Identity"]=copy.deepcopy(partial["Controls"][name])
+                        install_drain(bad);refused_held()  # Distinct objects cannot alias even when Owner was not selected.
                     for role in ("Host","Owner"):
                         bad=copy.deepcopy(present);bad["Cgroups"][role]["MemoryCurrent"]=4096
                         install_drain(z=bad);refused_held()
