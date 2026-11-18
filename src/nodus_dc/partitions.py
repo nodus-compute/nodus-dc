@@ -246,10 +246,13 @@ class PartitionAuthority:
             for row in db.execute("SELECT parent_uuid FROM partition_configurations WHERE state='committed'").fetchall():
                 self.quarantine(db,row["parent_uuid"],reason)
 
-    def _capacity(self, db, ignore=None):
+    def _host_account(self, db, ignore=None):
         if self.executor is None:
             raise Error("partition_executor_unqualified", "no qualified partition executor is installed", 503)
         capacity = dict(budget(self.executor.host_capacity()))
+        available = dict(capacity)
+        local_reserved = {key: 0 for key in capacity}
+        held = []
         live = db.execute("SELECT id FROM leases WHERE state!='released'").fetchall()
         for row in live:
             if row["id"] == ignore: continue
@@ -259,9 +262,28 @@ class PartitionAuthority:
             lease = Store.lease(db, row["id"])
             if self.executor.verify_reservation(lease, dict(reservation)) is not True:
                 raise Error("host_resources_unenforced", "a concurrent host resource limit is unverified", 503)
-            for key in capacity: capacity[key] -= reservation[key]
-        capacity["scratch_bytes"] = min(capacity["scratch_bytes"], capacity["memory_bytes"])
-        return capacity
+            resources = dict(budget({key: reservation[key] for key in capacity}))
+            held.append({"lease": lease, "resources": resources})
+            for key in capacity:
+                available[key] -= resources[key]
+                if lease["owner"] == "local": local_reserved[key] += resources[key]
+        verify = getattr(self.executor, "verify_host_accounting", None)
+        if not callable(verify):
+            raise Error("host_resources_unaccounted", "complete enforced host accounting is unavailable", 409)
+        anchor = self.service.store.fence.verify(db) if self.service.store.fence else None
+        if not anchor:
+            raise Error("authority_continuity_lost", "host accounting requires durable allocation authority", 503)
+        scope = {"authority_incarnation": anchor["incarnation"], "configurations": [dict(row) for row in db.execute(
+            "SELECT parent_uuid,generation,boot_id,state FROM partition_configurations ORDER BY parent_uuid")]}
+        if verify(copy.deepcopy(capacity), copy.deepcopy(held), scope) is not True:
+            raise Error("host_resources_unaccounted", "complete enforced host accounting is unavailable", 409)
+        if any(value < 0 for value in available.values()):
+            raise Error("host_resources_unaccounted", "retained host reservations exceed enforced capacity", 409)
+        available["scratch_bytes"] = min(available["scratch_bytes"], available["memory_bytes"])
+        return {"capacity": capacity, "local_reserved": local_reserved, "available": available}
+
+    def _capacity(self, db, ignore=None):
+        return self._host_account(db, ignore)["available"]
 
     def reserve_local(self, db, lease, resources):
         resources = budget(resources)
@@ -279,17 +301,16 @@ class PartitionAuthority:
         db.execute("INSERT INTO host_reservations VALUES(?,?,?,?,?)",
                    (lease["id"], resources["cpu_millis"], resources["memory_bytes"], resources["scratch_bytes"], canonical(proof)))
 
-    def _offer_rows(self, db):
+    def _offer_rows(self, db, host_account=None):
         policy = self._policy(db)
         agreement = policy["agreement"]
         if not isinstance(agreement, dict): raise Error("partition_terms_unavailable", "partition terms are not authorized", 403)
-        capacity = self._capacity(db)
+        capacity = self._capacity(db) if host_account is None else host_account["available"]
         if capacity["cpu_millis"] <= 0 or capacity["memory_bytes"] <= 0: return []
         anchor = self.service.store.fence.verify(db) if self.service.store.fence else None
         if not anchor: raise Error("authority_continuity_lost", "durable configuration authority has not been adopted", 503)
         parents = {r["id"]: r["parent"] for r in db.execute("SELECT id,parent FROM resources")}
         held = [Store.decode(r) for r in db.execute("SELECT * FROM leases WHERE state!='released'")]
-        if any(l["owner"] == "external" for l in held): return []
         result = []
         for row in db.execute("SELECT * FROM partition_configurations WHERE state='committed'"):
             observation = json.loads(row["binding"])
@@ -317,16 +338,25 @@ class PartitionAuthority:
         return result
 
     def offers(self, **request):
-        fields(request, ""); self._active()
+        fields(request, "include_host_budget" if request else "")
+        include_budget = bool(request)
+        if include_budget and request["include_host_budget"] is not True:
+            raise Error("invalid_request", "host budget reporting must be explicitly requested", 400)
+        self._active()
         with self.service.authority():
             self.service._inventory()
+            account = None
             try:
-                with self._admission_transaction() as db: offers = self._offer_rows(db)
+                with self._admission_transaction() as db:
+                    if include_budget: account = self._host_account(db)
+                    offers = self._offer_rows(db, account)
             except Error as exc:
                 if exc.code in {"partition_executor_unqualified", "partition_terms_unavailable", "partition_policy_unavailable", "partition_policy_expired", "host_resources_unaccounted", "host_resources_unenforced", "external_not_authorized"}:
-                    return {"offers": []}
-                raise
+                    offers, account = [], None
+                else: raise
             report = {"offers": offers}
+            if include_budget:
+                report["host_budget"] = None if account is None else {key: account[key] for key in ("capacity", "local_reserved")}
             # Match the Unix API serializer; never silently omit eligible partitions.
             if len(offers) > 64 or len(json.dumps(report, sort_keys=True, allow_nan=False).encode()) > 65536:
                 raise Error("partition_offer_report_too_large", "complete partition offer report exceeds its wire limit", 503)
