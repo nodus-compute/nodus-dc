@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   service-control:
-    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.ref != 'refs/heads/codex/oss-dev17-replay-package-diagnostic-20261118'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -90,3 +90,198 @@ jobs:
             !evidence/signed-agent/nodusd.altered
           if-no-files-found: error
           retention-days: 7
+  package-artifact:
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/oss-dev17-replay-package-diagnostic-20261118' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - name: Bind the one-shot packaging window
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" == 1 ]]
+          export OUT="$RUNNER_TEMP/dev17-artifact-evidence"
+          export FIXTURE="$RUNNER_TEMP/nodus-dev17-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export PACKAGE_WORK_END="$(( $(date +%s) + 150 ))"
+          [[ ! -e "$OUT" && ! -e "$FIXTURE" ]]
+          mkdir -m 0700 "$OUT"
+          printf 'OUT=%s\nFIXTURE=%s\nPACKAGE_WORK_END=%s\n' "$OUT" "$FIXTURE" "$PACKAGE_WORK_END" >> "$GITHUB_ENV"
+          python3 - <<'PYINIT'
+          import json,os,pathlib,time
+          pathlib.Path(os.environ['OUT'],'clock.json').write_text(json.dumps({'started_epoch':time.time(),'work_end_epoch':int(os.environ['PACKAGE_WORK_END']),'whole_job_minutes':4,'work_seconds':60,'max_group_reap_seconds':4})+'\n')
+          PYINIT
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Build the exact candidate once and verify its offline installed artifacts
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ ! -e "$FIXTURE" ]]
+          mkdir -m 0700 "$FIXTURE"
+          python3 - <<'PYOWN'
+          import json,os,pathlib
+          pathlib.Path(os.environ['OUT'],'fixture-owned.json').write_text(json.dumps({'path':os.environ['FIXTURE'],'run':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT']})+'\n')
+          PYOWN
+          cat > "$OUT/verify.py" <<'PYVERIFY'
+          import base64,csv,hashlib,io,json,os,pathlib,shutil,subprocess,sys,tarfile,time,zipfile
+          S=pathlib.Path(os.environ['GITHUB_WORKSPACE']);O=pathlib.Path(os.environ['OUT']);R=pathlib.Path(os.environ['FIXTURE'])
+          C='91cd83711c9939be0b6ed2bfc30e28aca9d19b6b';T='f95161a12d5f017afded7d2b10ca9c0c9d51c3d7';V='0.1.0.dev17'
+          end=time.monotonic()+55
+
+          def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+          def write(n,v):(O/n).write_text(json.dumps(v,indent=2,allow_nan=False)+'\n')
+          def run(label,args,cwd=R):
+              left=end-time.monotonic();assert left>0,'original packaging command deadline'
+              p=subprocess.run([str(x) for x in args],cwd=cwd,capture_output=True,timeout=left,env={**os.environ,'PYTHONDONTWRITEBYTECODE':'1','PIP_NO_INDEX':'1'})
+              (O/(label+'.stdout')).write_bytes(p.stdout);(O/(label+'.stderr')).write_bytes(p.stderr)
+              assert p.returncode==0,(label,p.returncode)
+              return p.stdout
+          assert sys.platform=='linux' and sys.version_info[:2]==(3,12)
+          assert R.is_dir() and R.stat().st_mode&0o777==0o700 and R.stat().st_uid==os.getuid()
+          assert run('parent',['git','rev-parse','HEAD^'],S).decode().strip()==C
+          assert run('tree',['git','rev-parse',C+'^{tree}'],S).decode().strip()==T
+          assert run('head',['git','rev-parse','HEAD'],S).decode().strip()==os.environ['GITHUB_SHA']
+          assert run('changed',['git','diff','--name-only',C,'HEAD'],S).decode().splitlines()==['.github/workflows/manual-native-systemd.yml']
+          assert not run('source-before',['git','status','--porcelain'],S).strip()
+          raw=run('source-archive',['git','archive','--format=tar','--prefix=nodus-dc/',C],S)
+          (O/'source.tar').write_bytes(raw);source=R/'source';source.mkdir()
+          with tarfile.open(fileobj=io.BytesIO(raw)) as ar:ar.extractall(source,filter='data')
+          source=source/'nodus-dc'
+          sourcefiles={str(p.relative_to(source)):sha(p) for p in source.rglob('*') if p.is_file()}
+          modules={str(p.relative_to(source/'src')):sha(p) for p in (source/'src/nodus_dc').glob('*.py')};assert len(modules)==27
+          write('source-manifest.json',{'commit':C,'tree':T,'archive_sha256':sha(O/'source.tar'),'files':sourcefiles,'modules':modules})
+          run('build-once',[sys.executable,'-B','build_backend.py'],source)
+          wheel=source/'dist'/f'nodus_datacenter-{V}-py3-none-any.whl';sdist=source/'dist'/f'nodus_datacenter-{V}.tar.gz'
+          assert wheel.is_file() and sdist.is_file() and len(list((source/'dist').iterdir()))==2
+          assert sha(wheel)=='c20090c48a12f5aabff86f59c40dc2d5e70f7567d14b64187f819d41f8d4c732','accepted dev17 wheel bytes changed'
+          with zipfile.ZipFile(wheel) as z:
+              names=z.namelist();assert len(names)==len(set(names))
+              dist=f'nodus_datacenter-{V}.dist-info';record=dist+'/RECORD'
+              rows=list(csv.reader(io.StringIO(z.read(record).decode())));assert {r[0] for r in rows}==set(names)
+              for n,h,size in rows:
+                  if n==record:assert h==size=='';continue
+                  b=z.read(n);assert h=='sha256='+base64.urlsafe_b64encode(hashlib.sha256(b).digest()).rstrip(b'=').decode() and int(size)==len(b)
+              observed={n:hashlib.sha256(z.read(n)).hexdigest() for n in names if n.startswith('nodus_dc/') and n.endswith('.py')};assert observed==modules
+              assert z.read(dist+'/PROVENANCE.json')==(source/'PROVENANCE.json').read_bytes()
+              assert f'Version: {V}\n' in z.read(dist+'/METADATA').decode()
+              write('wheel-record.json',{'members':rows,'modules':observed})
+          with tarfile.open(sdist) as ar:
+              members=ar.getmembers();assert all(m.isfile() for m in members)
+              prefix=f'nodus_datacenter-{V}/';mapped={}
+              for m in members:
+                  assert m.name.startswith(prefix);n=m.name[len(prefix):];assert n in sourcefiles and n not in mapped
+                  b=ar.extractfile(m).read();assert hashlib.sha256(b).hexdigest()==sourcefiles[n];mapped[n]=sourcefiles[n]
+              assert all('src/'+n in mapped for n in modules)
+              assert {'build_backend.py','pyproject.toml','PROVENANCE.json','tools/install.py','docs/release-dev17.md'}<=set(mapped)
+              assert not any(n.startswith('.github/') for n in mapped)
+              write('sdist-manifest.json',mapped)
+          prefix,state=R/'prefix',R/'state'
+          run('install',[sys.executable,'-B',source/'tools/install.py','install','--wheel',wheel,'--prefix',prefix,'--state-dir',state])
+          python=prefix/'current/bin/python';cli=prefix/'current/bin/nodus-dc'
+          assert run('installed-version',[cli,'--version']).decode().strip()==V
+          run('installed-status',[cli,'--state-dir',state,'status'])
+          probe="import hashlib,json,pathlib,nodus_dc; p=pathlib.Path(nodus_dc.__file__).parent; print(json.dumps({str(f.relative_to(p.parent)):hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.py')}))"
+          assert json.loads(run('installed-modules',[python,'-I','-B','-c',probe]))==modules
+          model=R/'model';model.mkdir();(model/'config.json').write_text('{}')
+          for engine in ('vllm','sglang'):
+              value=json.loads(run('recipe-'+engine,[python,'-I','-B',source/'examples/serving_profile.py','--engine',engine,'--model-directory',model,'--numerical-profile','default-v1','--network','none']))
+              assert value['network']=='none' and 'ports' not in value and '@sha256:' in value['image']
+          run('uninstall',[sys.executable,'-B',source/'tools/install.py','uninstall','--prefix',prefix,'--state-dir',state])
+          assert (state/'authority.sqlite3').is_file();shutil.copyfile(state/'authority.sqlite3',O/'retained-state.sqlite3')
+          artifacts=O/'artifacts';artifacts.mkdir()
+          for p in [wheel,sdist,source/'tools/install.py',source/'LICENSE',source/'docs/release-dev17.md',source/'docs/support-matrix.md']:
+              shutil.copyfile(p,artifacts/p.name)
+          manifest={'version':V,'source_commit':C,'source_tree':T,'qualification':'Exact native package/installation/recipe artifact only. GPU work is separately admitted; no publication or production configuration qualification.','files':{p.name:sha(p) for p in artifacts.iterdir()}}
+          (artifacts/'release-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          (artifacts/'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.name}\n' for p in sorted(artifacts.iterdir())))
+          assert not run('source-after',['git','status','--porcelain'],S).strip()
+          write('verification.json',{'passed':True,'candidate':C,'tree':T,'native_workflow_head':os.environ['GITHUB_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT'],'build_invocations':1,'wheel_and_sdist_builds_each':1,'runtime_modules':modules,'installed_modules_exact':True,'wheel_RECORD_valid':True,'sdist_all_members_match_source':True,'recipes':['vllm/default-v1','sglang/default-v1'],'uninstall_retains_state':True,'tests':0,'GPU':False,'published':False,'artifacts':{p.name:sha(p) for p in artifacts.iterdir()}})
+          PYVERIFY
+          cat > "$OUT/work-wrapper.py" <<'PYWRAP'
+          import json,os,pathlib,signal,subprocess,sys,time
+          out=pathlib.Path(os.environ['OUT']);started=time.monotonic();p=None;rc=None;natural=False;group_absent=False;forced=False
+          try:
+              remaining=int(os.environ['PACKAGE_WORK_END'])-time.time()
+              if remaining<65:raise RuntimeError('original job work window exhausted')
+              with (out/'work.stdout').open('xb') as stdout,(out/'work.stderr').open('xb') as stderr:
+                  p=subprocess.Popen([sys.executable,'-B',str(out/'verify.py')],stdout=stdout,stderr=stderr,start_new_session=True)
+                  (out/'process.json').write_text(json.dumps({'pid':p.pid,'pgid':p.pid,'start_epoch':time.time()}))
+                  try:rc=p.wait(timeout=60);natural=True
+                  except subprocess.TimeoutExpired:pass
+          finally:
+              if p is not None:
+                  try:
+                      os.killpg(p.pid,0)
+                      forced=True
+                      os.killpg(p.pid,signal.SIGTERM)
+                      until=time.monotonic()+2
+                      while time.monotonic()<until:
+                          try:os.killpg(p.pid,0)
+                          except ProcessLookupError:break
+                          time.sleep(.05)
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                  except ProcessLookupError:pass
+                  try:p.wait(timeout=2)
+                  except subprocess.TimeoutExpired:pass
+                  try:os.killpg(p.pid,0)
+                  except ProcessLookupError:group_absent=True
+              (out/'process-closure.json').write_text(json.dumps({'natural_exit':natural,'returncode':rc,'group_absent':group_absent,'forced_group_stop':forced,'elapsed_seconds':time.monotonic()-started})+'\n')
+          if not(natural and rc==0 and group_absent and not forced):raise SystemExit(1)
+          PYWRAP
+          python3 -B "$OUT/work-wrapper.py"
+      - name: Verify process closure and remove only the owned installation fixture
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${OUT:-}" && -n "${FIXTURE:-}" ]]
+          cat > "$OUT/cleanup.py" <<'PYCLEAN'
+          import json,os,pathlib,shutil,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);root=pathlib.Path(os.environ['FIXTURE']);workspace=pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          expected=pathlib.Path(os.environ['RUNNER_TEMP'])/('nodus-dev17-package-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
+          assert root==expected and not root.is_symlink()
+          owned=(out/'fixture-owned.json').is_file();closed=False
+          if owned:
+              record=json.loads((out/'fixture-owned.json').read_text());assert record=={'path':str(root),'run':os.environ['GITHUB_RUN_ID'],'attempt':os.environ['GITHUB_RUN_ATTEMPT']}
+              process=json.loads((out/'process-closure.json').read_text());assert process['group_absent'] is True
+              assert root.is_dir() and root.stat().st_uid==os.getuid() and root.stat().st_mode&0o777==0o700
+              shutil.rmtree(root);closed=not root.exists()
+          else:closed=not root.exists()
+          p=subprocess.run(['git','status','--porcelain'],cwd=workspace,capture_output=True,timeout=5)
+          (out/'source-final.stdout').write_bytes(p.stdout);(out/'source-final.stderr').write_bytes(p.stderr)
+          result={'owned_fixture_removed':owned and closed,'fixture_absent':closed,'source_clean':p.returncode==0 and not p.stdout.strip(),'epoch':time.time()}
+          (out/'closure.json').write_text(json.dumps(result)+'\n')
+          assert result['owned_fixture_removed'] and result['source_clean']
+          PYCLEAN
+          timeout --signal=TERM --kill-after=2s 25s python3 -B "$OUT/cleanup.py"
+      - name: Retain exact artifacts and all positive or negative observations
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dev17-package-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dev17-artifact-evidence/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Require the artifact and cleanup outcomes
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRESULT'
+          import json,os,pathlib
+          out=pathlib.Path(os.environ['OUT'])
+          assert json.loads((out/'verification.json').read_text())['passed'] is True
+          closure=json.loads((out/'closure.json').read_text())
+          assert all(closure[k] is True for k in ('owned_fixture_removed','fixture_absent','source_clean'))
+          process=json.loads((out/'process-closure.json').read_text())
+          assert process['natural_exit'] is True and process['returncode']==0 and process['group_absent'] is True and process['forced_group_stop'] is False
+          PYRESULT
