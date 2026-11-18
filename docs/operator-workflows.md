@@ -8,6 +8,10 @@ and retains private partition authority and durable ownership fences. Connected
 partition execution remains unavailable. See the [dev16 change record](release-dev16.md)
 for the scoped A100 configuration/restoration result and remaining limits.
 
+The source tree now builds the separate [dev17 candidate](release-dev17.md).
+The README continues to link the immutable dev16 downloads until new artifacts
+are published. Source-build and published-wheel identities are not interchangeable.
+
 ## Current implementation
 
 | Mode | Scope | Boundary | Qualification |
@@ -33,7 +37,7 @@ silently fall back to ordinary Docker, MIG or MPS execution. See the
 
 For an existing GPU cluster, use `/opt/nodus-dc/current/bin/python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](../kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev16 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev17 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
@@ -41,7 +45,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py &&
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev16-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev17-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 The installer keeps the CLI and Python interpreter under `/opt/nodus-dc/current/bin`;

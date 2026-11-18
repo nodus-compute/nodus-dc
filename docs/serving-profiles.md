@@ -1,6 +1,6 @@
-# vLLM and SGLang on dev7 through dev16
+# vLLM and SGLang on dev7 through dev17
 
-Use the pinned serving recipes with the installed `0.1.0.dev7`, `0.1.0.dev8`, `0.1.0.dev9`, `0.1.0.dev10`, `0.1.0.dev11`, `0.1.0.dev12`, `0.1.0.dev13`, `0.1.0.dev14`, `0.1.0.dev15` or `0.1.0.dev16` package. They
+Use the pinned serving recipes with the installed `0.1.0.dev7`, `0.1.0.dev8`, `0.1.0.dev9`, `0.1.0.dev10`, `0.1.0.dev11`, `0.1.0.dev12`, `0.1.0.dev13`, `0.1.0.dev14`, `0.1.0.dev15`, `0.1.0.dev16` or `0.1.0.dev17` package. They
 generate workload JSON for the normal allocation commands; generation does not
 reserve a GPU, pull an image, launch a container, or enable capacity lending.
 The [hardware report](hardware-evidence-dev7.md) and
@@ -25,6 +25,11 @@ to the recipe version guard without changing runtime behavior or descriptors.
 Dev13, dev14, dev15 and dev16 are also accepted by the recipe generator. Dev14 adds explicit
 private output directories for training; these inference recipes retain their
 read-only model mounts and existing engine arguments.
+
+Dev17 adds only the new package version to this recipe. Its serving module and
+engine descriptors are unchanged from public source `0429d47f56352720f391a6751a4b6171f417ad81`.
+Qualification still requires exact artifact and hardware receipts; see the
+[dev17 change record](release-dev17.md).
 
 ## Generate and start a workload
 
@@ -161,7 +166,7 @@ the statistical assumptions in the hardware report. The default shared profiles
 failed numerical targets. No two-GPU-to-one inference benefit is qualified yet; this recipe does
 not automatically enable sharing or mark any configuration hardware-qualified.
 
-The generator requires an explicit profile and a dev7 through dev15 package.
+The generator requires an explicit profile and a dev7 through dev17 package.
 It does not alter the installed serving module or its default behavior. For
 Kubernetes use the [scheduler integration](../kubernetes/README.md); a Docker
 descriptor is not a Kubernetes allocation and must not be used to bypass the
