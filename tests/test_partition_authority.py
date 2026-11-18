@@ -627,8 +627,8 @@ class Partitions(unittest.TestCase):
                     for inode in (partial["Controls"]["memory.events.local"]["Inode"],
                                   high["SharedLeaf"]["Inode"],high["SharedControls"]["memory.max"]["Inode"]):
                         bad=copy.deepcopy(high);prior=copy.deepcopy(present)
-                        ident={"Device":budget["root"]["device"],"Inode":inode}
-                        bad["Targets"]["Host"]["Identity"]=ident;prior["Cgroups"]["Host"]["Identity"]=ident
+                        alias_identity={"Device":budget["root"]["device"],"Inode":inode}
+                        bad["Targets"]["Host"]["Identity"]=alias_identity;prior["Cgroups"]["Host"]["Identity"]=alias_identity
                         install_drain(bad,z=prior);refused_held()  # A matching final slot cannot alias a retained control or Shared object.
                     for role in ("Host","Owner"):
                         bad=copy.deepcopy(present);bad["Cgroups"][role]["MemoryCurrent"]=4096
