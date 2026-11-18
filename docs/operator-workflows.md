@@ -115,6 +115,8 @@ Monitor requires a fresh `nodusd` installation. The installer refuses existing a
 
 Monitor enrollment creates `/var/lib/nodus/node.json`, so this package's never-enrolled `native-handoff` path subsequently refuses the host. Monitoring does not establish eligibility for the separate [terminal native return](terminal-native-return.md) workflow or provide confidentiality from the host operator.
 
+After enrollment, check the GPU sample time; **Last seen** is a heartbeat, not proof of fresh GPU measurements. Stale or missing readings remain unavailable, not 0%. Follow [Disconnect a monitoring host](https://nodus-compute.ai/docs/guides/pools/data-center/#disconnect-a-monitoring-host) to stop and disable the verified Monitor agent, retire the exact saved Node UID and its credentials, and revoke unused enrollment tokens. Require positive retirement confirmation; a missing Node alone is insufficient. Local installation files and private state remain. This is separate from `nodus-dc connection disconnect` below.
+
 ### Execute agent and optional capacity sharing
 
 The following instructions apply to an **Execute** agent using this package's allocation authority, including its observation-only participation setting. They are not Monitor installation instructions. The bridge is disabled unless a separate owner-only bridge token file is configured. External work requires explicit finite authorization and shares the exact local host lock/database. Disconnect, expiry or failed health checks request reclaim; capacity remains held until exact generation cleanup is independently verified.
