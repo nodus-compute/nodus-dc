@@ -52,8 +52,9 @@ tombstones without charging A twice. No mutable parallel registry is added.
 
 Retired but unreleased rows remain part of strict admission accounting. A retired
 committed/issued binding (revision2/3) requires absence of its exact guard, owner
-and H paths. A retired consumed/published binding (revision4/5) requires the same
-full positive-clean owner proof used for released history, or admission refuses.
+and H paths. A retired consumed binding (revision4) requires full positive-clean
+owner proof or the original-call abort proof below. Revision5 always requires the
+full existing scope proof. Released history applies the same checks.
 Directory names alone are insufficient. The complete A remains reserved until
 Complete succeeds; this strict admission path neither releases capacity nor grants
 a partial owner execution. Published-target renewal is a separate predicate below.
@@ -87,7 +88,8 @@ no members, zero remaining owner/H charges and mount absence. Limit tampering
 cannot turn that positive retirement into permission to execute. Missing/foreign
 identities or a creator still holding the lock keep the reservation. A never-bound
 or never-consumed row can release only because no creation capability has existed;
-a consumed row with missing scope remains held for explicit reconciliation.
+a consumed row with missing scope remains held unless its original source-qualified
+call left the exact positive abort proof below. Missing files alone never suffice.
 
 The corrected, pinned runtime is responsible for actual container, task and exact
 original snapshotter/key NotFound checks before durably publishing removed.json.
@@ -147,7 +149,49 @@ incomplete sibling or substitutes for its full positive cleanup proof.
 
 The renewal target itself, released history and every default admission path keep
 the strict owner validators. Unknown roots, missing/replaced capped identities,
-pre-pair creation uncertainty and incomplete mount evidence still refuse. This
-slice adds no creator handle, abort tombstone, schema floor, ledger or service.
-Original-call cancellation before the pair and actual sibling continuity require
-the later bounded runtime/Agent proof; production registration remains absent.
+pre-pair creation uncertainty and incomplete mount evidence still refuse. The
+original-call abort reader below does not authorize renewal from partial evidence.
+Actual sibling continuity requires the bounded runtime/Agent proof; production
+registration remains absent.
+
+## Original-call pre-pair retirement
+
+Only a retired consumed revision4 can use `creation-intent.json` and
+`creation-retired.json`, strict version1 records in its existing guard directory.
+The qualified node binds its handle to the one opaque successful issue invocation
+before consume. The reader does not reconstruct that handle or verify past joins
+from absence: the pinned node record attests the original in-process join and prior
+zero-charge observations. No child launch is reachable in this pre-pair proof.
+The exact creator executable, qualification, full binding/lease, Creator, issue/start
+hashes, limits, Plan2, shared domain and boot/time namespaces must agree.
+
+Both records are bounded to 64 KiB, have exact fixed fields and integer forms, and
+bind the retained raw intent digest. Six original cgroup slots, three mount slots
+and four underlying directory slots are fixed nullable identities. Null means
+the original invocation never created that object and its exact path is now
+absent; it cannot encode an unknown outcome. Present slots require prior empty
+teardown and current absence. Optional pre-pair `scoped-limits.json` must match
+the original slots/plan; complete scope, metadata, guardian or later retirement
+records prohibit the abort proof. Malformed or mixed proofs never fall back to
+normal scope cleanup. Successful v5 publication retains the optional original
+intent and validates it with the same strict tuple/codec; it never accepts a
+`creation-retired.json` alongside that full scope.
+
+Under the retained protected bootstrap lock, the reader checks exact record and
+directory identities twice, original topology absence and the absence of recorded
+mount IDs/devices. Guard directory, lock and proof remain. Their retained name is
+accounted separately from absent owner/H roots; unexpected names still refuse.
+All held C/A/S remains charged until Complete. Complete validates the exact target
+plus root/shared envelope; it does not perform a second all-owner row scan. The
+existing admission/renewal accounting still verifies every held owner and released
+history before admitting capacity. No new table, reader floor, service or RPC is
+introduced.
+
+An already-positive proof can replay after the original caller exits, with fresh
+kernel absence checks. A crash or lost handle before durable proof stays held.
+Complete pair/metadata failures remain on strict v5 cleanup, without downgrade.
+Old node/shim binaries are not assumed to understand new files; exact node/provider
+source qualification must reject incompatible admission. Managed runsc/shim bytes
+are unchanged. The HTTP/SQLite owning case uses real files/flock but synthetic
+kernel history and envelope evidence; native original-cancellation/retirement and
+the full Agent path remain unqualified.

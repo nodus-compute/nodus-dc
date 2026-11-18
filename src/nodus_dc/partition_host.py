@@ -373,6 +373,7 @@ class LinuxPartitionProvider:
     def _record_pair(self,e,c,state):
         binding=state["binding"]; lease=binding["lease"]; ch=lease["ephemeral"]["charge"]
         key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
+        if os.path.lexists(directory/"creation-retired.json"): raise refused()
         if e.protected(directory,directory=True).st_mode & 0o077: raise refused()
         scope,shash=e.record(directory/"host-scope.json",32768)
         fields(scope,"Version Guard Plan Root GroupPath GuardianPath Group Freeze Kill CreatorLock Controls Visible Stage Internal")
@@ -408,6 +409,9 @@ class LinuxPartitionProvider:
         for name,want in ((owner,limits["Owner"]),(epoch,limits["Epoch"]),(guardian,limits["Guardian"]),(host,scope["Group"])):
             if identity(e.protected(name,directory=True))!=want: raise refused()
         if identity(e.protected(directory/"bootstrap.lock"))!=scope["CreatorLock"]: raise refused()
+        if os.path.lexists(directory/"creation-intent.json"):
+            intent=self._creation_intent(e,c,state)[0]
+            if intent["Limits"]!=limits["Plan"] or intent["Plan"]!=scope["Plan"]: raise refused()
         for group, freeze, kill in ((epoch,guard["Freeze"],guard["Kill"]),(host,scope["Freeze"],scope["Kill"])):
             if identity(e.protected(group/"cgroup.freeze"))!=freeze or identity(e.protected(group/"cgroup.kill"))!=kill: raise refused()
         return directory,owner,epoch,guardian,host,guard,limits,scope,shash
@@ -560,8 +564,163 @@ class LinuxPartitionProvider:
         if state["phase_revision"]<=3:
             key,directory,owner,epoch,guardian,host=self._paths(c,state["binding"]["ref"])
             if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
+        elif self._has_creation_retired(c,state):
+            self._creation_retired(e,c,state)
         else:
             self._owner(e,c,state,clean=True)
+
+    def _has_creation_retired(self,c,state):
+        return os.path.lexists(self._paths(c,state["binding"]["ref"])[1]/"creation-retired.json")
+
+    def _creation_record(self,e,directory,name):
+        info=e.protected(directory/name)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode)!=0o600: raise refused()
+        raw,observed=e.read(directory/name)
+        if observed!=identity(info): raise refused()
+        def integer(text):
+            if not re.fullmatch(r"0|-?[1-9][0-9]*",text): raise refused()
+            return int(text)
+        def noninteger(_): raise refused()
+        try: value=json.loads(raw,object_pairs_hook=unique,parse_int=integer,parse_float=noninteger,parse_constant=noninteger)
+        except (ValueError,RecursionError): raise refused() from None
+        pending=[value];count=0
+        while pending:
+            item=pending.pop();count+=1
+            if count>512 or type(item) is bool or isinstance(item,(float,list)): raise refused()
+            if isinstance(item,dict): pending.extend(item.values())
+        return value,hashlib.sha256(raw).hexdigest(),observed
+
+    def _creation_intent(self,e,c,state):
+        binding=state["binding"]; lease=binding["lease"]; b=binding["host_budget"]
+        if b!=c["host_budget"] or binding["runtime_identity"]!=c["runtime_identity"]: raise refused()
+        who=execution.creator(state["creator"])
+        if (who["executable_sha256"]!=c["creator_sha256"] or who["uid"]!=0 or who["gid"]!=0
+                or any(who[k]!=b[k] for k in ("boot_id","pid_namespace","user_namespace","cgroup_namespace"))): raise refused()
+        sha(state["issue_sha256"]);sha(state["start_sha256"])
+        if state["issue_sha256"]==state["start_sha256"]: raise refused()
+        key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
+        topology={"Owner":str(owner),"EpochParent":str(epoch.parent),"Epoch":str(epoch),
+                  "GuardianParent":str(guardian.parent),"Guardian":str(guardian),"Host":str(host),
+                  "GuardDirectory":str(directory),"HostDirectory":str(directory/"host"),
+                  "Visible":str(directory/"host/visible"),"Stage":str(directory/"host/stage"),"Internal":str(directory/"host/internal")}
+        for parent in (owner.parent,host.parent,directory.parent): e.protected(parent,directory=True)
+        info=e.protected(directory,directory=True)
+        if stat.S_IMODE(info.st_mode)!=0o700: raise refused()
+        directory_id=identity(info)
+        lock_info=e.protected(directory/"bootstrap.lock")
+        if not stat.S_ISREG(lock_info.st_mode) or stat.S_IMODE(lock_info.st_mode)!=0o600: raise refused()
+        result=self._creation_record(e,directory,"creation-intent.json");intent=result[0]
+        fields(intent,"Version Ref Namespace Executor BindingSHA256 LocalLeaseID QualificationSHA256 RunscSHA256 Creator IssueSHA256 StartSHA256 ConsumedRevision HostBudgetSHA256 HostScope TimeNamespace Shared Limits Plan DeadlineBootNS Directory BootstrapLock Topology")
+        ch=lease["ephemeral"]["charge"]
+        plan={"Version":2,"SpecSHA256":lease["ephemeral"]["spec_sha256"],"DeviceSHA256":self._grant_digest(binding),
+              "VisibleBytes":lease["resources"]["scratch_bytes"],"StageBytes":ch["stage_bytes"]}
+        limits={"Version":1,"BindingSHA256":state["binding_sha256"],"HostBudgetSHA256":digest(b),
+                "Task":{"CPUMillis":lease["resources"]["cpu_millis"],"MemoryBytes":lease["resources"]["memory_bytes"],"PIDs":512},
+                "HostScratchBytes":ch["host_memory_bytes"],"OwnerOverheadBytes":ch["owner_overhead_bytes"],"OwnerOverheadCPUMillis":ch["owner_cpu_millis"]}
+        expected={"Version":1,"Ref":{"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]},
+                  "Namespace":c["namespace"],"Executor":2,"BindingSHA256":state["binding_sha256"],"LocalLeaseID":binding["local_lease_id"],
+                  "QualificationSHA256":c["runtime_identity"]["qualification_sha256"],"RunscSHA256":c["runtime_identity"]["runsc_sha256"],
+                  "Creator":who,"IssueSHA256":state["issue_sha256"],"StartSHA256":state["start_sha256"],"ConsumedRevision":3,
+                  "HostBudgetSHA256":digest(b),"HostScope":{"BootID":b["boot_id"],"CgroupNamespace":b["cgroup_namespace"],
+                  "UserNamespace":b["user_namespace"],"PIDNamespace":b["pid_namespace"],"AllocationRoot":b["root"]["path"],
+                  "AllocationDevice":b["root"]["device"],"AllocationInode":b["root"]["inode"]},
+                  "TimeNamespace":os.readlink("/proc/self/ns/time"),"Shared":{"Path":b["shared"]["path"],"Device":b["shared"]["device"],"Inode":b["shared"]["inode"]},
+                  "Limits":limits,"Plan":plan,"DeadlineBootNS":intent["DeadlineBootNS"],"Directory":directory_id,
+                  "BootstrapLock":identity(lock_info),"Topology":topology}
+        if type(intent["DeadlineBootNS"]) is not int or not 0<intent["DeadlineBootNS"]<=2**63-1: raise refused()
+        if intent!=expected: raise refused()
+        if self._creation_record(e,directory,"creation-intent.json")!=result: raise refused()
+        return result
+
+    def _creation_retired(self,e,c,state):
+        """Verify a source-qualified original abort; never reconstruct its original handle."""
+        if state["phase"]!="retired" or type(state["phase_revision"]) is not int or state["phase_revision"]!=4 or state["host_scope_sha256"]:
+            raise refused()
+        binding=state["binding"];lease=binding["lease"];b=binding["host_budget"]
+        key,directory,owner,epoch,guardian,host=self._paths(c,binding["ref"])
+        def number(value,maximum=2**64-1,minimum=1):
+            if type(value) is not int or not minimum<=value<=maximum: raise refused()
+        def file_identity(value):
+            fields(value,"Device Inode")
+            for v in value.values(): number(v)
+        def record(name): return self._creation_record(e,directory,name)
+        info=e.protected(directory,directory=True)
+        if stat.S_IMODE(info.st_mode)!=0o700: raise refused()
+        directory_id=identity(info)
+        lock_path=directory/"bootstrap.lock";lock_info=e.protected(lock_path)
+        if not stat.S_ISREG(lock_info.st_mode) or stat.S_IMODE(lock_info.st_mode)!=0o600: raise refused()
+        lock=os.open(lock_path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+        try:
+            if identity(os.fstat(lock))!=identity(lock_info): raise refused()
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            intent,ihash,iid=self._creation_intent(e,c,state)
+            retired,rhash,rid=record("creation-retired.json")
+            topology=intent["Topology"];limits=intent["Limits"];plan=intent["Plan"]
+            fields(retired,"Version IntentSHA256 Ref BindingSHA256 LocalLeaseID Creator IssueSHA256 StartSHA256 RetiredRevision QualificationSHA256 ProofContract Cgroups Mounts OwnedDirectories")
+            common={k:intent[k] for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
+            common.update(IntentSHA256=ihash,RetiredRevision=4,ProofContract="scoped-host-original-abort.v1")
+            if any(retired[k]!=v for k,v in common.items()): raise refused()
+            groups=retired["Cgroups"];mounts=retired["Mounts"];dirs=retired["OwnedDirectories"]
+            fields(groups,"Owner EpochParent Epoch GuardianParent Guardian Host")
+            fields(mounts,"Visible Stage Internal");fields(dirs,"Host Visible Stage Internal")
+            seen=set()
+            for role,value in groups.items():
+                if value is None: continue
+                fields(value,"Identity Populated MemoryCurrent");file_identity(value["Identity"])
+                ident=value["Identity"]
+                if ident["Device"]!=b["root"]["device"] or ident["Inode"] in seen or ident["Inode"] in {b["root"]["inode"],b["shared"]["inode"]}: raise refused()
+                seen.add(ident["Inode"])
+                if value["Populated"]!=0 or value["MemoryCurrent"]!=0: raise refused()
+            for child,parent in (("EpochParent","Owner"),("Epoch","EpochParent"),("GuardianParent","Owner"),("Guardian","GuardianParent")):
+                if groups[child] is not None and groups[parent] is None: raise refused()
+            directory_inodes={directory_id["Inode"],identity(lock_info)["Inode"]}
+            for role,value in dirs.items():
+                if value is not None:
+                    file_identity(value)
+                    if value["Device"]!=directory_id["Device"] or value["Inode"] in directory_inodes: raise refused()
+                    directory_inodes.add(value["Inode"])
+                    if role!="Host" and dirs["Host"] is None: raise refused()
+            mount_ids=set();mount_devices=set()
+            for role,size,inodes in (("Visible",plan["VisibleBytes"],256),("Stage",plan["StageBytes"],256),("Internal",8192,8)):
+                m=mounts[role]
+                if m is None: continue
+                fields(m,"Path Bytes Inodes MountID Device Identity");file_identity(m["Identity"]);number(m["MountID"],2**31-1)
+                if (m["Path"]!=topology[role] or m["Bytes"]!=size or m["Inodes"]!=inodes
+                        or dirs[role] is None or dirs["Host"] is None or groups["Host"] is None): raise refused()
+                if not isinstance(m["Device"],str) or not re.fullmatch(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)",m["Device"]): raise refused()
+                for v in m["Device"].split(":"): number(int(v),2**32-1,0)
+                if (m["MountID"] in mount_ids or m["Device"] in mount_devices
+                        or m["Device"]!=f'{os.major(m["Identity"]["Device"])}:{os.minor(m["Identity"]["Device"])}'): raise refused()
+                mount_ids.add(m["MountID"]);mount_devices.add(m["Device"])
+            partial=None
+            if os.path.lexists(directory/"scoped-limits.json"):
+                partial=record("scoped-limits.json");value=partial[0]
+                fields(value,"Version Root Plan Owner Epoch Guardian Controls")
+                if value["Version"]!=1 or value["Root"]!=b["root"]["path"] or value["Plan"]!=limits: raise refused()
+                for role in ("Owner","Epoch","Guardian"):
+                    if groups[role] is None or value[role]!=groups[role]["Identity"]: raise refused()
+                controls=value["Controls"]
+                fields(controls,"cgroup.type cpu.max cpu.max.burst memory.max memory.swap.max memory.oom.group pids.max memory.events.local")
+                for v in controls.values():
+                    file_identity(v)
+                    if v["Device"]!=b["root"]["device"]: raise refused()
+            # No daemon/child launch is reachable in this proof; later records cannot be downgraded.
+            forbidden={"host-scope.json","metadata-intent.json","intent.json","guardian.json","revoked.json","expired.json",
+                       "removed.json","owner-empty.json","host-retired.json","retired.json","control"}
+            for _ in range(2):
+                if e.names(directory)-{"creation-intent.json","creation-retired.json","bootstrap.lock","scoped-limits.json"}: raise refused()
+                if any(os.path.lexists(directory/name) for name in forbidden): raise refused()
+                if any(os.path.lexists(value) for role,value in topology.items() if role!="GuardDirectory"): raise refused()
+                current=e.mounts()
+                if any(v["path"]==str(directory) or v["path"].startswith(str(directory)+"/")
+                       or any(v["path"]==str(p) or v["path"].startswith(str(p)+"/") for p in (owner,host)) for v in current): raise refused()
+                for m in mounts.values():
+                    if m is not None and any(v["id"]==m["MountID"] or v["device"]==m["Device"] for v in current): raise refused()
+                if identity(e.protected(directory,directory=True))!=directory_id or identity(e.protected(lock_path))!=identity(lock_info): raise refused()
+                if record("creation-intent.json")!=(intent,ihash,iid) or record("creation-retired.json")!=(retired,rhash,rid): raise refused()
+                if (record("scoped-limits.json") if os.path.lexists(directory/"scoped-limits.json") else None)!=partial: raise refused()
+            return ihash
+        finally: os.close(lock)
 
     def _reservation(self,e,c,local,row,context):
         lease=context["lease"]; proof=decode(row["enforcement"])
@@ -571,6 +730,9 @@ class LinuxPartitionProvider:
         self._image(e,c,proof["qualified_image"],lease)
         state=context["binding_state"]
         if state is None: return
+        if state["phase"]=="retired" and self._has_creation_retired(c,state):
+            self._retired_owner(e,c,state)
+            return
         if self._accounting_sibling(context,local["id"],state):
             self._accounted_owner(e,c,state)
             return
@@ -623,7 +785,7 @@ class LinuxPartitionProvider:
     def verify_host_accounting(self,capacity,held,scope):
         e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c)
         if capacity!=b["capacity"] or scope.get("accounting_version")!=ephemeral.ACCOUNTING or scope["authority_incarnation"]!=b["authority_incarnation"] or len(held)>b["max_claims"]: raise refused()
-        expected=set(); retired=scope.get("retired",[]);target=scope.get("renewal_target")
+        seen=set(); expected=[set(),set(),set()]; retired=scope.get("retired",[]);target=scope.get("renewal_target")
         if target is not None and sum(execution.renewal_matches(target,item["binding_state"],item["lease"]["id"]) for item in held)!=1: raise refused()
         if not isinstance(retired,list) or len(retired)>256: raise refused()
         for item in [*held,*retired]:
@@ -631,17 +793,21 @@ class LinuxPartitionProvider:
             if row is None: raise refused()
             if state is None: continue
             key,directory,owner,epoch,guardian,host=self._paths(c,state["binding"]["ref"])
-            if key in expected: raise refused()
+            if key in seen: raise refused()
+            seen.add(key)
             if item in retired:
                 if state["phase"]!="retired": raise refused()
-            if item not in retired and self._accounting_sibling(scope,item["lease"]["id"],state):
+            if state["phase"]=="retired" and self._has_creation_retired(c,state):
+                self._retired_owner(e,c,state)
+            elif item not in retired and self._accounting_sibling(scope,item["lease"]["id"],state):
                 self._accounted_owner(e,c,state)
             elif state["phase"]=="retired": self._retired_owner(e,c,state)
-            if any(os.path.lexists(p) for p in (directory,owner,host)): expected.add(key)
+            for index,p in enumerate((owner,host,directory)):
+                if os.path.lexists(p): expected[index].add(key)
         root=path(b["root"]["path"])
-        for directory in (root/"nodus-scoped-owners",root/"nodus-scoped-host",path(c["fifo_dir"])/"guardians"):
+        for directory,wanted in zip((root/"nodus-scoped-owners",root/"nodus-scoped-host",path(c["fifo_dir"])/"guardians"),expected):
             names=e.names(directory,320,dirs=directory != path(c["fifo_dir"])/"guardians") if directory.exists() else set()
-            if names!=expected: raise refused()
+            if names!=wanted: raise refused()
         if target is not None: self._envelope(e,c)
         return True
 
@@ -657,6 +823,10 @@ class LinuxPartitionProvider:
             if predecessor<=2:
                 clean=not any(os.path.lexists(p) for p in (directory,owner,host))
             else:
-                self._owner(e,c,state,clean=True);clean=True
+                if self._has_creation_retired(c,state):
+                    self._envelope(e,c)
+                    self._retired_owner(e,c,state)
+                else: self._owner(e,c,state,clean=True)
+                clean=True
         return CleanupProof(clean,self.clock(),local["id"],local["generation"],tuple(local["resources"]),
                             {"provider_config_sha256":self.sha256,"kernel_retirement_verified":clean})

@@ -325,6 +325,142 @@ class Partitions(unittest.TestCase):
                 cleaned[0]=True;self.assertTrue(call("check",request)[1]["authorized"])
             finally:
                 self.executor.verify_reservation=original_verify;self.executor.verify_host_accounting=original_account
+        def original_abort(held, retired):
+            # Actual protected files/flock and HTTP/SQLite; historical kernel slots/envelope are synthetic.
+            import fcntl
+            import hashlib
+            from nodus_dc import partition_host as host
+            from nodus_dc.model import digest
+            b=retired["binding"];budget=b["host_budget"];charge=held["ephemeral"]["charge"]
+            reader=object.__new__(host.LinuxPartitionProvider);reader.sha256="7"*64;reader.clock=self.clock;reader._immutable_hashes={}
+            root=self.root/"original-abort";fifo=root/"fifo";owners=root/"owners";hosts=root/"hosts"
+            for parent in (fifo/"guardians",owners,hosts): parent.mkdir(parents=True,mode=0o700)
+            config={"host_budget":budget,"namespace":b["image"]["namespace"],"fifo_dir":str(fifo),
+                    "runtime_identity":b["runtime_identity"],"creator_sha256":retired["creator"]["executable_sha256"]}
+            def paths(c,ref):
+                key=host.LinuxPartitionProvider._paths(c,ref)[0];owner=owners/key
+                return key,fifo/"guardians"/key,owner,owner/"nodus-epochs"/key,owner/"nodus-guardians"/key,hosts/key
+            reader._paths=paths;reader._configuration=lambda e,**kw:config;reader._envelope=lambda e,c:budget;reader._image=lambda *args:None
+            key,directory,owner,epoch,guardian,group=paths(config,b["ref"])
+            directory.mkdir(mode=0o700);lock=directory/"bootstrap.lock";lock.touch(mode=0o600)
+            ident=lambda p:host.identity(p.stat())
+            topology={"Owner":str(owner),"EpochParent":str(epoch.parent),"Epoch":str(epoch),"GuardianParent":str(guardian.parent),
+                      "Guardian":str(guardian),"Host":str(group),"GuardDirectory":str(directory),"HostDirectory":str(directory/"host"),
+                      **{k:str(directory/"host"/k.lower()) for k in ("Visible","Stage","Internal")}}
+            plan={"Version":2,"SpecSHA256":held["ephemeral"]["spec_sha256"],"DeviceSHA256":reader._grant_digest(b),
+                  "VisibleBytes":task["scratch_bytes"],"StageBytes":charge["stage_bytes"]}
+            limits={"Version":1,"BindingSHA256":retired["binding_sha256"],"HostBudgetSHA256":digest(budget),
+                    "Task":{"CPUMillis":task["cpu_millis"],"MemoryBytes":task["memory_bytes"],"PIDs":512},
+                    "HostScratchBytes":charge["host_memory_bytes"],"OwnerOverheadBytes":charge["owner_overhead_bytes"],"OwnerOverheadCPUMillis":charge["owner_cpu_millis"]}
+            intent={"Version":1,"Ref":{"AttemptID":b["ref"]["attempt_id"],"Epoch":b["ref"]["epoch"]},"Namespace":config["namespace"],"Executor":2,
+                    "BindingSHA256":retired["binding_sha256"],"LocalLeaseID":b["local_lease_id"],"QualificationSHA256":b["runtime_identity"]["qualification_sha256"],
+                    "RunscSHA256":b["runtime_identity"]["runsc_sha256"],"Creator":retired["creator"],"IssueSHA256":retired["issue_sha256"],
+                    "StartSHA256":retired["start_sha256"],"ConsumedRevision":3,"HostBudgetSHA256":digest(budget),
+                    "HostScope":{"BootID":budget["boot_id"],"CgroupNamespace":budget["cgroup_namespace"],"UserNamespace":budget["user_namespace"],
+                    "PIDNamespace":budget["pid_namespace"],"AllocationRoot":budget["root"]["path"],"AllocationDevice":budget["root"]["device"],"AllocationInode":budget["root"]["inode"]},
+                    "TimeNamespace":os.readlink("/proc/self/ns/time"),"Shared":{"Path":budget["shared"]["path"],"Device":budget["shared"]["device"],"Inode":budget["shared"]["inode"]},
+                    "Limits":limits,"Plan":plan,"DeadlineBootNS":1,"Directory":ident(directory),"BootstrapLock":ident(lock),"Topology":topology}
+            proof={k:copy.deepcopy(intent[k]) for k in ("Version","Ref","BindingSHA256","LocalLeaseID","Creator","IssueSHA256","StartSHA256","QualificationSHA256")}
+            proof.update(IntentSHA256="",RetiredRevision=4,ProofContract="scoped-host-original-abort.v1",
+                         Cgroups=dict.fromkeys(("Owner","EpochParent","Epoch","GuardianParent","Guardian","Host")),
+                         Mounts=dict.fromkeys(("Visible","Stage","Internal")),OwnedDirectories=dict.fromkeys(("Host","Visible","Stage","Internal")))
+            def put(name,value):
+                raw=value if isinstance(value,bytes) else json.dumps(value,separators=(",",":")).encode()
+                p=directory/name;p.write_bytes(raw);p.chmod(0o600);return raw
+            def install(a=intent,z=proof):
+                raw=put("creation-intent.json",a);value=copy.deepcopy(z);value["IntentSHA256"]=hashlib.sha256(raw).hexdigest()
+                put("creation-retired.json",value)
+            class Files(host.Evidence):
+                def mounts(self): return []  # No kernel/mount qualification in this protocol journey.
+            old_clean=self.executor.verify_clean;old_account=self.executor.verify_host_accounting;old_verify=self.executor.verify_reservation
+            def clean(local,request,*,context):
+                p=json.loads(context["provider_row"]["enforcement"]);p["provider_config_sha256"]=reader.sha256
+                return reader.verify_clean(local,request,context={**context,"provider_row":{**context["provider_row"],"enforcement":json.dumps(p)}})
+            def verify(local,row,*,context):
+                p=json.loads(row["enforcement"]);p["provider_config_sha256"]=reader.sha256
+                reader._reservation(Files(),config,local,{**row,"enforcement":json.dumps(p)},context)
+                return True
+            def account(capacity,rows,scope):
+                reader.verify_host_accounting(capacity,rows,scope)
+                return old_account(capacity,rows,scope)
+            self.executor.verify_clean=clean;self.executor.verify_host_accounting=account;self.executor.verify_reservation=verify
+            try:
+                with patch.object(host,"Evidence",Files):
+                    self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                    self.assertTrue(call("inspect",held)[1]["held"])
+                    install()
+                    for which,key,value in (("intent","DeadlineBootNS",0),("intent","DeadlineBootNS",2**63),
+                            ("intent","Version",True),("intent","Creator",{**retired["creator"],"pid":retired["creator"]["pid"]+1}),
+                            ("intent","Topology",{**topology,"Host":str(root/"foreign")}),
+                            ("proof","StartSHA256","8"*64),("proof","RetiredRevision",5),("proof","Creators",[]),
+                            ("proof","Cgroups",{"Owner":None})):
+                        a=copy.deepcopy(intent);z=copy.deepcopy(proof);(a if which=="intent" else z)[key]=value;install(a,z)
+                        self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                        self.assertTrue(call("inspect",held)[1]["held"])
+                        self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+                    for raw in (b'{"Version":1,"Version":1}',json.dumps(intent).replace('"DeadlineBootNS": 1','"DeadlineBootNS": 1e0').encode()):
+                        install();put("creation-intent.json",raw)
+                        with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    install()
+                    for filename in ("host-scope.json","metadata-intent.json","guardian.json","removed.json","creation-intent.json.tmp"):
+                        put(filename,{})
+                        with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                        (directory/filename).unlink()
+                    for p in (owner,group,directory/"host"):
+                        p.mkdir(mode=0o700)
+                        with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                        p.rmdir()
+                    with lock.open('rb') as owned:
+                        fcntl.flock(owned,fcntl.LOCK_SH|fcntl.LOCK_NB)
+                        with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    # A source-qualified all-null proof is never inferred from absent files.
+                    self.assertEqual(reader._creation_retired(Files(),config,retired),hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest())
+                    # Successful v5 publication retains and strictly joins this same predecessor.
+                    self.assertEqual(reader._creation_intent(Files(),config,{**retired,"phase":"host-published","phase_revision":4})[0],intent)
+                    self.assertNotEqual(call("begin",begin({"lease":held,"ref":b["ref"],"binding_sha256":retired["binding_sha256"]},"issue"))[0],200)
+                    self.assertFalse(call("check",held)[1]["authorized"])
+                    status,report=call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})
+                    self.assertEqual(status,200,report);self.assertIsNotNone(report["host_budget"])
+                    self.assertTrue(call("inspect",held)[1]["held"])
+                    self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+                    target=[r for r in self.executor.accounting[-1][1] if r["lease"]["id"]==b["local_lease_id"]]
+                    self.assertEqual([r["resources"] for r in target],[descriptor["charge"]["aggregate"]])
+                    unknown=fifo/"guardians"/"unaccounted";unknown.mkdir(mode=0o700)
+                    self.assertIsNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
+                    unknown.rmdir()
+                    # Present original slots prove prior empty teardown, not current live permission.
+                    present=copy.deepcopy(proof)
+                    for index,role in enumerate(present["Cgroups"]):
+                        present["Cgroups"][role]={"Identity":{"Device":budget["root"]["device"],"Inode":1000+index},"Populated":0,"MemoryCurrent":0}
+                    for index,role in enumerate(present["OwnedDirectories"]): present["OwnedDirectories"][role]={"Device":ident(directory)["Device"],"Inode":2000+index}
+                    for index,role in enumerate(present["Mounts"]):
+                        size={"Visible":task["scratch_bytes"],"Stage":charge["stage_bytes"],"Internal":8192}[role]
+                        present["Mounts"][role]={"Path":topology[role],"Bytes":size,"Inodes":8 if role=="Internal" else 256,
+                                                "MountID":3000+index,"Device":"0:"+str(4000+index),"Identity":{"Device":os.makedev(0,4000+index),"Inode":1}}
+                    install(z=present)
+                    partial={"Version":1,"Root":budget["root"]["path"],"Plan":limits,
+                             **{k:present["Cgroups"][k]["Identity"] for k in ("Owner","Epoch","Guardian")},
+                             "Controls":{k:{"Device":budget["root"]["device"],"Inode":5000+i} for i,k in enumerate(("cgroup.type","cpu.max","cpu.max.burst","memory.max","memory.swap.max","memory.oom.group","pids.max","memory.events.local"))}}
+                    put("scoped-limits.json",partial)
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,{**retired,"phase_revision":5})
+                    wrong=copy.deepcopy(present);wrong["Cgroups"]["Host"]["MemoryCurrent"]=4096;install(z=wrong)
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    install(z=present)
+                    wrong=copy.deepcopy(partial);wrong["Plan"]["HostScratchBytes"]+=4096;put("scoped-limits.json",wrong)
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Files(),config,retired)
+                    put("scoped-limits.json",partial)
+                    class Mounted(Files):
+                        def mounts(self):
+                            m=present["Mounts"]["Visible"]
+                            return [{"id":m["MountID"],"device":m["Device"],"path":str(root/"moved")}]
+                    with self.assertRaises((Error,OSError,ValueError)): reader._creation_retired(Mounted(),config,retired)
+                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                    self.assertFalse(call("inspect",held)[1]["held"])
+                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                    self.assertFalse(call("check",held)[1]["authorized"])
+                    self.assertIsNotNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
+            finally:
+                self.executor.verify_clean=old_clean;self.executor.verify_host_accounting=old_account;self.executor.verify_reservation=old_verify
         def finish(held):
             prior = saved(held)[0]
             self.assertTrue(call("reclaim",held)[1]["retired"])
@@ -381,6 +517,11 @@ class Partitions(unittest.TestCase):
             self.assertEqual(self.executor.prepares,prepares)
             self.assertFalse(call("inspect",held)[1]["held"])
             self.assertEqual(retirement(held,base["ref"]),(200,unbound))
+            held,base=acquire("original-abort")
+            status,issued=call("begin",begin(base,"issue"));self.assertEqual(status,200)
+            status,consumed=call("begin",begin(base,"consume",creation_token=issued["creation_token"]));self.assertEqual(status,200)
+            self.assertTrue(call("reclaim",held)[1]["retired"])
+            original_abort(held,saved(held)[0])
             held, base = acquire("creator-full")
             self.assertNotEqual(retirement(held,base["ref"])[0],200)
             self.assertEqual(self.service.store.fence.read()["reader_schema"],8)
