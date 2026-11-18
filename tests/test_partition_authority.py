@@ -644,15 +644,24 @@ class Partitions(unittest.TestCase):
                     return host.LinuxPartitionProvider._shared_ancestry(reader,e,shared_config,
                         {**value,"SharedBudget":shared_config["host_budget"]["shared"]})
                 def refused_held():
-                    self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                    status,response=call("complete",{"lease":held,"cleanup_verified":True})
+                    self.assertEqual(status,503,response)
+                    self.assertEqual(response["error"]["code"],"host_resources_unenforced")
+                    self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}),
+                                     (200,{"offers":[],"host_budget":None}))
                     self.assertTrue(call("inspect",held)[1]["held"])
                     self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
-                    self.assertIsNone(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING})[1]["host_budget"])
                 with patch.object(reader,"_shared_ancestry",ancestry):
                     install_drain()
                     self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])
                     self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])
                     self.assertTrue(call("inspect",held)[1]["held"])
+                    status,response=call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING,"unknown":True})
+                    self.assertEqual(status,400,response);self.assertEqual(response["error"]["code"],"invalid_request")
+                    unrelated=Error("partition_execution_denied","synthetic unrelated verifier failure",403)
+                    with patch.object(reader,"_creation_drain",side_effect=unrelated):
+                        self.assertEqual(call("offers",{"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}),
+                                         (unrelated.status,unrelated.as_dict()))
                     for role in ("Host","Owner"):
                         only=copy.deepcopy(high);only["Targets"][role]=None;install_drain(only)
                         self.assertEqual(reader._creation_retired(Files(),config,retired),high["CreationIntentSHA256"])

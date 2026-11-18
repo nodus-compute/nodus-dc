@@ -993,6 +993,12 @@ class LinuxPartitionProvider:
                 if (record("scoped-limits.json") if os.path.lexists(directory/"scoped-limits.json") else None)!=partial: raise refused()
                 if self._creation_drain(e,c,directory,intent,ihash,retired)!=drain: raise refused()
             return ihash
+        except Error as exc:
+            # Shared field validators inspect protected records here, not a client request.
+            if exc.code!="invalid_request" or exc.status!=400: raise
+            raise refused() from None
+        except OSError:
+            raise refused() from None
         finally: os.close(lock)
 
     def _reservation(self,e,c,local,row,context):

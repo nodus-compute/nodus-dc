@@ -218,6 +218,11 @@ existing admission/renewal accounting still verifies every held owner and releas
 history before admitting capacity. No new table, reader floor, service or RPC is
 introduced.
 
+Malformed fields or failed filesystem reads while validating the locked original
+retirement records are unavailable host evidence: Complete refuses with
+`host_resources_unenforced`, and a valid offers request returns an empty list and
+null budget. Malformed API requests and unrelated authority errors remain distinct.
+
 An already-positive proof can replay after the original caller exits, with fresh
 kernel absence checks. A crash or lost handle before durable proof stays held.
 Complete pair/metadata failures remain on strict v5 cleanup, without downgrade.
