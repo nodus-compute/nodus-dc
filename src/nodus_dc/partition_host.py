@@ -403,9 +403,11 @@ class LinuxPartitionProvider:
         plan=scope["Plan"]; fields(plan,"Version SpecSHA256 DeviceSHA256 VisibleBytes StageBytes")
         if plan["Version"]!=2 or plan["SpecSHA256"]!=lease["ephemeral"]["spec_sha256"] or plan["VisibleBytes"]!=lease["resources"]["scratch_bytes"] or plan["StageBytes"]!=ch["stage_bytes"]: raise refused()
         if plan["DeviceSHA256"] != self._grant_digest(binding): raise refused()
+        mount_seen=[set(),set(),set()]
         for title,name,size,inodes in (("Visible","visible",plan["VisibleBytes"],256),("Stage","stage",plan["StageBytes"],256),("Internal","internal",8192,8)):
-            m=scope[title]; fields(m,"Path Bytes Inodes MountID Device Identity")
-            if m["Path"]!=str(directory/"host"/name) or m["Bytes"]!=size or m["Inodes"]!=inodes: raise refused()
+            for seen,value in zip(mount_seen,self._mount(scope[title],str(directory/"host"/name),size,inodes)):
+                if value in seen: raise refused()
+                seen.add(value)
         for name,want in ((owner,limits["Owner"]),(epoch,limits["Epoch"]),(guardian,limits["Guardian"]),(host,scope["Group"])):
             if identity(e.protected(name,directory=True))!=want: raise refused()
         if identity(e.protected(directory/"bootstrap.lock"))!=scope["CreatorLock"]: raise refused()
@@ -416,6 +418,19 @@ class LinuxPartitionProvider:
         for group, freeze, kill in ((epoch,guard["Freeze"],guard["Kill"]),(host,scope["Freeze"],scope["Kill"])):
             if identity(e.protected(group/"cgroup.freeze"))!=freeze or identity(e.protected(group/"cgroup.kill"))!=kill: raise refused()
         return directory,owner,epoch,guardian,host,guard,limits,scope,shash
+
+    @staticmethod
+    def _mount(m,name,size,inodes):
+        """Strict historical mount codec, shared by full-scope and original-abort reads."""
+        fields(m,"Path Bytes Inodes MountID Device Identity");fields(m["Identity"],"Device Inode")
+        if any(type(v) is not int or not 0<v<2**64 for v in m["Identity"].values()): raise refused()
+        if type(m["MountID"]) is not int or not 0<m["MountID"]<=2**31-1: raise refused()
+        if (m["Path"]!=name or type(m["Bytes"]) is not int or m["Bytes"]!=size
+                or type(m["Inodes"]) is not int or m["Inodes"]!=inodes): raise refused()
+        if not isinstance(m["Device"],str) or not re.fullmatch(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)",m["Device"]): raise refused()
+        if any(int(v)>2**32-1 for v in m["Device"].split(":")): raise refused()
+        if m["Device"]!=f'{os.major(m["Identity"]["Device"])}:{os.minor(m["Identity"]["Device"])}': raise refused()
+        return m["MountID"],m["Device"],(m["Identity"]["Device"],m["Identity"]["Inode"])
 
     def _metadata(self,e,c,state,directory,guard):
         binding=state["binding"]
@@ -838,18 +853,14 @@ class LinuxPartitionProvider:
                     if value["Device"]!=directory_id["Device"] or value["Inode"] in directory_inodes: raise refused()
                     directory_inodes.add(value["Inode"])
                     if role!="Host" and dirs["Host"] is None: raise refused()
-            mount_ids=set();mount_devices=set()
+            mount_seen=[set(),set(),set()]
             for role,size,inodes in (("Visible",plan["VisibleBytes"],256),("Stage",plan["StageBytes"],256),("Internal",8192,8)):
                 m=mounts[role]
                 if m is None: continue
-                fields(m,"Path Bytes Inodes MountID Device Identity");file_identity(m["Identity"]);number(m["MountID"],2**31-1)
-                if (m["Path"]!=topology[role] or m["Bytes"]!=size or m["Inodes"]!=inodes
-                        or dirs[role] is None or dirs["Host"] is None or groups["Host"] is None): raise refused()
-                if not isinstance(m["Device"],str) or not re.fullmatch(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)",m["Device"]): raise refused()
-                for v in m["Device"].split(":"): number(int(v),2**32-1,0)
-                if (m["MountID"] in mount_ids or m["Device"] in mount_devices
-                        or m["Device"]!=f'{os.major(m["Identity"]["Device"])}:{os.minor(m["Identity"]["Device"])}'): raise refused()
-                mount_ids.add(m["MountID"]);mount_devices.add(m["Device"])
+                if dirs[role] is None or dirs["Host"] is None or groups["Host"] is None: raise refused()
+                for seen,value in zip(mount_seen,self._mount(m,topology[role],size,inodes)):
+                    if value in seen: raise refused()
+                    seen.add(value)
             partial=None
             if os.path.lexists(directory/"scoped-limits.json"):
                 partial=record("scoped-limits.json");value=partial[0]
@@ -984,8 +995,8 @@ class LinuxPartitionProvider:
             if predecessor<=2:
                 clean=not any(os.path.lexists(p) for p in (directory,owner,host))
             else:
+                self._envelope(e,c)
                 if self._has_creation_retired(c,state):
-                    self._envelope(e,c)
                     self._retired_owner(e,c,state)
                 else: self._owner(e,c,state,clean=True)
                 clean=True

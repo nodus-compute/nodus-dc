@@ -484,6 +484,78 @@ class Partitions(unittest.TestCase):
                 with self.assertRaises(Error): check("clean")
                 self.assertTrue(call("inspect",held)[1]["held"])
                 self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+            def consumed_clean_guards():
+                # Actual Complete/verify_clean/record-pair path; current envelope and later kernel facts are synthetic.
+                (directory/"creation-retired.json").unlink()  # Exercise normal consumed cleanup, with no high intent.
+                owner_calls=[]
+                def otherwise_clean(e,c,state,*,clean=False):
+                    owner_calls.append(clean);self.assertTrue(clean)
+                class EnvelopeFiles(Files):
+                    drift=""
+                    def mounts(self): return [{"path":"/sys/fs/cgroup","type":"cgroup2"}]
+                    def controls(self,p,expected,identities=None):
+                        role="root" if str(p)==budget["root"]["path"] else "shared"
+                        item=budget[role]
+                        self_value={"Device":item["device"],"Inode":item["inode"]}
+                        if role==self.drift: self_value["Inode"]+=1
+                        return self_value
+                try:
+                    with patch.object(reader,"_envelope",host.LinuxPartitionProvider._envelope.__get__(reader)), \
+                            patch.object(reader,"_owner",otherwise_clean),patch.object(host,"Evidence",EnvelopeFiles):
+                        for role in ("root","shared"):
+                            EnvelopeFiles.drift=role
+                            self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                            self.assertTrue(call("inspect",held)[1]["held"])
+                            self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+                        self.assertEqual(owner_calls,[])  # Missing envelope check would release through this positive owner.
+                    limit_record={"Version":1,"Root":str(owner.parent.parent),"Plan":limits,
+                                  "Owner":{"Device":31,"Inode":101},"Epoch":{"Device":31,"Inode":102},
+                                  "Guardian":{"Device":31,"Inode":103},"Controls":{}}
+                    lhash=hashlib.sha256(put("scoped-limits.json",limit_record)).hexdigest()
+                    guard={"Version":4,"Executor":2,"Ref":intent["Ref"],"Namespace":config["namespace"],
+                           "BootID":budget["boot_id"],"TimeNamespace":intent["TimeNamespace"],"HostScope":intent["HostScope"],
+                           "CgroupPath":str(epoch),"Freeze":{"Device":31,"Inode":104},"Kill":{"Device":31,"Inode":105},"ScopeSHA256":lhash}
+                    scope={"Version":3,"Guard":guard,"Plan":plan,"Root":limit_record["Root"],"GroupPath":str(group),
+                           "GuardianPath":str(guardian),"Group":{"Device":31,"Inode":106},"Freeze":{"Device":31,"Inode":107},
+                           "Kill":{"Device":31,"Inode":108},"CreatorLock":ident(lock),"Controls":{},
+                           "CreationIntentSHA256":hashlib.sha256((directory/"creation-intent.json").read_bytes()).hexdigest(),
+                           "WorkerPath":str(group/"worker"),"Worker":{"Device":31,"Inode":109},"WorkerControls":{}}
+                    for index,role in enumerate(("Visible","Stage","Internal")):
+                        scope[role]={"Path":topology[role],"Bytes":{"Visible":plan["VisibleBytes"],"Stage":plan["StageBytes"],"Internal":8192}[role],
+                                     "Inodes":8 if role=="Internal" else 256,"MountID":3000+index,"Device":"0:"+str(4000+index),
+                                     "Identity":{"Device":os.makedev(0,4000+index),"Inode":1}}
+                    boundary=[]
+                    class MountFiles(Files):
+                        def protected(self,p,*,directory=False):
+                            if str(p)==str(owner):
+                                boundary.append("after-all-mounts")
+                                raise OSError("synthetic kernel boundary after complete historical mount validation")
+                            return super().protected(p,directory=directory)
+                    with patch.object(host,"Evidence",MountFiles):
+                        put("host-scope.json",scope)
+                        self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                        self.assertEqual(boundary,["after-all-mounts"]);boundary.clear()
+                        bad=[("MountID",0),("MountID",2**31),("Device","00:4000"),("Device","0:4294967296"),
+                             ("Device","0:4001"),("Identity",None),("Identity",{"Device":0,"Inode":1}),
+                             ("Identity",{"Device":os.makedev(0,4000),"Inode":2**64})]
+                        for key,value in bad:
+                            altered=copy.deepcopy(scope);altered["Visible"][key]=value;put("host-scope.json",altered)
+                            self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                            self.assertEqual(boundary,[])  # Rejection must precede the synthetic later kernel boundary.
+                            self.assertTrue(call("inspect",held)[1]["held"])
+                            self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+                        for keys in (("MountID",),("Device","Identity")):
+                            altered=copy.deepcopy(scope)
+                            for key in keys: altered["Stage"][key]=copy.deepcopy(scope["Visible"][key])
+                            put("host-scope.json",altered)
+                            self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                            self.assertEqual(boundary,[])
+                            self.assertTrue(call("inspect",held)[1]["held"])
+                            self.assertEqual(saved(held)[1],charge["aggregate"]["memory_bytes"])
+                finally:
+                    for name in ("host-scope.json","scoped-limits.json"):
+                        (directory/name).unlink(missing_ok=True)
+                    install()
             old_clean=self.executor.verify_clean;old_account=self.executor.verify_host_accounting;old_verify=self.executor.verify_reservation
             def clean(local,request,*,context):
                 p=json.loads(context["provider_row"]["enforcement"]);p["provider_config_sha256"]=reader.sha256
@@ -502,6 +574,7 @@ class Partitions(unittest.TestCase):
                     self.assertTrue(call("inspect",held)[1]["held"])
                     install()
                     worker_records()
+                    consumed_clean_guards()
                     for which,key,value in (("intent","DeadlineBootNS",0),("intent","DeadlineBootNS",2**63),
                             ("intent","Version",True),("intent","Version",1),
                             ("intent","SharedBudget",{**budget["shared"],"memory_bytes":budget["shared"]["memory_bytes"]+4096}),("intent","Creator",{**retired["creator"],"pid":retired["creator"]["pid"]+1}),

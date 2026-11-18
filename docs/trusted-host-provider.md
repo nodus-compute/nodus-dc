@@ -241,6 +241,11 @@ worker and all three mounts, exact metadata/creator/guardian retirement and the
 original protected lock. Parent high may stay0 after successful retirement.
 
 Complete remains exact-target cleanup, not an additional all-owner census.
+Every consumed cleanup route rereads the current root/Shared envelope before
+accepting positive owner evidence, including ordinary worker offlining without a
+high command. All scope3 historical mounts use the same strict identity codec as
+original-abort mounts: bounded positive IDs, canonical device numbers, exact
+device/inode agreement and distinct mount identities, before any state branch.
 Existing admission and published-renewal accounting retain the full all-owner
 check and held A until actual Complete. The owning HTTP/SQLite case adds real
 protected record parsing with explicitly synthetic cgroup files/daemon evidence;
