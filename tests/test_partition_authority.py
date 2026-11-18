@@ -227,7 +227,20 @@ class Partitions(unittest.TestCase):
                 self.assertTrue(call("check",check)[1]["authorized"])  # A uint64 observation is not a continuation quota.
                 for invalid in (True,1.0,-1,2**64):
                     self.executor.memory_current=invalid
-                    self.assertEqual(call("offers",query)[1],{"offers":[],"host_budget":None})
+                    self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                self.executor.memory_current=0
+                observed=self.executor.verify_host_accounting
+                for invalid in (True,{"contract":"partition-host-headroom.v1","host_budget":None,"memory_current":0},
+                                {"contract":"partition-host-headroom.v1","host_budget":{},"memory_current":0}):
+                    with patch.object(self.executor,"verify_host_accounting",return_value=invalid):
+                        self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                def invalid_budget(*args):
+                    result=observed(*args);result["host_budget"]["root"]["memory_bytes"]=True
+                    return result
+                with patch.object(self.executor,"verify_host_accounting",side_effect=invalid_budget):
+                    self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                with patch.object(self.executor,"verify_host_accounting",side_effect=Error("partition_execution_denied","synthetic unrelated hook failure",403)):
+                    self.assertEqual(call("offers",query)[0],403)  # Hook/authority errors are outside the typed decoder catch.
                 self.assertEqual(saved(held)[:2],before);self.assertEqual(self.executor.prepares,prepares)
             finally: self.executor.memory_current=0
         def retirement(held, ref):

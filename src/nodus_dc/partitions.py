@@ -337,29 +337,33 @@ class PartitionAuthority:
         if any(value < 0 for value in available.values()):
             raise Error("host_resources_unaccounted", "retained host reservations exceed enforced capacity", 409)
         if accounting_version is not None:
-            fields(observed,"contract host_budget memory_current")
-            if observed["contract"] != execution.HOST_ACCOUNTING:
-                raise Error("host_resources_unaccounted", "versioned host headroom is unavailable", 409)
-            value=observed["host_budget"]
-            if not isinstance(value,dict): raise execution._denied()
-            b=execution.host_budget(value,{"offer":{"partition":{"boot_id":value.get("boot_id"),
-                "authority_incarnation":scope["authority_incarnation"]}}})
-            if b["capacity"]!=capacity or len(held)>b["max_claims"]: raise execution._denied()
-            for item in held:
-                provider=item.get("provider_row")
-                if provider is not None and json.loads(provider["enforcement"])["host_budget"]!=b:
-                    raise execution._denied()
-            current=observed["memory_current"]
-            if type(current) is not int or not 0<=current<2**64: raise execution._denied()
-            charged=b["shared"]["memory_bytes"]+sum(item["resources"]["memory_bytes"] for item in held)
-            if charged>=2**64: raise execution._denied()
-            if not continuation:
-                if charged+current>=2**64: raise execution._denied()
-                # Count current usage AND complete live reservations; no physical-free promise.
-                headroom=max(0,b["root"]["memory_bytes"]-charged-current)//4096*4096
-                available["memory_bytes"]=min(available["memory_bytes"],headroom)
-                if len(held)>=b["max_claims"]:
-                    available={key:0 for key in available}
+            try:
+                fields(observed,"contract host_budget memory_current")
+                if observed["contract"] != execution.HOST_ACCOUNTING:
+                    raise Error("host_resources_unaccounted", "versioned host headroom is unavailable", 409)
+                value=observed["host_budget"]
+                if not isinstance(value,dict): raise execution._denied()
+                b=execution.host_budget(value,{"offer":{"partition":{"boot_id":value.get("boot_id"),
+                    "authority_incarnation":scope["authority_incarnation"]}}})
+                if b["capacity"]!=capacity or len(held)>b["max_claims"]: raise execution._denied()
+                for item in held:
+                    provider=item.get("provider_row")
+                    if provider is not None and json.loads(provider["enforcement"])["host_budget"]!=b:
+                        raise execution._denied()
+                current=observed["memory_current"]
+                if type(current) is not int or not 0<=current<2**64: raise execution._denied()
+                charged=b["shared"]["memory_bytes"]+sum(item["resources"]["memory_bytes"] for item in held)
+                if charged>=2**64: raise execution._denied()
+                if not continuation:
+                    if charged+current>=2**64: raise execution._denied()
+                    # Count current usage AND complete live reservations; no physical-free promise.
+                    headroom=max(0,b["root"]["memory_bytes"]-charged-current)//4096*4096
+                    available["memory_bytes"]=min(available["memory_bytes"],headroom)
+                    if len(held)>=b["max_claims"]:
+                        available={key:0 for key in available}
+            except Error as exc:
+                if exc.code not in {"invalid_request","partition_execution_denied"}: raise
+                raise Error("host_resources_unaccounted", "versioned host headroom evidence is malformed", 409) from None
         available["scratch_bytes"] = min(available["scratch_bytes"], available["memory_bytes"])
         account = {"capacity": capacity, "local_reserved": local_reserved, "available": available}
         if accounting_version is not None: account["accounting_version"] = accounting_version
