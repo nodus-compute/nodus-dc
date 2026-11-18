@@ -68,6 +68,10 @@ Capacity sharing is optional and separately authorized. Idle measurements alone
 do not let Nodus run work. Your local workloads and external jobs share the same
 allocation authority; reclaim keeps resources held until cleanup is verified.
 
+Standalone GPU allocation and MIG configuration are separate from connected
+partition execution. [Connected partition execution](docs/partition-authority-v2.md)
+remains disabled in this release; monitoring enrollment does not enable it.
+
 ## Support and boundaries
 
 - Whole-GPU allocations, supported MIG partitions, and cooperating MPS clients
