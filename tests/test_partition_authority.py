@@ -624,6 +624,12 @@ class Partitions(unittest.TestCase):
                         if null_owner: bad["Targets"]["Owner"]=None
                         bad["Targets"][role]["Controls"]["memory.high"]["Identity"]=copy.deepcopy(partial["Controls"][name])
                         install_drain(bad);refused_held()  # Distinct objects cannot alias even when Owner was not selected.
+                    for inode in (partial["Controls"]["memory.events.local"]["Inode"],
+                                  high["SharedLeaf"]["Inode"],high["SharedControls"]["memory.max"]["Inode"]):
+                        bad=copy.deepcopy(high);prior=copy.deepcopy(present)
+                        ident={"Device":budget["root"]["device"],"Inode":inode}
+                        bad["Targets"]["Host"]["Identity"]=ident;prior["Cgroups"]["Host"]["Identity"]=ident
+                        install_drain(bad,z=prior);refused_held()  # A matching final slot cannot alias a retained control or Shared object.
                     for role in ("Host","Owner"):
                         bad=copy.deepcopy(present);bad["Cgroups"][role]["MemoryCurrent"]=4096
                         install_drain(z=bad);refused_held()

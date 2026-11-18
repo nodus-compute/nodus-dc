@@ -830,11 +830,11 @@ class LinuxPartitionProvider:
         sha(high["SharedAncestrySHA256"])
         ancestry=self._shared_ancestry(e,c,high)  # Exact Shared infrastructure remains live through every replay.
         budget=c["host_budget"];groups=retired["Cgroups"];limits=intent["Limits"]
-        seen={budget["root"]["inode"],budget["shared"]["inode"]}
-        seen.update(value["Identity"]["Inode"] for value in groups.values() if value is not None)
+        shared_ids={budget["root"]["inode"],budget["shared"]["inode"]}
         for node in ancestry:
-            seen.add(node["Identity"]["Inode"])
-            seen.update(value["Identity"]["Inode"] for value in node["Controls"].values())
+            shared_ids.add(node["Identity"]["Inode"])
+            shared_ids.update(value["Identity"]["Inode"] for value in node["Controls"].values())
+        seen=shared_ids|{value["Identity"]["Inode"] for value in groups.values() if value is not None}
         fields(high["Targets"],"Host Owner")
         if all(value is None for value in high["Targets"].values()): raise refused()
         for role,target in high["Targets"].items():
@@ -842,6 +842,7 @@ class LinuxPartitionProvider:
             fields(target,"Path Identity Controls");fields(target["Identity"],"Device Inode")
             if (target["Path"]!=intent["Topology"][role] or groups[role] is None
                     or target["Identity"]!=groups[role]["Identity"]
+                    or target["Identity"]["Inode"] in shared_ids
                     or groups[role]["Populated"]!=0 or groups[role]["MemoryCurrent"]!=0): raise refused()
             memory=limits["HostScratchBytes"] if role=="Host" else limits["Task"]["MemoryBytes"]+limits["OwnerOverheadBytes"]
             cpu=25000 if role=="Host" else (limits["Task"]["CPUMillis"]+limits["OwnerOverheadCPUMillis"])*100
@@ -931,6 +932,7 @@ class LinuxPartitionProvider:
                     if target is None: continue
                     controls=target["Controls"]
                     for name,ident in partial[0]["Controls"].items():
+                        if target["Identity"]==ident: raise refused()
                         if role=="Owner" and name in controls and controls[name]["Identity"]!=ident: raise refused()
                         if any(v["Identity"]==ident for key,v in controls.items() if role!="Owner" or key!=name): raise refused()
             # Only the joined fixed cleanup child is permitted; later execution cannot be downgraded.
