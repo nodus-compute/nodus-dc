@@ -76,7 +76,16 @@ Use the returned generation, not the illustrative `1`. Resource IDs and image di
 
 `exclusive_host` normally means exclusive managed Docker GPU passthrough. It does not automatically grant or track customer SSH/root access. A private operator with a never-enrolled host may record an explicit `native-handoff LEASE_ID --generation N --provisioner-reference TICKET` before using a separate provisioning system. This is only a protective intent record: it provides no SSH provisioning, isolation or return proof. The lease stays held even when the GPU is idle; TTL/drain quarantines it, and release/recover cannot return it even after reboot. Connected/enrolled hosts or any recorded connection attempt/history reject this operation because the package cannot prove a durable out-of-band platform revocation fence. A host-root tenant can alter local software, so actual return requires an external trusted provisioner to revoke credentials/reimage and establish a new authoritative fence. That integration and the complete native customer journey remain unsupported.
 
-Run the daemon for periodic expiry cleanup. A CLI-only deployment reconciles when `reconcile` is invoked; lease expiry denies new admissions but never proves cleanup. Retries with identical request keys return the current lease. Changed inputs with reused keys fail. Retrying a failed cleanup uses a new request key.
+Run the daemon for periodic expiry cleanup. A CLI-only deployment reconciles when `reconcile` is invoked; lease expiry denies new admissions but never proves cleanup.
+
+An API replay returns the current lease only when both the request key and the
+complete payload are identical, including the original absolute `expires_at`.
+Changed inputs with a reused key fail. The CLI's `reserve --ttl-seconds` computes
+a new expiry on each invocation, so repeating the same command is not an
+identical reserve replay. After an uncertain result, inspect `status` and the
+current lease before deciding what to do; do not blindly repeat reserve or use a
+new key to work around an unknown outcome. Retrying a failed cleanup uses a new
+request key after reviewing the retained lease state.
 
 ## Partitioning and trusted sharing
 
