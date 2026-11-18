@@ -837,10 +837,19 @@ class Partitions(unittest.TestCase):
                 select=lambda items:[v for v in items if v["lease"]["id"]==state["binding"]["local_lease_id"]]
                 reader.verify_host_accounting(capacity,select(rows),{**context,"retired":select(context["retired"])})
                 return original_account(capacity,rows,context)
+            query={"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
             def held_refusal():
-                self.assertNotEqual(call("complete",{"lease":held,"cleanup_verified":True})[0],200)
+                unavailable=host.refused()
+                self.assertEqual(call("complete",{"lease":held,"cleanup_verified":True}),(503,unavailable.as_dict()))
+                self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
                 self.assertTrue(call("inspect",held)[1]["held"])
-                self.assertEqual(saved(held)[1],descriptor["charge"]["aggregate"]["memory_bytes"])
+                self.assertEqual(saved(held)[:2],(state,descriptor["charge"]["aggregate"]["memory_bytes"]))
+            def history_unavailable():
+                self.assertEqual(call("offers",query),(200,{"offers":[],"host_budget":None}))
+                self.assertFalse(call("inspect",held)[1]["held"])
+                self.assertFalse(call("check",held)[1]["authorized"])
+                self.assertEqual(call("complete",{"lease":held,"cleanup_verified":True}),(200,{"lease":held,"released":True}))
+                self.assertEqual(saved(held)[:2],released)
             self.executor.verify_clean=clean;self.executor.verify_host_accounting=account
             try:
                 with patch.object(host,"Evidence",Files):
@@ -849,19 +858,41 @@ class Partitions(unittest.TestCase):
                     for role in groups:
                         for field,value in (("MemoryCurrent",True),("MemoryCurrent",1.0),("MemoryCurrent",-1),("MemoryCurrent",2**64),("Populated",1),("Identity",None)):
                             bad=copy.deepcopy(offline);bad["Groups"][role][field]=value;install(bad);held_refusal()
+                    install({**offline,"Groups":{}});held_refusal();install()
+                    for name in ("bootstrap.lock","guardian.json","retired.json","intent.json","revoked.json",
+                                 "host-worker-offline.json","host-unmount-visible.json","owner-empty.json","removed.json",
+                                 "workload-offline.json","workload-retired.json"):
+                        saved_path=root/"withheld-record";(directory/name).rename(saved_path)
+                        try:held_refusal()
+                        finally:saved_path.rename(directory/name)  # Preserve the captured inode and raw bytes.
+                    for raw in (b"{",b"\xff"):
+                        metadata=directory/"metadata-intent.json";metadata.write_bytes(raw);metadata.chmod(0o600)
+                        try:
+                            with patch.object(reader,"_metadata",lambda *args:host.LinuxPartitionProvider._metadata(reader,*args)):
+                                held_refusal()
+                        finally:metadata.unlink()
+                    unrelated=Error("partition_execution_denied","synthetic unrelated verifier failure",403)
+                    with patch.object(reader,"_record_pair",side_effect=unrelated):
+                        self.assertEqual(call("complete",{"lease":held,"cleanup_verified":True}),(403,unrelated.as_dict()))
+                        self.assertEqual(call("offers",query),(403,unrelated.as_dict()))
+                    self.assertTrue(call("inspect",held)[1]["held"])
+                    self.assertEqual(saved(held)[:2],(state,descriptor["charge"]["aggregate"]["memory_bytes"]))
+                    status,response=call("offers",{**query,"unknown":True})
+                    self.assertEqual(status,400,response);self.assertEqual(response["error"]["code"],"invalid_request")
                     install();envelope[0]=False;held_refusal();envelope[0]=True
                     for name in ("host-retired.json","host-high-intent.json","creation-retired.json","workload-offline.json.tmp"):
                         put(name,{});held_refusal();(directory/name).unlink()
                     parent.mkdir();held_refusal();parent.rmdir()
                     (directory/"workload-offline.json").unlink();held_refusal();install()
                     put("workload-retired.json",{**final,"OfflineSHA256":"f"*64});held_refusal();install()
-                    self.assertTrue(call("complete",{"lease":held,"cleanup_verified":True})[1]["released"])
+                    self.assertEqual(call("complete",{"lease":held,"cleanup_verified":True}),(200,{"lease":held,"released":True}))
                     self.assertFalse(call("inspect",held)[1]["held"])
-                    query={"include_host_budget":True,"accounting_version":ephemeral.ACCOUNTING}
+                    released=saved(held)[:2]
                     self.assertIsNotNone(call("offers",query)[1]["host_budget"])
-                    (directory/"workload-retired.json").unlink();self.assertIsNone(call("offers",query)[1]["host_budget"])
-                    (directory/"workload-offline.json").unlink();self.assertIsNone(call("offers",query)[1]["host_budget"])
-                    install();envelope[0]=False;self.assertIsNone(call("offers",query)[1]["host_budget"])
+                    (directory/"workload-retired.json").unlink();history_unavailable()
+                    (directory/"workload-offline.json").unlink();history_unavailable()
+                    install({**offline,"Groups":{}});history_unavailable()
+                    install();envelope[0]=False;history_unavailable()
                     envelope[0]=True;self.assertIsNotNone(call("offers",query)[1]["host_budget"])
             finally:self.executor.verify_clean=original_clean;self.executor.verify_host_accounting=original_account
 

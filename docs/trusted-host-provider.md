@@ -262,6 +262,13 @@ entries, path recreation, owner-empty alone, missing/lost pair, older host-retir
 or normal high files, and mixed original-abort files refuse. Incomplete offlining
 cannot be resumed by this reader; no first final proof is reconstructed.
 
+Missing or malformed protected normal-retirement evidence is unavailable host
+evidence, including predecessor/lock reads and metadata JSON decoding. Complete
+returns `host_resources_unenforced` (503); a valid offers request returns 200 with
+empty offers and a null budget. Malformed requests and unrelated verifier errors
+retain their own responses. Released history remains released but cannot supply
+new availability while its proof is unavailable.
+
 Complete validates this exact target and retained root/Shared infrastructure;
 it does not add an all-owner scan. The same SQL rows retain released history.
 Admission/renewal census accepts a guard-only normal history entry only after

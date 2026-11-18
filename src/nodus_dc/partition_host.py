@@ -591,12 +591,13 @@ class LinuxPartitionProvider:
 
     def _workload_retired(self,e,c,state):
         """Versioned workload closure under the retained ancestor, never a physical-free proof."""
-        self._envelope(e,c)
-        records=self._record_pair(e,c,state,retired=True)
-        directory,owner,epoch,guardian,host,guard,limits,scope,shash=records
-        if state["host_scope_sha256"] and shash!=state["host_scope_sha256"]: raise refused()
-        lock=os.open(directory/"bootstrap.lock",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        lock=None
         try:
+            self._envelope(e,c)
+            records=self._record_pair(e,c,state,retired=True)
+            directory,owner,epoch,guardian,host,guard,limits,scope,shash=records
+            if state["host_scope_sha256"] and shash!=state["host_scope_sha256"]: raise refused()
+            lock=os.open(directory/"bootstrap.lock",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
             if identity(os.fstat(lock))!=scope["CreatorLock"]: raise refused()
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             worker=self._worker_offline(e,c,state,records)
@@ -659,7 +660,14 @@ class LinuxPartitionProvider:
                 if identity(e.protected(directory/"bootstrap.lock"))!=scope["CreatorLock"]: raise refused()
                 if self._creation_record(e,directory,"workload-offline.json")!=offline or self._creation_record(e,directory,"workload-retired.json")!=terminal: raise refused()
             return shash
-        finally: os.close(lock)
+        except Error as exc:
+            # These validators inspect protected evidence, not a client request.
+            if exc.code!="invalid_request" or exc.status!=400: raise
+            raise refused() from None
+        except (OSError,json.JSONDecodeError,UnicodeDecodeError):
+            raise refused() from None
+        finally:
+            if lock is not None: os.close(lock)
 
     def _accounted_owner(self,e,c,state):
         """Prove retained finite charges, without granting creation, execution or cleanup."""
