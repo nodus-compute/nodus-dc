@@ -217,6 +217,7 @@ class Partitions(unittest.TestCase):
             self.assertTrue(ok("dispatch",dispatch)["dispatched"])
             local_image={**image,"spec_sha256":held["ephemeral"]["spec_sha256"]}
             state=ok("bind",{"lease":held,"ref":held["ref"],"qualified_image":local_image})
+            self.assertEqual(call("bind",{"lease":held,"ref":held["ref"],"qualified_image":None})[0],400)
             self.assertEqual(state["binding_sha256"],origin.binding_digest(state["binding"]))
             base={"lease":held,"ref":held["ref"],"binding_sha256":state["binding_sha256"]}
             issued=ok("begin",{**base,"operation":"issue","expected_phase_revision":1})
@@ -228,6 +229,7 @@ class Partitions(unittest.TestCase):
             ok("begin",{**base,"operation":"publish","expected_phase_revision":3,"creation_token":consumed["creation_token"],"host_scope_sha256":"9"*64})
             self.service.bridge_enabled=False;self.service.bridge_health_error="synthetic_disconnect"
             self.assertTrue(ok("check",{"lease":held,"published_ref":held["ref"]})["authorized"])
+            self.assertEqual(call("check",{"lease":held,"published_ref":None})[0],400)
             self.service.bridge_enabled=True;self.service.bridge_health_error=None
             demand={**request,"resource_id":B,"request_key":"managed-demand"}
             status,value=call("reserve",demand)
@@ -261,6 +263,19 @@ class Partitions(unittest.TestCase):
             self.assertFalse(ok("check",{"lease":held})["authorized"])
             self.assertEqual(ok("reserve",request)["lease"],held)
             self.assertNotEqual(call("dispatch",dispatch)[0],200)
+            broken=ok("reserve",{**request,"request_key":"managed-corrupt-binding"})["lease"]
+            with self.service.store.transaction(self.clock()) as db:
+                row=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(broken["ref"]["lease_id"],)).fetchone()
+                malformed={**json.loads(row["enforcement"]),"nodus.execution_binding":None}
+                db.execute("UPDATE host_reservations SET enforcement=? WHERE lease_id=?",(json.dumps(malformed),row["lease_id"]))
+            with self.service.store.transaction(self.clock()) as db:
+                self.p.quarantine(db,GPU,"synthetic_configuration_loss")
+            with self.service.store.connection() as db:
+                self.assertEqual(Store.lease(db,broken["ref"]["lease_id"])["state"],"quarantined")
+                self.assertEqual(db.execute("SELECT state FROM partition_configurations WHERE parent_uuid=?",(GPU,)).fetchone()[0],"quarantined")
+                retained=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(broken["ref"]["lease_id"],)).fetchone()
+                self.assertEqual(json.loads(retained["enforcement"]),malformed)
+                self.assertEqual(retained["memory_bytes"],broken["ephemeral"]["charge"]["aggregate"]["memory_bytes"])
         finally:
             server.shutdown();server.server_close();thread.join()
 

@@ -1,6 +1,6 @@
 # Experimental partition authority
 
-The local package implements the private v2 partition claim protocol. **Connected partition execution is not admitted.** The production service installs neither a qualified partition executor nor an explicit partition-agreement provider, so it advertises no partition offers. Existing whole-host consent and v1 readiness remain v1 only. The observed A100 and experimental runsc results do not change these gates.
+The local package implements the private v2 partition claim protocol. **Connected partition execution is not admitted.** The default service installs neither a qualified partition executor nor an explicit partition-agreement provider, so it advertises no partition offers. Existing whole-host consent and v1 readiness remain v1 only. The observed A100 and experimental runsc results do not change these gates.
 
 The authority admits disjoint external MIG GPU instances while local work occupies other instances on the same parent. Each allocation contains one compute instance per GPU instance. Every retained local and external owner consumes the same enforced host budget; configuration and ancestor exclusion remain mandatory. This local capability does not establish connected multi-borrower placement, a compatible node journal, actual runtime isolation, root access inside an untrusted container, or confidentiality against the host administrator.
 
@@ -369,6 +369,11 @@ normal nodusd local owner. They do not prepare cgroups, install runtimes, adopt 
 registry, create platform permission or move an initialized process. The service
 must already run in the configured Shared envelope. Configuration and its SHA256
 are explicit operator inputs, and missing preparation refuses startup:
+
+Startup validates the protected provider, current Shared envelope and exact durable
+authority incarnation. It opens recovery routes even when a retained creator row
+cannot pass full accounting. Every new admission and execution check still requires
+the complete ledger/accounting proof; opening the socket grants no cleanup or work.
 
 ```sh
 sudo nodus-dc --allocation-authority standalone --state-dir /var/lib/nodus-dc serve \

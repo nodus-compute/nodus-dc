@@ -3,6 +3,7 @@ import unittest
 import contextlib
 import io
 import json
+from unittest.mock import patch
 from pathlib import Path
 
 from nodus_dc.cli import main, parser, sync_connection
@@ -12,6 +13,19 @@ from tests.test_authority import Backend, Clock
 
 
 class CliTests(unittest.TestCase):
+    def test_managed_cli_uses_existing_private_owner_without_opening_another_store(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state=Path(folder)/"must-not-be-created"
+            stdout=io.StringIO()
+            with patch("nodus_dc.cli.Store",side_effect=AssertionError("managed client opened a store")), \
+                 patch("nodus_dc.cli.NvidiaDockerBackend",side_effect=AssertionError("managed client opened a backend")), \
+                 patch("nodus_dc.partition_local_cli.request",return_value={"leases":[],"has_more":False}) as call, \
+                 contextlib.redirect_stdout(stdout):
+                self.assertEqual(main(["--state-dir",str(state),"managed","status"]),0)
+            self.assertFalse(state.exists())
+            call.assert_called_once_with("/run/nodus-dc/local.sock",state/"local.token","pending",{"after_generation":0})
+            self.assertEqual(json.loads(stdout.getvalue()),{"leases":[],"scope":"ordered_observation_not_permission"})
+
     def test_confidential_reserve_stops_before_gpu_inventory_or_allocation(self):
         with tempfile.TemporaryDirectory() as folder:
             stderr, stdout = io.StringIO(), io.StringIO()
@@ -53,7 +67,7 @@ class CliTests(unittest.TestCase):
             self.assertFalse(service.bridge_status()["available"])
             self.assertFalse(service.bridge_check(**values)["authorized"])
             self.assertTrue(service.bridge_inspect(platform_lease_id="platform", platform_epoch=1)["held"])
-            sync_connection(service, Healthy())
+            self.assertEqual(sync_connection(service, Healthy()),{"connected":True,"active":True})
             self.assertFalse(service.bridge_check(**values)["authorized"])
             self.assertFalse(service.bridge_policy_state()["enabled"])
 

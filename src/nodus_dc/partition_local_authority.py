@@ -275,6 +275,8 @@ class LocalPartitionAuthority:
                 disposition = "never-bound" if state is None else ("never-consumed" if state["phase_revision"]<=3 else "scope-required")
                 return {"contract":"partition-local-retirement.v1","lease":request,"disposition":disposition,"state":copy.deepcopy(state)}
         fields(extra,"qualified_image" if extra else "")
+        if "qualified_image" in extra:
+            execution.qualified_image(extra["qualified_image"],local.validate_lease(lease))
         return self._resolve(lease,ref,image=extra.get("qualified_image"))
 
     def begin(self, *, lease, ref, binding_sha256, expected_phase_revision, operation, creation_token=None, host_scope_sha256=None, _peer=None):
@@ -289,6 +291,7 @@ class LocalPartitionAuthority:
     def check(self, *, lease, _peer=None, **extra):
         fields(extra,"creation_token" if "creation_token" in extra else ("published_ref" if extra else ""))
         request = local.validate_lease(lease); self._active()
+        if "published_ref" in extra: origin.reference(extra["published_ref"],request)
         with self.service.authority():
             self.service._inventory()
             with self.authority._admission_transaction() as db:

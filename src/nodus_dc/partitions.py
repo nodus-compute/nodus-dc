@@ -236,7 +236,11 @@ class PartitionAuthority:
             if overlap({parent}, set(lease["resources"]), records):
                 if managed(lease):
                     from .partition_binding import retire
-                    retire(db,lease["id"])
+                    try: retire(db,lease["id"])
+                    except Error as exc:
+                        # Corrupt provenance cannot prevent the durable denial. Keep
+                        # its original bytes and budget for explicit scoped recovery.
+                        if exc.code != "invalid_execution_binding": raise
                 Store.update(db, lease, now, state="quarantined", error=reason)
 
     def observe_inventory(self, snapshot):

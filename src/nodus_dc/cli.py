@@ -105,11 +105,6 @@ def parser():
 
 def sync_connection(service, connection):
     try:
-        if args.command == "managed":
-            from .partition_local_cli import run
-            result=run(args,state)
-            print(json.dumps(result,indent=2,sort_keys=True,allow_nan=False))
-            return 0
         result = connection.sync()
         service.bridge_health_error = None
         return result
@@ -139,6 +134,11 @@ def main(argv=None):
     args = parser().parse_args(argv)
     state = Path(args.state_dir).expanduser().resolve()
     try:
+        if args.command == "managed":
+            from .partition_local_cli import run
+            result=run(args,state)
+            print(json.dumps(result,indent=2,sort_keys=True,allow_nan=False))
+            return 0
         if args.command == "doctor":
             from .diagnostics import inspect_daemon
             result = inspect_daemon(port=args.port, token_path=args.local_token_file or state / "local.token")
@@ -155,13 +155,13 @@ def main(argv=None):
             if not args.partition_provider_config or not args.partition_provider_sha256 or os.geteuid()!=0 or args.allocation_authority!="standalone":
                 raise Error("local_partition_unavailable", "prepared local execution requires root standalone ownership and both exact provider pins", 403)
             from .partition_host import LinuxPartitionProvider
-            from .ephemeral import ACCOUNTING
             service.partitions.executor=LinuxPartitionProvider(args.partition_provider_config,args.partition_provider_sha256)
             # Installation never invents a registry/configuration or moves this initialized process.
             # The existing prepared host must already place this service inside its Shared envelope.
             with service.authority(),service.store.transaction(service.clock()) as db:
-                service.partitions._durable(db)
-                service.partitions._host_account(db,accounting_version=ACCOUNTING,continuation=True)
+                anchor=service.partitions._durable(db)
+                if service.partitions.executor.verify_startup(anchor["incarnation"]) is not True:
+                    raise Error("local_partition_unavailable", "prepared local envelope differs from the durable authority", 503)
         request_key = getattr(args, "request_key", None) or str(uuid.uuid4())
         if args.command in {"inventory", "status", "reconcile"}:
             result = getattr(service, args.command.replace("-", "_"))()

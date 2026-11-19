@@ -1,6 +1,6 @@
 """Read-only Linux evidence for the private scoped host provider.
 
-Construction is explicit and unregistered. The protected configuration pins a
+Construction requires an explicit protected configuration. That configuration pins a
 qualified runtime and managed allocation boundary; neither this reader nor its
 SQLite caller creates cgroups, mounts, images, runtimes or another reservation.
 """
@@ -21,7 +21,7 @@ from . import ephemeral, partition_execution as execution, partition_origin as o
 from .errors import Error
 from .model import CleanupProof, digest
 from .partition_binding import runtime_identity
-from .partitions import fields, sha
+from .partitions import fields, sha, guid
 
 MIB = 1024**2
 ORIGINAL_HIGH_FILES = ("original-high-intent.json", "original-high-outcome.json",
@@ -1046,6 +1046,14 @@ class LinuxPartitionProvider:
         if accounting_version!=ephemeral.ACCOUNTING: raise refused()
         e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c)
         return {"accounting_version":ephemeral.ACCOUNTING,"capacity":copy.deepcopy(b["capacity"])}
+
+    def verify_startup(self,authority_incarnation):
+        # Recovery routes must be reachable with retained/partial rows. This
+        # verifies the original prepared envelope, never their cleanup or fit.
+        guid(authority_incarnation)
+        e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c)
+        if b["authority_incarnation"]!=authority_incarnation: raise refused()
+        return True
 
     def prepare_reservation(self,local,resources,*,context):
         e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c);lease=context["lease"]
