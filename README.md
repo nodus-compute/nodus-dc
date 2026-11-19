@@ -17,24 +17,26 @@ For dashboard monitoring only, use the [monitoring-only connection](docs/operato
 Use a Linux GPU host with a supported NVIDIA driver, Docker and NVIDIA Container
 Toolkit. Run as the trusted host operator with GPU and Docker permissions.
 
-Download these three files from [dev16](https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev16)
+Download these three files from [dev17](https://github.com/nodus-compute/nodus-dc/releases/tag/v0.1.0-dev17)
 into one empty directory:
 
-- [GPU management package](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/nodus_datacenter-0.1.0.dev16-py3-none-any.whl)
-- [Installer (`install.py`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/install.py)
-- [Checksums (`SHA256SUMS`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/SHA256SUMS)
+- [GPU management package](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/nodus_datacenter-0.1.0.dev17-py3-none-any.whl)
+- [Installer (`install.py`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/install.py)
+- [Checksums (`SHA256SUMS`)](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/SHA256SUMS)
 
 Open a Linux terminal in that directory. The paths below normally require a root
 shell. Verify the downloaded files, then install and start the dashboard:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS &&
-python3 install.py install --wheel nodus_datacenter-0.1.0.dev16-py3-none-any.whl \
+python3 install.py install --wheel nodus_datacenter-0.1.0.dev17-py3-none-any.whl \
   --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc &&
 /opt/nodus-dc/current/bin/nodus-dc --state-dir /var/lib/nodus-dc serve
 ```
 
 To build from source, follow [offline build and install](docs/operator-workflows.md#offline-build-and-install).
+The wheel does not install example files. Before using the allocation or MIG
+examples, [download and verify the matching source archive](docs/operator-workflows.md#allocate-and-launch).
 
 Open **http://127.0.0.1:7441/** and enter the token from the file path printed by
 the daemon. For a remote host, forward port 7441 over SSH. The token stays in
@@ -82,6 +84,6 @@ remains disabled in this release; monitoring enrollment does not enable it.
   qualification remain incomplete. The dashboard does not certify those paths.
 
 Read the [support matrix](docs/support-matrix.md), [privacy and isolation model](docs/threat-model.md),
-[API reference](docs/api.md), and [dev16 changes](docs/release-dev16.md) for details.
+[API reference](docs/api.md), and [dev17 changes](docs/release-dev17.md) for details.
 
 Apache-2.0. CPU checks: `PYTHONPATH=src python3 -m unittest discover -s tests`.

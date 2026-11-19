@@ -8,6 +8,12 @@ and retains private partition authority and durable ownership fences. Connected
 partition execution remains unavailable. See the [dev16 change record](release-dev16.md)
 for the scoped A100 configuration/restoration result and remaining limits.
 
+The [dev17 prerelease](release-dev17.md) uses the exact retained wheel tested on an
+A100-SXM4-40GB with driver 580.105.08. Its standalone two-partition CUDA lifecycle
+passed; connected execution and framework serving remain separate, unqualified
+paths. The release manifest identifies the source of each artifact; later
+documentation-only changes do not change the tested wheel.
+
 ## Current implementation
 
 | Mode | Scope | Boundary | Qualification |
@@ -15,8 +21,8 @@ for the scoped A100 configuration/restoration result and remaining limits.
 | Observe | NVIDIA GPU inventory and utilization | No allocation ownership | Parser/HTTP CPU tests |
 | `exclusive_gpu` | One or more whole GPUs | Exclusive scheduling within this authority; Docker device selection | GPU qualification pending |
 | `exclusive_host` | Entire host GPU inventory | Whole-host allocation lock | GPU/host qualification pending |
-| `hardware_partition` | Existing whole MIG instances | NVIDIA MIG hardware boundary; driver/platform limits apply | GPU qualification pending |
-| `gpu_configuration` | One physical GPU maintenance lease | Exact-device MIG create/destroy plan; no automatic reset | GPU qualification pending |
+| `hardware_partition` | Existing whole MIG instances | NVIDIA MIG hardware boundary; driver/platform limits apply | Dev17 A100 standalone lifecycle passed; see exact scope above |
+| `gpu_configuration` | One physical GPU maintenance lease | Exact-device MIG create/destroy plan; no automatic reset | Dev17 A100 create/restore passed; no reset or reboot qualification |
 | `trusted_mps` | One whole GPU, 2–16 cooperating clients | Shared IPC/PID namespaces; cooperative compute/memory settings, **no hostile-tenant isolation** | Explicit opt-in; GPU qualification pending |
 | Native handoff intent | Sticky guard on an unused local whole-host lease | Refuses connected/enrolled/history-bearing hosts; expiry quarantines, never auto-returns | No SSH provisioning or supported native return adapter |
 | Connected | Whole-host external lease only | Shared authority, explicit finite consent, monotonic generation, verified cleanup | Cross-component/hardware qualification pending |
@@ -33,7 +39,7 @@ silently fall back to ordinary Docker, MIG or MPS execution. See the
 
 For an existing GPU cluster, use `/opt/nodus-dc/current/bin/python -m nodus_dc.kubernetes render` and follow [Kubernetes integration](../kubernetes/README.md). Run local inventory in `--allocation-authority kubernetes` mode on those nodes. Generated resource requests use the cluster's actual device-plugin semantics; `nvidia.com/gpu` alone is not a claim of exclusive hardware isolation.
 
-For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev16 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
+For standalone inference, follow the [versioned vLLM and SGLang recipes](serving-profiles.md). The generator supports the installed dev7 through dev17 packages and requires an explicit numerical profile. [Dev7 hardware observations](hardware-evidence-dev7.md) record successful paths and retained failures; complete production qualification remains in progress.
 
 ## Offline build and install
 
@@ -41,7 +47,7 @@ Python 3.11+ is required. Runtime/build have no third-party Python dependencies.
 
 ```sh
 python3 build_backend.py &&
-python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev16-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+python3 tools/install.py install --wheel dist/nodus_datacenter-0.1.0.dev17-py3-none-any.whl --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
 ```
 
 The installer keeps the CLI and Python interpreter under `/opt/nodus-dc/current/bin`;
@@ -60,6 +66,24 @@ After starting or restarting the service, use the [read-only readiness checks](o
 
 ## Allocate and launch
 
+The wheel does not include `examples/`. If you followed the README's dev17 wheel
+installation, download the [matching source archive](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/nodus_datacenter-0.1.0.dev17.tar.gz)
+into the same directory as its verified `SHA256SUMS`. Verify before unpacking,
+then run the examples from the unpacked source directory:
+
+```sh
+curl --fail --location --show-error \
+  --output nodus_datacenter-0.1.0.dev17.tar.gz \
+  https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/nodus_datacenter-0.1.0.dev17.tar.gz &&
+sha256sum --check --ignore-missing SHA256SUMS &&
+tar -xzf nodus_datacenter-0.1.0.dev17.tar.gz &&
+cd nodus_datacenter-0.1.0.dev17
+```
+
+For the dev17 source build above, use that source directory instead. Keep examples
+matched to the installed release and edit their image, paths and GPU profiles for
+your host before reserving resources; the supplied values are examples.
+
 `inventory` returns exact resource IDs and supported modes. Every allocation consumes the entire selected resource. Reserved, starting, draining, verifying and quarantined leases all retain capacity.
 
 ```sh
@@ -72,9 +96,20 @@ Use the returned generation, not the illustrative `1`. Resource IDs and image di
 
 `exclusive_host` normally means exclusive managed Docker GPU passthrough. It does not automatically grant or track customer SSH/root access. A private operator with a never-enrolled host may record an explicit `native-handoff LEASE_ID --generation N --provisioner-reference TICKET` before using a separate provisioning system. This is only a protective intent record: it provides no SSH provisioning, isolation or return proof. The lease stays held even when the GPU is idle; TTL/drain quarantines it, and release/recover cannot return it even after reboot. Connected/enrolled hosts or any recorded connection attempt/history reject this operation because the package cannot prove a durable out-of-band platform revocation fence. A host-root tenant can alter local software, so actual return requires an external trusted provisioner to revoke credentials/reimage and establish a new authoritative fence. That integration and the complete native customer journey remain unsupported.
 
-Run the daemon for periodic expiry cleanup. A CLI-only deployment reconciles when `reconcile` is invoked; lease expiry denies new admissions but never proves cleanup. Retries with identical request keys return the current lease. Changed inputs with reused keys fail. Retrying a failed cleanup uses a new request key.
+Run the daemon for periodic expiry cleanup. A CLI-only deployment reconciles when `reconcile` is invoked; lease expiry denies new admissions but never proves cleanup.
+
+An API replay returns the current lease only when both the request key and the
+complete payload are identical, including the original absolute `expires_at`.
+Changed inputs with a reused key fail. The CLI's `reserve --ttl-seconds` computes
+a new expiry on each invocation, so repeating the same command is not an
+identical reserve replay. After an uncertain result, inspect `status` and the
+current lease before deciding what to do; do not blindly repeat reserve or use a
+new key to work around an unknown outcome. Retrying a failed cleanup uses a new
+request key after reviewing the retained lease state.
 
 ## Partitioning and trusted sharing
+
+Use the matching source examples prepared in [Allocate and launch](#allocate-and-launch).
 
 Reserve `gpu_configuration` on a physical GPU, then `configure LEASE_ID --generation N --plan examples/mig-plan.json`. The operation journals intent, destroys existing instances only on that exclusively held GPU, creates the exact desired named profiles and verifies inventory. Release the maintenance lease before reserving the resulting `MIG-...` instances. Disabling MIG uses `{"enabled":false,"profiles":[]}`. A driver-required reboot/reset or partial configuration leaves the resource quarantined. The tool never resets unrelated devices.
 
@@ -93,7 +128,13 @@ identities and fencing history remain unchanged; native handoffs are excluded.
 
 The reboot recovery path explicitly excludes native handoffs: a new boot does not establish credential revocation or trustworthy provisioning when a customer had host-root access. Do not clear the lease by editing its database or deleting state.
 
-Stop the daemon and release all allocations before changing installation. `tools/install.py install` stages a wheel under its content hash and switches `current`; `activate --release HASH` rolls back to an already installed release. Schema-changing downgrades are rejected by the runtime. `uninstall` removes only manifest-owned install files and preserves state, GPU configuration, authority registry and untracked files. The installer refuses held leases and a live daemon lock. It does not recursively delete Docker resources or system directories.
+Stop the daemon and release all allocations before changing installation. From the README download directory, use `python3 install.py`; from a source checkout or unpacked source archive, use `python3 tools/install.py`. Keep the installation's original `--prefix` and `--state-dir` on every command. For example, to uninstall the README installation:
+
+```sh
+python3 install.py uninstall --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+```
+
+The `install --wheel PATH` action stages a wheel under its content hash and switches `current`; `activate --release HASH` rolls back to an already installed release. Schema-changing downgrades are rejected by the runtime. `uninstall` removes only manifest-owned install files and preserves state, GPU configuration, authority registry and untracked files. The installer refuses held leases and a live daemon lock. It does not recursively delete Docker resources or system directories.
 
 Installation and activation use a durable journal. Retry the same normal command after interruption: an incomplete installation tree is preserved under the installation prefix's `preserved/` directory, and an interrupted activation completes its recorded release selection. A ready release's ownership manifest is committed before the `current` link changes. Uninstall is likewise resumable and retains the installation ownership marker; a later reinstall preserves old untracked leftovers before reusing a release path. Inspect preserved directories separately—they are not active runtimes or automatic deletion targets.
 
