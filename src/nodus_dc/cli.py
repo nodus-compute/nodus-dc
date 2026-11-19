@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 import os
+import stat
 import sys
 import threading
 import time
@@ -104,6 +105,7 @@ def parser():
     server.add_argument("--prepare-local-template", help="initialize fresh local-only authority from an observed protected host template")
     server.add_argument("--prepare-local-sha256", help="exact template SHA256; never a qualification override")
     server.add_argument("--prepare-until", type=float, help="original absolute setup deadline, at most 300 seconds away")
+    server.add_argument("--require-clean-start", action="store_true", help="require retained local ownership history to be positively clean before listening")
     return p
 
 
@@ -152,6 +154,27 @@ def main(argv=None):
             return 0 if result["ok"] else 1
         preparing = args.command == "serve" and any((args.prepare_local_template is not None,
                     args.prepare_local_sha256 is not None, args.prepare_until is not None))
+        clean_start = args.command == "serve" and args.require_clean_start
+        if clean_start:
+            if (preparing or args.allocation_authority != "standalone" or args.enable_trusted_mps or os.geteuid() != 0
+                    or args.bridge_token_file is not None or args.bridge_socket != "/run/nodus-dc/bridge.sock"
+                    or not args.partition_provider_config or not args.partition_provider_sha256):
+                raise Error("local_preparation_unavailable", "clean start requires the same protected local-only standalone provider", 403)
+            from .partition_host import Evidence, path
+            if str(path(args.state_dir)) != str(state):
+                raise Error("local_preparation_unavailable", "clean start requires the original canonical state directory", 403)
+            owner = Evidence().protected(state, directory=True)
+            lock = Evidence().protected(state / "daemon.lock")
+            if (owner.st_gid != 0 or owner.st_mode & 0o077 or lock.st_gid != 0
+                    or not stat.S_ISREG(lock.st_mode) or stat.S_IMODE(lock.st_mode) != 0o600):
+                raise Error("local_preparation_unavailable", "clean start requires the original private daemon lock", 403)
+            prepared_daemon = os.fdopen(os.open(state / "daemon.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC), "r+")
+            fcntl.flock(prepared_daemon.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            current_lock = os.fstat(prepared_daemon.fileno())
+            if (not os.path.samestat(owner, os.lstat(state)) or not os.path.samestat(lock, current_lock)
+                    or current_lock.st_mode != lock.st_mode or current_lock.st_uid != lock.st_uid or current_lock.st_gid != lock.st_gid
+                    or not os.path.samestat(lock, os.lstat(state / "daemon.lock"))):
+                raise Error("local_preparation_unavailable", "clean start daemon lock changed", 503)
         if preparing:
             # Reject incompatible modes before reading credentials, opening a Store or creating a lock.
             now = time.time()
@@ -197,6 +220,14 @@ def main(argv=None):
                 anchor=service.partitions._durable(db)
                 if service.partitions.executor.verify_startup(anchor["incarnation"]) is not True:
                     raise Error("local_partition_unavailable", "prepared local envelope differs from the durable authority", 503)
+                if clean_start:
+                    if (db.execute("SELECT 1 FROM leases WHERE state!='released' LIMIT 1").fetchone()
+                            or db.execute("SELECT 1 FROM bridge_policy WHERE enabled!=0 LIMIT 1").fetchone()
+                            or any(db.execute("SELECT 1 FROM " + table + " WHERE retired=0 LIMIT 1").fetchone()
+                                   for table in ("platform_claims", "partition_claims", "partition_policy_grants"))):
+                        raise Error("local_preparation_unavailable", "clean start retains outstanding authority state", 503)
+                    from . import ephemeral
+                    service.partitions._host_account(db, accounting_version=ephemeral.ACCOUNTING)
         request_key = getattr(args, "request_key", None) or str(uuid.uuid4())
         if args.command in {"inventory", "status", "reconcile"}:
             result = getattr(service, args.command.replace("-", "_"))()

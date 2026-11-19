@@ -37,6 +37,11 @@ and any held lease; they do not reset or delete uncertain ownership. A later nor
 serve can reopen the same protected provider/database. Reuse after clean stop
 additionally requires the original boot, allocation/FIFO identities and complete
 released-owner history; this initialization seam does not rebind stale state.
+The paired entry uses `serve --require-clean-start` with the existing provider
+pins for that reuse. Before opening a listener, it holds the original daemon lock,
+refuses held leases or enabled/unretired external policy and claims, and verifies
+full aggregate accounting including retained retirement records. This opt-in
+refusal leaves ordinary recovery serving available for uncertain held state.
 
 `LinuxPartitionProvider(config_path, config_sha256, clock=...)` consumes an exact
 root-owned regular JSON file with protected ancestry. Its strict fields are:

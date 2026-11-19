@@ -14,7 +14,7 @@ from tests.test_authority import Backend, Clock
 
 class CliTests(unittest.TestCase):
     def test_preparation_refuses_bridge_or_expired_setup_before_opening_state(self):
-        for extra in (["--bridge-token-file", "must-not-be-read"], ["--prepare-until", "99"]):
+        for extra in (["--bridge-token-file", "must-not-be-read"], ["--prepare-until", "99"], ["--require-clean-start"]):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder:
                 state = Path(folder) / "must-not-be-created"
                 stderr = io.StringIO()
