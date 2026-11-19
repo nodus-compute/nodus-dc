@@ -8,8 +8,195 @@ concurrency:
   group: manual-native-service-control
   cancel-in-progress: false
 jobs:
+  managed-local-owner:
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/managed-local-oss-native-20261119'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - name: Establish one original clock and exclusive fixture
+        id: owned
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYINIT'
+          import json,os,pathlib,stat,time
+          t0=time.monotonic();epoch=time.time()
+          run=os.environ['GITHUB_RUN_ID'];attempt=os.environ['GITHUB_RUN_ATTEMPT']
+          assert run.isdigit() and attempt=='1'
+          assert os.environ['GITHUB_EVENT_NAME']=='workflow_dispatch'
+          assert os.environ['GITHUB_REF']=='refs/heads/codex/managed-local-oss-native-20261119'
+          assert os.environ['GITHUB_REPOSITORY']=='nodus-compute/nodus-dc'
+          event=json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          assert event.get('inputs') in (None,{}) and event['repository']['private'] is False
+          base=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          out=base/f'managed-local-evidence-{run}-{attempt}';fixture=base/f'managed-local-fixture-{run}-{attempt}'
+          assert not out.exists() and not out.is_symlink() and not fixture.exists() and not fixture.is_symlink()
+          out.mkdir(mode=0o700);fixture.mkdir(mode=0o700);(fixture/'tmp').mkdir(mode=0o700)
+          st=fixture.lstat();home=pathlib.Path.home().resolve();rows={}
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  assert count<2047,'home census bound'
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          owner={'run_id':run,'attempt':attempt,'fixture':str(fixture),'fixture_identity':[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)],
+                 'home':str(home),'home_before':rows,'started_epoch':epoch,'started_monotonic':t0,'work_end':t0+150,'job_end':t0+240}
+          (out/'ownership.json').write_text(json.dumps(owner,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_ENV'],'a') as env:env.write(f'OUT={out}\nFIXTURE={fixture}\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('owned=true\n')
+          PYINIT
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Bind exact product source and six-case invocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYSOURCE'
+          import hashlib,json,os,pathlib,platform,subprocess,sys,tarfile,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());root=pathlib.Path.cwd()
+          product='394f3b32de15de96b7002ebc448ed608aeb9ac29';tree='072b244b09fc3b43fff9b31b52918cc0b7df9252'
+          workflow='.github/workflows/manual-native-systemd.yml'
+          def git(*args):return subprocess.check_output(['git',*args],timeout=10)
+          assert git('rev-parse','HEAD').decode().strip()==os.environ['GITHUB_SHA']
+          assert git('rev-parse','HEAD^').decode().strip()==product
+          assert git('rev-parse',product+'^{tree}').decode().strip()==tree
+          assert git('diff','--name-only',product,'HEAD').decode().splitlines()==[workflow]
+          before=git('status','--porcelain=v1','--untracked-files=all');(out/'source-before.txt').write_bytes(before);assert not before
+          (out/'workflow.yml').write_bytes((root/workflow).read_bytes())
+          with (out/'product-source.tar').open('xb') as archive:subprocess.run(['git','archive','--format=tar',product],stdout=archive,check=True,timeout=10)
+          rows=[]
+          with tarfile.open(out/'product-source.tar','r:') as archive:
+              for member in archive.getmembers():
+                  if member.isdir():continue
+                  assert member.isfile() and not pathlib.PurePosixPath(member.name).is_absolute() and '..' not in pathlib.PurePosixPath(member.name).parts
+                  data=archive.extractfile(member).read();assert len(data)==member.size
+                  rows.append({'path':member.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+                  if member.name!=workflow:assert (root/member.name).read_bytes()==data
+          assert len(rows)==212
+          (out/'source-manifest.json').write_text(json.dumps({'product_head':product,'product_tree':tree,'workflow_head':os.environ['GITHUB_SHA'],'files':rows},sort_keys=True)+'\n')
+          argv=['python3', '-B', '-m', 'unittest', '-v', 'tests.test_partition_authority.Partitions.test_managed_local_same_ledger_creator_demand_and_positive_retirement', 'tests.test_partition_authority.Partitions.test_qualified_creator_cas_replay_loss_and_retirement', 'tests.test_partition_authority.Partitions.test_qualified_floor8_write_ahead_loss_cannot_reopen_admission', 'tests.test_api.ApiTests.test_v2_is_bridge_only_and_rejects_unknown_fields', 'tests.test_cli.CliTests.test_managed_cli_uses_existing_private_owner_without_opening_another_store', 'tests.test_cli.CliTests.test_unexpected_connection_failure_revokes_runtime_admission_in_memory']
+          (out/'argv.json').write_text(json.dumps(argv)+'\n')
+          (out/'native-identity.json').write_text(json.dumps({'python':sys.version,'executable':sys.executable,'kernel':platform.uname()._asdict(),'pidfd_open':hasattr(os,'pidfd_open')},sort_keys=True)+'\n')
+          assert sys.platform=='linux' and hasattr(os,'pidfd_open')
+          assert time.monotonic()<owner['work_end']-125,'original work window exhausted before invocation'
+          PYSOURCE
+      - name: Run the six exact owning Linux cases once
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYWORK'
+          import json,os,pathlib,signal,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());started=time.monotonic()
+          p=None;rc=None;natural=False;group_absent=False;forced=False
+          try:
+              remaining=owner['work_end']-time.monotonic()
+              if remaining<125:raise RuntimeError('original work window exhausted')
+              argv=json.loads((out/'argv.json').read_text())
+              env={k:os.environ[k] for k in ('PATH','HOME','LANG','LC_ALL') if k in os.environ}
+              env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(pathlib.Path.cwd()/'src'),TMPDIR=str(pathlib.Path(owner['fixture'])/'tmp'))
+              with (out/'work.stdout').open('xb') as stdout,(out/'work.stderr').open('xb') as stderr:
+                  p=subprocess.Popen(argv,stdout=stdout,stderr=stderr,env=env,start_new_session=True)
+                  (out/'process.json').write_text(json.dumps({'pid':p.pid,'pgid':p.pid,'start_epoch':time.time(),'start_monotonic':time.monotonic()})+'\n')
+                  try:rc=p.wait(timeout=min(120,owner['work_end']-time.monotonic()-4));natural=True
+                  except subprocess.TimeoutExpired:pass
+          finally:
+              if p is not None:
+                  try:
+                      os.killpg(p.pid,0);forced=True;os.killpg(p.pid,signal.SIGTERM)
+                      until=min(time.monotonic()+2,owner['work_end']-2)
+                      while time.monotonic()<until:
+                          try:os.killpg(p.pid,0)
+                          except ProcessLookupError:break
+                          time.sleep(.05)
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                  except ProcessLookupError:pass
+                  try:p.wait(timeout=max(.01,min(2,owner['work_end']-time.monotonic())))
+                  except subprocess.TimeoutExpired:pass
+                  try:os.killpg(p.pid,0)
+                  except ProcessLookupError:group_absent=True
+              (out/'process-closure.json').write_text(json.dumps({'natural_exit':natural,'returncode':rc,'group_absent':group_absent,'forced_group_stop':forced,
+                  'creating_process_reaped':p is not None and p.poll() is not None,'elapsed_seconds':time.monotonic()-started,'finished_monotonic':time.monotonic()})+'\n')
+          if not(natural and rc==0 and group_absent and not forced):raise SystemExit(1)
+          PYWORK
+      - name: Preserve closure and require exact case census
+        if: always() && steps.owned.outputs.owned == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCLOSE'
+          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());errors=[]
+          def record(name,value):(out/name).write_text(json.dumps(value,sort_keys=True)+'\n')
+          def require(value,label):
+              if not value:errors.append(label)
+          process=json.loads((out/'process.json').read_text()) if (out/'process.json').exists() else None
+          absent=process is None
+          if process is not None:
+              try:os.killpg(process['pgid'],0)
+              except ProcessLookupError:absent=True
+          require(absent,'owned process group remains')
+          rows={};home=pathlib.Path(owner['home']);census_ok=True
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  if count>=2047:census_ok=False;break
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          record('home-after.json',{'complete':census_ok,'rows':rows})
+          require(census_ok and rows==owner['home_before'],'test-owned home fixture survivor or identity drift')
+          fixture=pathlib.Path(owner['fixture']);removed=False
+          expected=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()/f"managed-local-fixture-{owner['run_id']}-{owner['attempt']}"
+          run_ok=owner['run_id']==os.environ['GITHUB_RUN_ID'] and owner['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          path_ok=fixture==expected and fixture==pathlib.Path(os.environ['FIXTURE'])
+          require(run_ok,'fixture run identity');require(path_ok,'fixture path')
+          st=fixture.lstat();actual=[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)]
+          identity_ok=stat.S_ISDIR(st.st_mode) and actual==owner['fixture_identity'] and st.st_uid==os.geteuid()
+          require(identity_ok,'fixture inode ownership')
+          if run_ok and path_ok and identity_ok and absent:
+              assert shutil.rmtree.avoids_symlink_attacks
+              shutil.rmtree(fixture);removed=not fixture.exists() and not fixture.is_symlink()
+          require(removed,'owned fixture not removed')
+          record('fixture-closure.json',{'group_absent':absent,'home_census_complete':census_ok,'home_matches_before':rows==owner['home_before'],
+                 'fixture_identity':actual,'fixture_removed':removed,'errors':list(errors)})
+          source=subprocess.run(['git','status','--porcelain=v1','--untracked-files=all'],capture_output=True,timeout=10)
+          (out/'source-after.txt').write_bytes(source.stdout);(out/'source-after.stderr').write_bytes(source.stderr)
+          require(source.returncode==0 and not source.stdout and not source.stderr,'source changed or status failed')
+          selected=json.loads((out/'argv.json').read_text())[5:] if (out/'argv.json').exists() else []
+          raw=(out/'work.stderr').read_bytes() if (out/'work.stderr').exists() else b''
+          require(len(raw)<=4*1024*1024,'case log bound')
+          log=raw.decode('utf-8',errors='strict');cases=[]
+          headers=re.findall(r'^(test_\w+) \(([^)]+)\)',log,re.M)
+          for case in selected:
+              cls,method=case.rsplit('.',1)
+              pattern=r'^'+re.escape(method)+r' \('+re.escape(cls)+r'(?:\.'+re.escape(method)+r')?\)(?:\n[^\n]*)? \.\.\. ok$'
+              cases.append({'name':case,'ok':len(re.findall(pattern,log,re.M))==1})
+          require(len(selected)==6 and len(headers)==6 and all(row['ok'] for row in cases),'six exact case results')
+          require(len(re.findall(r'^Ran 6 tests in [0-9.]+s$',log,re.M))==1 and log.rstrip().endswith('\nOK'),'unittest summary')
+          require(not re.search(r'^(?:FAIL|ERROR|FAILED|OK \(|UNEXPECTED SUCCESS)|\.\.\. (?:skipped|expected failure|FAIL|ERROR|unexpected success)',log,re.M),'negative or skipped case')
+          closure=json.loads((out/'process-closure.json').read_text()) if (out/'process-closure.json').exists() else {}
+          require(closure.get('natural_exit') is True and closure.get('returncode')==0 and closure.get('group_absent') is True and closure.get('forced_group_stop') is False and closure.get('creating_process_reaped') is True,'natural process closure')
+          require(closure.get('finished_monotonic',float('inf'))<=owner['work_end'],'original work end')
+          require(time.monotonic()<owner['job_end']-60,'collection/upload reserve exhausted')
+          record('qualification.json',{'contract':'managed-local-oss-selective-cpu.v1','product_head':'394f3b32de15de96b7002ebc448ed608aeb9ac29',
+                 'workflow_head':os.environ['GITHUB_SHA'],'run_id':owner['run_id'],'run_attempt':owner['attempt'],'cases':cases,'errors':errors,'passed':not errors,
+                 'scope':'Linux Unix/SQLite and CLI; synthetic provider only; no Go, real enforcement, GPU or publication qualification'})
+          with (out/'SHA256SUMS').open('x') as sums:
+              for path in sorted(out.iterdir()):
+                  if path.name!='SHA256SUMS' and path.is_file():sums.write(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n')
+          if errors:raise SystemExit('; '.join(errors))
+          PYCLOSE
+      - name: Retain bounded positive or negative evidence
+        if: always() && steps.owned.outputs.owned == 'true'
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-local-oss-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.OUT }}/
+          if-no-files-found: error
+          retention-days: 7
   service-control:
-    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.ref != 'refs/heads/codex/managed-local-oss-native-20261119'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
