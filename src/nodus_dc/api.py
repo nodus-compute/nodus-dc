@@ -227,7 +227,8 @@ class _PrivateUnixServer(_BoundedServer, socketserver.ThreadingMixIn, socketserv
 
 
 class BridgeUnixServer(_PrivateUnixServer):
-    def __init__(self, path, service, bridge_token, *, owner_uid=0):
+    def __init__(self, path, service, bridge_token, *, owner_uid=0, partition_only=False):
+        self.partition_only = partition_only
         super().__init__(path, service, bridge_token, owner_uid=owner_uid, scope="bridge")
 
 
@@ -292,6 +293,9 @@ class Handler(BaseHTTPRequestHandler):
                     "maintenance_error": self.server.maintenance_error,
                     "connection_error": self.server.service.bridge_health_error}
         self.authorize(bridge)
+        if (self.server.bridge_only and self.server.partition_only
+                and not path.startswith(("/v2/bridge/partition-policy/", "/v2/bridge/partitions/"))):
+            raise Error("not_found", "prepared enrollment exposes only partition authority routes", 404)
         service = self.server.service
         if method == "GET":
             if path == "/v1/status":

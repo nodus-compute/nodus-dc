@@ -106,6 +106,8 @@ def parser():
     server.add_argument("--prepare-local-sha256", help="exact template SHA256; never a qualification override")
     server.add_argument("--prepare-until", type=float, help="original absolute setup deadline, at most 300 seconds away")
     server.add_argument("--require-clean-start", action="store_true", help="require retained local ownership history to be positively clean before listening")
+    server.add_argument("--partition-enrollment", help=argparse.SUPPRESS)
+    server.add_argument("--partition-enrollment-sha256", help=argparse.SUPPRESS)
     return p
 
 
@@ -142,6 +144,8 @@ def main(argv=None):
     prepared_daemon = None
     prepare_end = None
     try:
+        if args.command == "connection" and os.path.lexists(state.parent / "enrollment.json"):
+            raise Error("partition_connection_managed", "prepared enrollment is owned by nodusd; the whole-host connection command is unavailable", 403)
         if args.command == "managed":
             from .partition_local_cli import run
             result=run(args,state)
@@ -155,9 +159,15 @@ def main(argv=None):
         preparing = args.command == "serve" and any((args.prepare_local_template is not None,
                     args.prepare_local_sha256 is not None, args.prepare_until is not None))
         clean_start = args.command == "serve" and args.require_clean_start
+        partition_enrollment = args.command == "serve" and any((args.partition_enrollment, args.partition_enrollment_sha256))
+        if partition_enrollment and (preparing or not clean_start or not args.partition_enrollment
+                or not args.partition_enrollment_sha256 or not args.bridge_token_file
+                or args.bridge_socket != str(state / "partition.sock")
+                or args.bridge_token_file != str(state / "partition.token")):
+            raise Error("local_preparation_unavailable", "partition enrollment requires the exact prepared owner", 403)
         if clean_start:
             if (preparing or args.allocation_authority != "standalone" or args.enable_trusted_mps or os.geteuid() != 0
-                    or args.bridge_token_file is not None or args.bridge_socket != "/run/nodus-dc/bridge.sock"
+                    or not partition_enrollment and (args.bridge_token_file is not None or args.bridge_socket != "/run/nodus-dc/bridge.sock")
                     or not args.partition_provider_config or not args.partition_provider_sha256):
                 raise Error("local_preparation_unavailable", "clean start requires the same protected local-only standalone provider", 403)
             from .partition_host import Evidence, path
@@ -213,6 +223,11 @@ def main(argv=None):
                 raise Error("local_partition_unavailable", "prepared local execution requires root standalone ownership and both exact provider pins", 403)
             from .partition_host import LinuxPartitionProvider
             service.partitions.executor=LinuxPartitionProvider(args.partition_provider_config,args.partition_provider_sha256)
+            if partition_enrollment:
+                from .partition_policy import enrolled_partition_policy, partition_clean_start
+                service.partition_policy = enrolled_partition_policy(service, state, args.partition_enrollment,
+                    args.partition_enrollment_sha256, args.partition_provider_sha256)
+                service.partitions.policy_provider = service.partition_policy.current
             # Installation never invents a registry/configuration or moves this initialized process.
             # The existing prepared host must already place this service inside its Shared envelope.
             with service.authority(),service.store.transaction(service.clock()) as db:
@@ -220,7 +235,9 @@ def main(argv=None):
                 if service.partitions.executor.verify_startup(anchor["incarnation"]) is not True:
                     raise Error("local_partition_unavailable", "prepared local envelope differs from the durable authority", 503)
                 if clean_start:
-                    if (db.execute("SELECT 1 FROM leases WHERE state!='released' LIMIT 1").fetchone()
+                    if partition_enrollment:
+                        partition_clean_start(service, db, service.partition_policy.identity)
+                    elif (db.execute("SELECT 1 FROM leases WHERE state!='released' LIMIT 1").fetchone()
                             or db.execute("SELECT 1 FROM bridge_policy WHERE enabled!=0 LIMIT 1").fetchone()
                             or any(db.execute("SELECT 1 FROM " + table + " WHERE retired=0 LIMIT 1").fetchone()
                                    for table in ("platform_claims", "partition_claims", "partition_policy_grants"))):
@@ -291,14 +308,16 @@ def main(argv=None):
                     local_thread = threading.Thread(target=local_server.serve_forever, daemon=True)
                     local_thread.start()
                 if bridge_token:
-                    from .connection import Connection
-                    bridge_server = BridgeUnixServer(args.bridge_socket, service, bridge_token)
+                    bridge_server = BridgeUnixServer(args.bridge_socket, service, bridge_token, partition_only=partition_enrollment)
                     bridge_server.stop_event = server.stop_event
-                    connection = Connection(service, state)
-                    service.bridge_health_error = "connection_verification_pending"
+                    if not partition_enrollment:
+                        from .connection import Connection
+                        connection = Connection(service, state)
+                        service.bridge_health_error = "connection_verification_pending"
                     bridge_thread = threading.Thread(target=bridge_server.serve_forever, daemon=True)
                     bridge_thread.start()
-                    threading.Thread(target=connection_worker, args=(server, connection), daemon=True).start()
+                    if not partition_enrollment:
+                        threading.Thread(target=connection_worker, args=(server, connection), daemon=True).start()
                 threading.Thread(target=server.maintain, daemon=True).start()
                 ready = {"listening": f"http://127.0.0.1:{server.server_port}",
                                   "bridge_url": "unix://" + str(bridge_server.path) if bridge_server else None,
@@ -327,6 +346,9 @@ def main(argv=None):
                     local_server.server_close()
                 if server:
                     server.server_close()
+                if partition_enrollment:
+                    with service.authority(), service.store.connection() as db:
+                        partition_clean_start(service, db, service.partition_policy.identity)
                 daemon_file.close()
             return 0
         print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))

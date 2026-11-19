@@ -7,7 +7,8 @@ import threading
 import unittest
 
 from nodus_dc.api import BridgeUnixServer
-from nodus_dc.partition_policy import PartitionPolicy
+from nodus_dc.partition_policy import PartitionPolicy, partition_clean_start
+from nodus_dc.errors import Error
 from tests.test_api import UnixHTTPConnection
 from tests.test_mig_binding import BOOT
 from tests import test_partition_authority as fixture
@@ -38,7 +39,7 @@ class PartitionPolicyJourney(unittest.TestCase):
         self.identity = {"node_id":NODE,"host_epoch":0}
         self.local_images = [IMAGE]
         self.install()
-        self.server = BridgeUnixServer(self.case.root/"policy.sock",self.s,TOKEN,owner_uid=os.geteuid())
+        self.server = BridgeUnixServer(self.case.root/"policy.sock",self.s,TOKEN,owner_uid=os.geteuid(),partition_only=True)
         self.thread = threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
         self.ctx = self.call("context",{})[1]["context"]
         self.g = grant()
@@ -198,7 +199,7 @@ class PartitionPolicyJourney(unittest.TestCase):
 
     def test_restart_expiry_and_session_revoke_cannot_revive_held_execution(self):
         self.assertEqual(self.update()[0],200)
-        _,_,held=self.claimed()
+        local,_,held=self.claimed()
         self.ns += 31_000_000_000
         self.assertFalse(self.call("check",held,partitions=True)[1]["authorized"])
         self.assertEqual(self.call("offers",{},partitions=True)[1],{"offers":[]})
@@ -218,6 +219,40 @@ class PartitionPolicyJourney(unittest.TestCase):
         self.assertEqual(self.update(epoch=3)[1]["error"]["code"],"stale_partition_session")
         self.assertTrue(self.call("inspect",held,partitions=True)[1]["held"])
         self.assertTrue(self.call("complete",{"lease":held,"cleanup_verified":True},partitions=True)[1]["released"])
+        with self.s.authority(), self.s.store.connection() as db:
+            with self.assertRaises(Error): partition_clean_start(self.s, db, lambda:self.identity)
+        self.assertEqual(self.s.release(local["id"], generation=local["generation"], request_key="clean-local")["state"], "released")
+        with self.s.authority(), self.s.store.connection() as db:
+            partition_clean_start(self.s, db, lambda:self.identity)
+            saved = db.execute("SELECT value FROM meta WHERE key='partition_policy_scope'").fetchone()[0]
+            unclosed = {**json.loads(saved),"closed":False}
+            db.execute("UPDATE meta SET value=? WHERE key='partition_policy_scope'",(json.dumps(unclosed),))
+            with self.assertRaises(Error): partition_clean_start(self.s,db,lambda:self.identity)
+            db.execute("DELETE FROM meta WHERE key='partition_policy_scope'")
+            with self.assertRaises(Error): partition_clean_start(self.s,db,lambda:self.identity)
+            db.execute("INSERT INTO meta(key,value) VALUES('partition_policy_scope',?)",(saved,))
+            partition_clean_start(self.s,db,lambda:self.identity)
+            grants = [tuple(row) for row in db.execute("SELECT * FROM partition_policy_grants")]
+            self.assertTrue(grants)  # Closed session is not a fabricated consent withdrawal.
+            self.assertIsNone(db.execute("SELECT 1 FROM partition_claims WHERE retired=0").fetchone())
+        old_context=self.ctx; self.install(); self.ctx=self.call("context",{})[1]["context"]
+        self.assertNotEqual(old_context,self.ctx)
+        self.assertEqual(self.update(context=old_context,epoch=3)[1]["error"]["code"],"stale_partition_context")
+        self.assertEqual(self.update(epoch=3)[1]["error"]["code"],"stale_partition_session")
+        self.assertEqual(self.call("offers",{},partitions=True)[1],{"offers":[]})
+        with self.s.authority(), self.s.store.connection() as db:
+            partition_clean_start(self.s, db, lambda:self.identity)
+            self.assertEqual([tuple(row) for row in db.execute("SELECT * FROM partition_policy_grants")],grants)
+            self.assertIsNone(db.execute("SELECT 1 FROM leases WHERE state!='released'").fetchone())
+        # A new authenticated stream may renew the retained agreement; the old
+        # stream/nonce above cannot. No second whole-host permission is created.
+        self.assertEqual(self.update(epoch=4)[0],200)
+        c = UnixHTTPConnection(self.server.path)
+        try:
+            c.request("POST","/v1/bridge/policy",b"{}",{"Authorization":"Bearer "+TOKEN})
+            r=c.getresponse(); r.read(); self.assertEqual(r.status,404)
+        finally:
+            c.close()
 
     def test_conflicts_identity_clock_and_response_bound_refuse_before_mutation(self):
         self.assertEqual(self.update()[0],200)
