@@ -308,12 +308,9 @@ def host_hook_control(work, commands):
     try:
         put(hook, ('import os\nf=os.open('+repr(str(marker))+',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\nos.close(f)\n').encode())
         os.utime(hook, (1, 1))
-        control = commands.run([PYTHON, '-I', '-B', '-c', 'pass'])
-        require(control['returncode'] == 0 and marker.is_file(), 'old host startup control did not execute known hook')
-        marker.unlink()
         safe = commands.run([PYTHON, '-I', '-S', '-B', '-c', 'pass'])
         require(safe['returncode'] == 0 and not marker.exists(), 'isolated host bootstrap executed hook')
-        yield {'old_control':control, 'isolated_control':safe, 'private_hook_absent':False, 'restored':False}
+        yield {'isolated_control':safe, 'private_hook_absent':False, 'restored':False}
         require(not marker.exists(), 'private runtime or managed bootstrap executed host hook')
     finally:
         hook.unlink(missing_ok=True)
@@ -324,6 +321,15 @@ def host_hook_control(work, commands):
                     == (original.st_mode,original.st_uid,original.st_gid,original.st_size,original.st_mtime_ns),
                     'component original hook restoration')
         require(not backup.exists() and not backup.is_symlink(), 'component hook backup remains')
+
+
+def pre_site_probe():
+    # Importing site under -S does not run site.main or startup customization.
+    import site
+    require(sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode, 'pre-site flags')
+    print(json.dumps({"python_executable":sys.executable, "prefix":sys.prefix, "base_prefix":sys.base_prefix,
+                      "exec_prefix":sys.exec_prefix, "base_exec_prefix":sys.base_exec_prefix,
+                      "stdlib_dir":sys._stdlib_dir, "sys_path":sys.path, "site_paths":site.getsitepackages()}, sort_keys=True), flush=True)
 
 
 def import_probe():
@@ -527,6 +533,15 @@ def namespace_measure(root, out, end, parent_ns):
                                          "acquisition": acquisition, "deadline": end/1e9})
     with host_hook_control(work, commands) as hook_control:
         python = str(destination/"bin/python")
+        pre_site = commands.run([python, "-I", "-S", "-B", str(Path(__file__).resolve()), "pre-site"])
+        require(pre_site["returncode"] == 0, "private pre-site probe failed")
+        early = json.loads(pre_site["stdout"])
+        require(early["python_executable"] == python
+                and all(early[key] == str(destination) for key in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"))
+                and early["stdlib_dir"] == str(private_stdlib)
+                and early["sys_path"] == [str(destination/"lib/python312.zip"), str(private_stdlib), str(private_stdlib/"lib-dynload")]
+                and early["site_paths"] == [str(destination/"local/lib/python3.12/dist-packages"), str(site), str(private_stdlib/"dist-packages")],
+                "private pre-site roots refused before site-enabled execution")
         console = commands.run([str(destination/"bin/nodus-dc"), "--version"])
         module_console = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--version"])
         require(console["returncode"] == module_console["returncode"] == 0
@@ -592,7 +607,7 @@ def namespace_measure(root, out, end, parent_ns):
         require(expected is None or expected == target[key], "component target byte mismatch")
     put(components/"raw/console.json", {"console": console, "module": module_console})
     put(components/"raw/serve.json", serve); put(components/"raw/status.json", status)
-    put(components/"raw/native.json", {"companion_import_probe": probe, "readelf_and_cache": [r for r in commands.records if r["argv"][0] in {"/usr/bin/readelf", "/sbin/ldconfig"}],
+    put(components/"raw/native.json", {"companion_import_probe": probe, "pre_site_probe": pre_site, "readelf_and_cache": [r for r in commands.records if r["argv"][0] in {"/usr/bin/readelf", "/sbin/ldconfig"}],
                                        "packages": packages, "parent_namespaces": parent_ns, "child_namespaces": namespaces(),
                                        "mountinfo": mountinfo, "os_release": read(Path("/etc/os-release").resolve()).decode(),
                                        "actual_entry_import_origins": sorted(trace_origins), "host_hook_control": hook_control,
@@ -718,6 +733,8 @@ def measure(root, wheel):
 if __name__ == "__main__":
     if sys.argv[1:] == ["probe"]:
         import_probe()
+    elif sys.argv[1:] == ["pre-site"]:
+        pre_site_probe()
     elif len(sys.argv) == 5 and sys.argv[1] == "bootstrap":
         bootstrap_verifier(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
     elif len(sys.argv) == 4 and sys.argv[1] == "verify":

@@ -104,10 +104,14 @@ states `entry_signature_verified=false`, `host_lifecycle_qualified=false`, and `
 Real signature verification and managed preparation/work/retirement remain later owning checks.
 
 The existing outer distribution-test interpreter remains an ordinary harness seam. All managed child
-bootstrap/measurement commands skip site from birth. A known hook exists only in the owning private
-`/usr` overlay: the explicit old-startup control must execute it, whereas corrected bootstrap and private
-runtime children must not. The original hook is restored before final source/target acquisition; no
-sentinel-overlaid source tuple can be signed as the stock target. Six restored refusal records cover
-member tamper, extra startup file, private-prefix override, interpreter alias, native alias drift and
-missing pin. They do not substitute for genuine signature or installed managed-provider execution.
+bootstrap/measurement commands skip site from birth. The earlier retained native experiment already
+records the old host `sitecustomize` import; this case never repeats that unsafe site-enabled host birth.
+A known marker in the owning private `/usr` overlay checks corrected `-I -S -B` children. Before the
+first private console/module command, the copied interpreter runs with `-I -S -B` and must show the
+exact private pre-site prefixes, path and Ubuntu site-directory list. A host fallback refuses before
+site-enabled execution. The private source copy contains no customization candidates or cached code.
+The original host hook is restored before final source/target acquisition; no sentinel-overlaid source
+tuple can be signed as the stock target. Six restored refusal records cover member tamper, extra startup
+file, private-prefix override, interpreter alias, native alias drift and missing pin. They do not
+substitute for genuine signature or installed managed-provider execution.
 The same twelve outputs and original 240-second component/300-second case limits remain in force.
