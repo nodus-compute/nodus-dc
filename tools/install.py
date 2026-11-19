@@ -496,6 +496,8 @@ def managed_source_reason(parts):
         return 'foreign-packages'
     if any(p in {'pyvenv.cfg', 'pybuilddir.txt'} or p.endswith(('._pth', '.pth')) for p in parts):
         return 'path-configuration'
+    if parts == ('config-3.12-x86_64-linux-gnu', 'libpython3.12.so'):
+        return 'external-library-link'
     return 'source'
 
 

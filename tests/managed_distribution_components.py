@@ -667,6 +667,12 @@ def namespace_measure(root, out, end, parent_ns):
     allowed_path = [str(destination/"lib/python312.zip"), str(private_stdlib), str(private_stdlib/"lib-dynload"), str(site)]
     require(imports["sys_path"] == allowed_path, "component isolated sys.path")
     files, dirs = tree_census((destination,), commands)
+    development = ('config-3.12-x86_64-linux-gnu', 'libpython3.12.so')
+    excluded = next(row for row in acquisition['entries'] if row['source'] == str(STDLIB.joinpath(*development)))
+    require(excluded['reason'] == 'external-library-link' and excluded['disposition'] == 'excluded'
+            and excluded['destination'] is None and excluded['sha256'] is None
+            and str(private_stdlib.joinpath(*development)) not in files
+            and str(private_stdlib.joinpath(*development)) not in dirs, 'external development link was installed')
     for name in (Path(PYTHON), Path("/etc/ld.so.cache")):
         protected(name, stage="interpreter-and-cache"); body = read(name); files[str(name)] = {"path": str(name), "sha256": sha(body), "bytes": len(body)}
     # Python's verbose importer supplies origins for the real -m paths. The

@@ -35,6 +35,11 @@ The source row retains the actual symlink metadata and null source hash; separat
 must match the independently enumerated ordinary source file. Both private destinations are regular
 copies with identical target bytes, and both count against the original 512 MiB bound. Link, target
 and parent identities remain fixed in memory across census and copying; replacement or drift refuses.
+The exact relative entry `config-3.12-x86_64-linux-gnu/libpython3.12.so` is excluded as
+`external-library-link`: Ubuntu installs this development link to its external multiarch library.
+Its ordinary ten-field row retains only lstat metadata, with null destination/hash; acquisition never
+follows or reads its target. The existing case requires that entry absent from the private tree.
+This does not exclude the config directory or waive any actual ELF/mapped-library dependency identity.
 Every other non-excluded source alias, alias chain, unprotected target or special file refuses. No host
 file is deleted or changed. The complete private prefix admits no customization, `.pth`, `._pth`,
 `pyvenv.cfg`, build-directory override, bytecode, aliases or extra import roots. The installed wheel
