@@ -616,7 +616,8 @@ def namespace_measure(root, out, end, parent_ns):
     target_row = next(row for row in acquisition['entries'] if row['source'] == flattened['alias']['target']['path'])
     copies = []
     for name in (flattened['destination'], target_row['destination']):
-        path = protected(Path(name), stage='sysconfig-private-copy')
+        path = Path(name)
+        protected(path, stage='sysconfig-private-copy')
         info = path.lstat(); body = read(path, 64 << 20)
         require(stat.S_ISREG(info.st_mode) and len(body) == flattened['alias']['target']['bytes']
                 and sha(body) == flattened['alias']['target']['sha256'], 'sysconfig private regular byte join')
