@@ -324,6 +324,9 @@ print(json.dumps(out),flush=True)
             other = builder.build_wheel(base / "two")
             self.assertEqual((base / "one" / name).read_bytes(), (base / "two" / other).read_bytes())
             wheel = base / "one" / name
+            if os.environ.get("NODUS_MANAGED_COMPONENT_INPUT"):
+                from tests.managed_distribution_components import measure
+                measure(ROOT, wheel)
             prefix, state = base / "install", base / "state"
             environment = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "PYTHONHOME"}}
             def installed_version():
