@@ -27,7 +27,15 @@ The public console and authority retain their ordinary isolated `-IB` and `-I -B
 Acquisition enumerates the entire source stdlib without following links. The measured census records
 copied bytes and explicit exclusions: startup customization modules/packages, bytecode/cache files,
 foreign site/dist-package trees and path-configuration files. Excluded symlinks are recorded by lstat
-only; their targets/content are not trusted or copied. Unknown aliases or special files refuse. No host
+only; their targets/content are not trusted or copied. Acquisition version 2 has one explicit
+compatibility exception: the root-owned `/usr/lib/python3.12/_sysconfigdata__linux_x86_64-linux-gnu.py`
+link may name only the actual relative literal `_sysconfigdata__x86_64-linux-gnu.py`. The installer
+checks that literal before opening the fixed same-directory regular, root-owned target with no group/other write permission.
+The source row retains the actual symlink metadata and null source hash; separate target evidence
+must match the independently enumerated ordinary source file. Both private destinations are regular
+copies with identical target bytes, and both count against the original 512 MiB bound. Link, target
+and parent identities remain fixed in memory across census and copying; replacement or drift refuses.
+Every other non-excluded source alias, alias chain, unprotected target or special file refuses. No host
 file is deleted or changed. The complete private prefix admits no customization, `.pth`, `._pth`,
 `pyvenv.cfg`, build-directory override, bytecode, aliases or extra import roots. The installed wheel
 and all retained stdlib files must match the signed map; a different source/native tuple cannot replace
@@ -115,3 +123,11 @@ tuple can be signed as the stock target. Six restored refusal records cover memb
 file, private-prefix override, interpreter alias, native alias drift and missing pin. They do not
 substitute for genuine signature or installed managed-provider execution.
 The same twelve outputs and original 240-second component/300-second case limits remain in force.
+
+The same component owner checks the actual sysconfig pair and both regular copies, then requires
+wrong-literal, target-chain, unprotected-target, same-byte link-replacement and same-byte target-replacement
+refusals. Mutations occur only in its proved private `/usr` overlay. Original entries are restored,
+and a fresh final census is taken; ctime restoration is not asserted. These acquisition controls are
+recorded in the existing raw native evidence, separately from the unchanged six installation refusals.
+The distro source defines the permitted literal, but neither the actual target nor a successful copy
+is inferred from that policy: both remain required observations of the bounded Linux case.

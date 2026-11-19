@@ -323,6 +323,87 @@ def host_hook_control(work, commands):
         require(not backup.exists() and not backup.is_symlink(), 'component hook backup remains')
 
 
+
+def sysconfig_controls(module, destination, wheel, wheel_rows, assembled, deadline):
+    """Exercise only the exact pair inside the already proved private /usr overlay."""
+    alias = STDLIB/'_sysconfigdata__linux_x86_64-linux-gnu.py'
+    target = STDLIB/'_sysconfigdata__x86_64-linux-gnu.py'
+    baseline = module.managed_source_census(destination, deadline)
+    rows = {row['source']:row for row in baseline['entries']}
+    row = rows[str(alias)]
+    require(row['disposition'] == 'flattened' and row['alias']['link_target'] == target.name,
+            'component requires observed sysconfig compatibility pair')
+    body = read(target, 64 << 20)
+    require(sha(body) == row['alias']['target']['sha256'], 'component sysconfig target byte join')
+    records = []
+    def check(label, action, message):
+        require(time.monotonic() < deadline, 'sysconfig control original deadline')
+        try:
+            action()
+        except RuntimeError as error:
+            require(str(error) == message, 'sysconfig control missed intended refusal: '+label)
+        else:
+            raise RuntimeError('sysconfig control accepted: '+label)
+        require(not destination.exists(), 'sysconfig refusal published a private prefix')
+        records.append({'name':label, 'refused':True, 'restored':False})
+    def opened():
+        with module.managed_sysconfig_target(alias, deadline, {}):
+            pass
+    @contextlib.contextmanager
+    def replace(path, create):
+        backup = Path('/usr/.nodus-component-'+path.name)
+        require(not backup.exists() and not backup.is_symlink(), 'sysconfig control backup exists')
+        original = path.lstat()
+        path.rename(backup)
+        try:
+            create(path)
+            yield
+        finally:
+            path.unlink(missing_ok=True)
+            backup.rename(path)
+            after = path.lstat()
+            # Overlay copy-up/rename can change inode and ctime; final census is fresh.
+            fields = ('st_size','st_mode','st_uid','st_gid','st_mtime_ns')
+            require(all(getattr(original,key) == getattr(after,key) for key in fields), 'sysconfig original restoration')
+            require(not backup.exists() and not backup.is_symlink(), 'sysconfig backup remains')
+    with replace(alias, lambda path: path.symlink_to('/etc/passwd')):
+        check('sysconfig-wrong-literal', opened, 'managed sysconfig literal refused')
+    records[-1]['restored'] = True
+    with replace(target, lambda path: path.symlink_to(alias.name)):
+        check('sysconfig-target-chain', opened, 'managed sysconfig target refused')
+    records[-1]['restored'] = True
+    mode = stat.S_IMODE(target.lstat().st_mode)
+    try:
+        target.chmod(mode | 0o020)
+        check('sysconfig-unprotected-target', opened, 'managed sysconfig target refused')
+    finally:
+        target.chmod(mode)
+    require(stat.S_IMODE(target.lstat().st_mode) == mode, 'sysconfig target mode restoration')
+    records[-1]['restored'] = True
+    for path, label in ((alias, 'sysconfig-link-drift'), (target, 'sysconfig-target-drift')):
+        identities = {}
+        acquisition = module.managed_source_census(destination, deadline, identities=identities)
+        def create(changed):
+            if changed == alias:
+                changed.symlink_to(target.name)
+            else:
+                changed.write_bytes(body); changed.chmod(mode)
+                os.chown(changed, row['alias']['target']['uid'], row['alias']['target']['gid'])
+        with replace(path, create):
+            require(module.managed_source_identity(path.lstat()) != identities[str(path)], 'sysconfig drift not applied')
+            require(module.managed_source_census(destination, deadline) == acquisition,
+                    'sysconfig drift must preserve portable bytes/metadata')
+            check(label, lambda: module.install_managed_wheel(wheel, {
+                'root':destination, 'site':destination/'lib/python3/dist-packages', 'rows':wheel_rows,
+                'check':assembled, 'acquisition':acquisition, 'source_identities':identities, 'deadline':deadline}),
+                'managed Python acquisition changed before copy')
+        records[-1]['restored'] = True
+    identities = {}
+    acquisition = module.managed_source_census(destination, deadline, identities=identities)
+    require(acquisition == baseline, 'sysconfig restored portable source census differs')
+    return acquisition, identities, records
+
+
 def pre_site_probe():
     # Importing site under -S does not run site.main or startup customization.
     import site
@@ -528,9 +609,19 @@ def namespace_measure(root, out, end, parent_ns):
         for name, row in wheel_rows.items():
             body = read(Path(name)); require(len(body) == row["bytes"] and sha(body) == row["sha256"], "component assembled wheel")
     module = installer(root)
-    acquisition = module.managed_source_census(destination, end/1e9)
+    acquisition, source_identities, alias_controls = sysconfig_controls(module, destination, wheel, wheel_rows, assembled, end/1e9)
     module.install_managed_wheel(wheel, {"root": destination, "site": site, "rows": wheel_rows, "check": assembled,
-                                         "acquisition": acquisition, "deadline": end/1e9})
+                                         "acquisition": acquisition, "source_identities": source_identities, "deadline": end/1e9})
+    flattened = next(row for row in acquisition['entries'] if row['disposition'] == 'flattened')
+    target_row = next(row for row in acquisition['entries'] if row['source'] == flattened['alias']['target']['path'])
+    copies = []
+    for name in (flattened['destination'], target_row['destination']):
+        path = protected(Path(name), stage='sysconfig-private-copy')
+        info = path.lstat(); body = read(path, 64 << 20)
+        require(stat.S_ISREG(info.st_mode) and len(body) == flattened['alias']['target']['bytes']
+                and sha(body) == flattened['alias']['target']['sha256'], 'sysconfig private regular byte join')
+        copies.append({'path':name, 'kind':'file', 'bytes':len(body), 'sha256':sha(body)})
+    alias_evidence = {'controls':alias_controls, 'regular_copies':copies, 'restored_before_final_census':True}
     with host_hook_control(work, commands) as hook_control:
         python = str(destination/"bin/python")
         pre_site = commands.run([python, "-I", "-S", "-B", str(Path(__file__).resolve()), "pre-site"])
@@ -611,6 +702,7 @@ def namespace_measure(root, out, end, parent_ns):
                                        "packages": packages, "parent_namespaces": parent_ns, "child_namespaces": namespaces(),
                                        "mountinfo": mountinfo, "os_release": read(Path("/etc/os-release").resolve()).decode(),
                                        "actual_entry_import_origins": sorted(trace_origins), "host_hook_control": hook_control,
+                                       "sysconfig_alias": alias_evidence,
                                        "preparation_owner": preparation, "verifier_bootstrap": bootstrap, "verifier_version": verifier_version, "verifier_elf": verifier_elf})
     raw_refs = [pointer(components, "raw/" + name + ".json") for name in ("console", "serve", "status", "native")]
     measured = {"schema": "managed-python-import-closure.v2", "python_head": value["python_head"], "python_tree": value["python_tree"],

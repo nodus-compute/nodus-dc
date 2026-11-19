@@ -6,6 +6,7 @@ No driver/package downloads, system configuration changes, service starts,
 database removal, or automatic lending. Run installed daemon as host operator.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -498,11 +499,68 @@ def managed_source_reason(parts):
     return 'source'
 
 
-def managed_source_census(destination, deadline):
-    """Observe source bytes and explicit exclusions without following source aliases."""
+def managed_source_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            info.st_mode, info.st_uid, info.st_gid)
+
+
+@contextlib.contextmanager
+def managed_sysconfig_target(path, deadline, identities):
+    """Open only the distro's exact compatibility pair; never resolve an alias."""
+    import stat
+    parent = Path('/usr/lib/python3.12')
+    name = '_sysconfigdata__linux_x86_64-linux-gnu.py'
+    literal = '_sysconfigdata__x86_64-linux-gnu.py'
+    if path != parent/name or time.monotonic() >= deadline:
+        raise RuntimeError('managed sysconfig source/deadline refused')
+    for ancestor in (parent, *parent.parents):
+        info = ancestor.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError('managed sysconfig ancestry refused')
+    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent_info = os.fstat(directory)
+        if (managed_source_identity(parent_info) != managed_source_identity(parent.lstat())
+                or not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != 0 or parent_info.st_mode & 0o022):
+            raise RuntimeError('managed sysconfig opened ancestry refused')
+        link = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if not stat.S_ISLNK(link.st_mode) or link.st_uid != 0 or link.st_gid != 0:
+            raise RuntimeError('managed sysconfig link identity refused')
+        actual = os.readlink(name, dir_fd=directory)
+        if actual != literal or link.st_size != len(actual.encode('utf-8')):
+            raise RuntimeError('managed sysconfig literal refused')
+        # Only after validating the actual literal may the fixed target be opened.
+        target = parent/literal
+        info = os.stat(literal, dir_fd=directory, follow_symlinks=False)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+                or not 0 <= info.st_size <= 64 << 20 or managed_source_reason((literal,)) != 'source'):
+            raise RuntimeError('managed sysconfig target refused')
+        snapshot = {str(parent):managed_source_identity(parent_info),
+                    str(path):managed_source_identity(link), str(target):managed_source_identity(info)}
+        if identities and identities != snapshot:
+            raise RuntimeError('managed sysconfig acquisition identity changed')
+        identities.update(snapshot)
+        with os.fdopen(os.open(literal, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory), 'rb') as stream:
+            if managed_source_identity(os.fstat(stream.fileno())) != snapshot[str(target)]:
+                raise RuntimeError('managed sysconfig target changed before read')
+            yield stream, link, info, target, actual
+            if (time.monotonic() >= deadline
+                    or managed_source_identity(os.fstat(stream.fileno())) != snapshot[str(target)]
+                    or managed_source_identity(os.stat(literal, dir_fd=directory, follow_symlinks=False)) != snapshot[str(target)]
+                    or managed_source_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) != snapshot[str(path)]
+                    or os.readlink(name, dir_fd=directory) != actual
+                    or managed_source_identity(parent.lstat()) != snapshot[str(parent)]):
+                raise RuntimeError('managed sysconfig source changed during read')
+    finally:
+        os.close(directory)
+
+
+def managed_source_census(destination, deadline, *, identities=None):
+    """Observe source bytes/exclusions, with one explicit regular-copy exception."""
     import stat
     source = Path('/usr/lib/python3.12')
     entries, total = [], 0
+    identities = {} if identities is None else identities
     def visit(path):
         nonlocal total
         if time.monotonic() >= deadline:
@@ -512,7 +570,8 @@ def managed_source_census(destination, deadline):
         reason = managed_source_reason(parts)
         kind = ('directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode)
                 else 'symlink' if stat.S_ISLNK(info.st_mode) else None)
-        if kind is None or (reason == 'source' and (kind == 'symlink' or info.st_uid != 0 or info.st_mode & 0o022)):
+        flattened = kind == 'symlink' and path == source/'_sysconfigdata__linux_x86_64-linux-gnu.py'
+        if not flattened and (kind is None or (reason == 'source' and (kind == 'symlink' or info.st_uid != 0 or info.st_mode & 0o022))):
             requested = str(path)
             detail = {'path':requested[:512], 'path_truncated':len(requested) > 512,
                       'kind':kind, 'reason':reason, 'uid':info.st_uid, 'gid':info.st_gid,
@@ -529,11 +588,23 @@ def managed_source_census(destination, deadline):
                'kind':kind, 'disposition':'copied' if reason == 'source' else 'excluded', 'reason':reason,
                'bytes':0 if kind == 'directory' else info.st_size, 'mode':stat.S_IMODE(info.st_mode),
                'uid':info.st_uid, 'gid':info.st_gid, 'sha256':None}
-        if reason == 'source' and kind == 'file':
-            if not 0 <= info.st_size <= 64 << 20:
-                raise RuntimeError('managed Python acquisition member limit')
-            h = hashlib.sha256()
-            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+        if reason == 'source' and (kind == 'file' or flattened):
+            with contextlib.ExitStack() as stack:
+                file_info, file_path = info, path
+                if flattened:
+                    stream, link, file_info, file_path, literal = stack.enter_context(managed_sysconfig_target(path, deadline, identities))
+                    if managed_source_identity(link) != managed_source_identity(info):
+                        raise RuntimeError('managed sysconfig link changed before read')
+                    row['disposition'] = 'flattened'
+                    row['alias'] = {'link_target':literal, 'target':{
+                        'path':str(file_path), 'kind':'file', 'bytes':file_info.st_size,
+                        'mode':stat.S_IMODE(file_info.st_mode), 'uid':file_info.st_uid,
+                        'gid':file_info.st_gid, 'sha256':None}}
+                else:
+                    stream = stack.enter_context(os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb'))
+                if not 0 <= file_info.st_size <= 64 << 20:
+                    raise RuntimeError('managed Python acquisition member limit')
+                h = hashlib.sha256()
                 before = os.fstat(stream.fileno())
                 count = 0
                 while True:
@@ -542,13 +613,14 @@ def managed_source_census(destination, deadline):
                     block = stream.read(65536)
                     if not block: break
                     count += len(block); h.update(block)
-                    if count > info.st_size:
+                    if count > file_info.st_size:
                         raise RuntimeError('managed Python source changed')
                 after = os.fstat(stream.fileno())
-            identities = [(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_mode,s.st_uid,s.st_gid) for s in (info,before,after,path.lstat())]
-            if count != info.st_size or len(set(identities)) != 1:
-                raise RuntimeError('managed Python source changed')
-            total += count; row['sha256'] = h.hexdigest()
+                observed = [managed_source_identity(s) for s in (file_info,before,after,file_path.lstat())]
+                if count != file_info.st_size or len(set(observed)) != 1:
+                    raise RuntimeError('managed Python source changed')
+                total += count  # Includes the second destination's bytes, not only unique targets.
+                (row['alias']['target'] if flattened else row)['sha256'] = h.hexdigest()
         entries.append(row)
         if len(entries) > 8192 or total > 512 << 20:
             raise RuntimeError('managed Python acquisition census limit')
@@ -561,7 +633,17 @@ def managed_source_census(destination, deadline):
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
                 raise RuntimeError('managed Python acquisition ancestry')
         visit(path)
-    result = {'schema':'managed-python-acquisition.v1', 'source_interpreter':'/usr/bin/python3.12',
+    by_source = {row['source']:row for row in entries}
+    for row in entries:
+        if row['disposition'] != 'flattened': continue
+        target = row['alias']['target']; ordinary = by_source.get(target['path'], {})
+        if (ordinary.get('disposition') != 'copied' or ordinary.get('reason') != 'source'
+                or any(ordinary.get(key) != target[key] for key in ('kind','bytes','mode','uid','gid','sha256'))
+                or managed_source_identity(Path(target['path']).lstat()) != identities[target['path']]):
+            raise RuntimeError('managed sysconfig independent target census mismatch')
+        with managed_sysconfig_target(Path(row['source']), deadline, identities):
+            pass
+    result = {'schema':'managed-python-acquisition.v2', 'source_interpreter':'/usr/bin/python3.12',
               'source_stdlib':str(source), 'private_prefix':str(destination),
               'entries':sorted(entries,key=lambda row:row['source'])}
     if len(json.dumps(result,sort_keys=True,separators=(',',':')).encode()) > 2 << 20:
@@ -741,14 +823,18 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
         interpreter = release['files'].get('python')
         if interpreter != {'path':str(venv_root/'bin/python'),'sha256':rows[str(venv_root/'bin/python')]['sha256']} or interpreter['sha256'] != rows['/usr/bin/python3.12']['sha256']:
             raise RuntimeError('managed Python interpreter mismatch')
-    acquisition = managed_source_census(venv_root, deadline)
-    copied = {row['destination']: {'path':row['destination'],'sha256':row['sha256'],'bytes':row['bytes']}
-              for row in acquisition['entries'] if row['disposition'] == 'copied' and row['kind'] == 'file'}
+    source_identities = {}
+    acquisition = managed_source_census(venv_root, deadline, identities=source_identities)
+    copied = {}
+    for row in acquisition['entries']:
+        value = row['alias']['target'] if row['disposition'] == 'flattened' else row
+        if row['disposition'] in {'copied','flattened'} and value['kind'] == 'file':
+            copied[row['destination']] = {'path':row['destination'],'sha256':value['sha256'],'bytes':value['bytes']}
     expected_source = {path:row for path,row in rows.items() if path == str(venv_root/'bin/python') or path.startswith(str(stdlib)+'/')}
     if copied != expected_source:
         raise RuntimeError('managed Python source differs from qualified copy')
     check(False)
-    return {'root':venv_root,'site':site,'rows':rows,'check':check,'pin':pin,'acquisition':acquisition,'deadline':deadline}
+    return {'root':venv_root,'site':site,'rows':rows,'check':check,'pin':pin,'acquisition':acquisition,'source_identities':source_identities,'deadline':deadline}
 
 
 def install_managed_wheel(wheel, prepared):
@@ -776,13 +862,14 @@ def install_managed_wheel(wheel, prepared):
                 raise RuntimeError('managed wheel byte mismatch')
         # The prefix is independent from host site initialization, not a venv pointing back to /usr.
         deadline = prepared['deadline']
-        acquisition = managed_source_census(destination, deadline)
-        if acquisition != prepared['acquisition']:
+        source_identities = {}
+        acquisition = managed_source_census(destination, deadline, identities=source_identities)
+        if acquisition != prepared['acquisition'] or source_identities != prepared['source_identities']:
             raise RuntimeError('managed Python acquisition changed before copy')
         destination.mkdir(parents=True, mode=0o755)
         (destination/'bin').mkdir(mode=0o755)
         for row in acquisition['entries']:
-            if row['disposition'] != 'copied': continue
+            if row['disposition'] not in {'copied','flattened'}: continue
             if time.monotonic() >= deadline:
                 raise RuntimeError('managed installation copy deadline')
             path = Path(row['destination'])
@@ -790,10 +877,16 @@ def install_managed_wheel(wheel, prepared):
                 path.mkdir(parents=True, exist_ok=True, mode=0o755)
                 continue
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-            with os.fdopen(os.open(row['source'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+            with contextlib.ExitStack() as stack:
+                expected = row
+                if row['disposition'] == 'flattened':
+                    source, _, _, _, _ = stack.enter_context(managed_sysconfig_target(Path(row['source']), deadline, source_identities))
+                    expected = row['alias']['target']
+                else:
+                    source = stack.enter_context(os.fdopen(os.open(row['source'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb'))
                 info = os.fstat(source.fileno())
                 import stat
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size != row['bytes']:
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size != expected['bytes']:
                     raise RuntimeError('managed Python copy source changed')
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755 if path == destination/'bin/python' else 0o644)
                 with os.fdopen(fd,'wb') as stream:
@@ -804,11 +897,18 @@ def install_managed_wheel(wheel, prepared):
                         block = source.read(65536)
                         if not block: break
                         count += len(block); h.update(block)
-                        if count > row['bytes']: raise RuntimeError('managed Python copy exceeded census')
+                        if count > expected['bytes']: raise RuntimeError('managed Python copy exceeded census')
                         stream.write(block)
                     stream.flush(); os.fsync(stream.fileno())
-                if count != row['bytes'] or h.hexdigest() != row['sha256']:
+                if count != expected['bytes'] or h.hexdigest() != expected['sha256']:
                     raise RuntimeError('managed Python copy bytes changed')
+                if managed_source_identity(os.fstat(source.fileno())) != managed_source_identity(info):
+                    raise RuntimeError('managed Python copy identity changed')
+                source_name = expected['path'] if row['disposition'] == 'flattened' else row['source']
+                if source_name in source_identities and managed_source_identity(info) != source_identities[source_name]:
+                    raise RuntimeError('managed sysconfig copied target identity changed')
+        if managed_source_census(destination, deadline, identities=dict(source_identities)) != acquisition:
+            raise RuntimeError('managed Python source changed before publication')
         for name in names:
             path = site/name
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
