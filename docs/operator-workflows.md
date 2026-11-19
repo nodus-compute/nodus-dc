@@ -64,6 +64,21 @@ After starting or restarting the service, use the [read-only readiness checks](o
 
 ## Allocate and launch
 
+The wheel does not include `examples/`. If you followed the README's dev16 wheel
+installation, download the [matching source archive](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/nodus_datacenter-0.1.0.dev16.tar.gz)
+into the same directory as its verified `SHA256SUMS`. Verify before unpacking,
+then run the examples from the unpacked source directory:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS &&
+tar -xzf nodus_datacenter-0.1.0.dev16.tar.gz &&
+cd nodus_datacenter-0.1.0.dev16
+```
+
+For the dev17 source build above, use that source directory instead. Keep examples
+matched to the installed release and edit their image, paths and GPU profiles for
+your host before reserving resources; the supplied values are examples.
+
 `inventory` returns exact resource IDs and supported modes. Every allocation consumes the entire selected resource. Reserved, starting, draining, verifying and quarantined leases all retain capacity.
 
 ```sh
@@ -89,6 +104,8 @@ request key after reviewing the retained lease state.
 
 ## Partitioning and trusted sharing
 
+Use the matching source examples prepared in [Allocate and launch](#allocate-and-launch).
+
 Reserve `gpu_configuration` on a physical GPU, then `configure LEASE_ID --generation N --plan examples/mig-plan.json`. The operation journals intent, destroys existing instances only on that exclusively held GPU, creates the exact desired named profiles and verifies inventory. Release the maintenance lease before reserving the resulting `MIG-...` instances. Disabling MIG uses `{"enabled":false,"profiles":[]}`. A driver-required reboot/reset or partial configuration leaves the resource quarantined. The tool never resets unrelated devices.
 
 For a cooperating application group, start the daemon with `--enable-trusted-mps`, reserve one `trusted_mps` GPU, and start `examples/mps-pool.json`. The image must contain a compatible MPS control binary. Clients share a private IPC/PID namespace and are reclaimed together. Compute percentages sum to at most 100%; memory limits plus 512 MiB headroom fit reported GPU memory. These client settings are cooperative, not reservations or security limits; clients can change their own environment or spawn processes. MPS may improve or worsen workload latency and throughput; measure your workloads before adoption.
@@ -106,7 +123,13 @@ identities and fencing history remain unchanged; native handoffs are excluded.
 
 The reboot recovery path explicitly excludes native handoffs: a new boot does not establish credential revocation or trustworthy provisioning when a customer had host-root access. Do not clear the lease by editing its database or deleting state.
 
-Stop the daemon and release all allocations before changing installation. `tools/install.py install` stages a wheel under its content hash and switches `current`; `activate --release HASH` rolls back to an already installed release. Schema-changing downgrades are rejected by the runtime. `uninstall` removes only manifest-owned install files and preserves state, GPU configuration, authority registry and untracked files. The installer refuses held leases and a live daemon lock. It does not recursively delete Docker resources or system directories.
+Stop the daemon and release all allocations before changing installation. From the README download directory, use `python3 install.py`; from a source checkout or unpacked source archive, use `python3 tools/install.py`. Keep the installation's original `--prefix` and `--state-dir` on every command. For example, to uninstall the README installation:
+
+```sh
+python3 install.py uninstall --prefix /opt/nodus-dc --state-dir /var/lib/nodus-dc
+```
+
+The `install --wheel PATH` action stages a wheel under its content hash and switches `current`; `activate --release HASH` rolls back to an already installed release. Schema-changing downgrades are rejected by the runtime. `uninstall` removes only manifest-owned install files and preserves state, GPU configuration, authority registry and untracked files. The installer refuses held leases and a live daemon lock. It does not recursively delete Docker resources or system directories.
 
 Installation and activation use a durable journal. Retry the same normal command after interruption: an incomplete installation tree is preserved under the installation prefix's `preserved/` directory, and an interrupted activation completes its recorded release selection. A ready release's ownership manifest is committed before the `current` link changes. Uninstall is likewise resumable and retains the installation ownership marker; a later reinstall preserves old untracked leftovers before reusing a release path. Inspect preserved directories separately—they are not active runtimes or automatic deletion targets.
 

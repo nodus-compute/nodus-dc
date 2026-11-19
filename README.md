@@ -35,6 +35,8 @@ python3 install.py install --wheel nodus_datacenter-0.1.0.dev16-py3-none-any.whl
 ```
 
 To build from source, follow [offline build and install](docs/operator-workflows.md#offline-build-and-install).
+The wheel does not install example files. Before using the allocation or MIG
+examples, [download and verify the matching source archive](docs/operator-workflows.md#allocate-and-launch).
 
 Open **http://127.0.0.1:7441/** and enter the token from the file path printed by
 the daemon. For a remote host, forward port 7441 over SSH. The token stays in
