@@ -486,6 +486,79 @@ def recover_pending(prefix, manifest):
 
 # Managed installation accepts only the release owner's qualified CPython 3.12 host tuple.
 # This does not generate qualification or change the ordinary wheel installation path.
+def managed_source_reason(parts):
+    if any(p in {'sitecustomize', 'usercustomize'} or p.startswith(('sitecustomize.', 'usercustomize.')) for p in parts):
+        return 'startup-customization'
+    if any(p == '__pycache__' or p.endswith(('.pyc', '.pyo')) for p in parts):
+        return 'bytecode'
+    if any(p in {'site-packages', 'dist-packages'} for p in parts):
+        return 'foreign-packages'
+    if any(p in {'pyvenv.cfg', 'pybuilddir.txt'} or p.endswith(('._pth', '.pth')) for p in parts):
+        return 'path-configuration'
+    return 'source'
+
+
+def managed_source_census(destination, deadline):
+    """Observe source bytes and explicit exclusions without following source aliases."""
+    import stat
+    source = Path('/usr/lib/python3.12')
+    entries, total = [], 0
+    def visit(path):
+        nonlocal total
+        if time.monotonic() >= deadline:
+            raise RuntimeError('managed installation acquisition deadline')
+        info = path.lstat()
+        parts = path.relative_to(source).parts if path != Path('/usr/bin/python3.12') else ()
+        reason = managed_source_reason(parts)
+        kind = ('directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode)
+                else 'symlink' if stat.S_ISLNK(info.st_mode) else None)
+        if kind is None or (reason == 'source' and (kind == 'symlink' or info.st_uid != 0 or info.st_mode & 0o022)):
+            raise RuntimeError('managed Python acquisition alias/type/ownership refused')
+        target = destination/'lib/python3.12'/Path(*parts) if path != Path('/usr/bin/python3.12') else destination/'bin/python'
+        row = {'source':str(path), 'destination':str(target) if reason == 'source' else None,
+               'kind':kind, 'disposition':'copied' if reason == 'source' else 'excluded', 'reason':reason,
+               'bytes':0 if kind == 'directory' else info.st_size, 'mode':stat.S_IMODE(info.st_mode),
+               'uid':info.st_uid, 'gid':info.st_gid, 'sha256':None}
+        if reason == 'source' and kind == 'file':
+            if not 0 <= info.st_size <= 64 << 20:
+                raise RuntimeError('managed Python acquisition member limit')
+            h = hashlib.sha256()
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                count = 0
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('managed installation acquisition deadline')
+                    block = stream.read(65536)
+                    if not block: break
+                    count += len(block); h.update(block)
+                    if count > info.st_size:
+                        raise RuntimeError('managed Python source changed')
+                after = os.fstat(stream.fileno())
+            identities = [(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_mode,s.st_uid,s.st_gid) for s in (info,before,after,path.lstat())]
+            if count != info.st_size or len(set(identities)) != 1:
+                raise RuntimeError('managed Python source changed')
+            total += count; row['sha256'] = h.hexdigest()
+        entries.append(row)
+        if len(entries) > 8192 or total > 512 << 20:
+            raise RuntimeError('managed Python acquisition census limit')
+        if kind == 'directory':
+            for child in sorted(path.iterdir()): visit(child)
+    # Ancestors are protected independently of the selectively excluded descendants.
+    for path in (source, Path('/usr/bin/python3.12')):
+        for parent in path.parents:
+            info = parent.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise RuntimeError('managed Python acquisition ancestry')
+        visit(path)
+    result = {'schema':'managed-python-acquisition.v1', 'source_interpreter':'/usr/bin/python3.12',
+              'source_stdlib':str(source), 'private_prefix':str(destination),
+              'entries':sorted(entries,key=lambda row:row['source'])}
+    if len(json.dumps(result,sort_keys=True,separators=(',',':')).encode()) > 2 << 20:
+        raise RuntimeError('managed Python acquisition output limit')
+    return result
+
+
 def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_download=False):
     import stat
     deadline = time.monotonic() + 120 if deadline is None else deadline
@@ -550,7 +623,7 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
         raise RuntimeError('managed installation pin mismatch')
     m = json.loads(body, object_pairs_hook=unique)
     if (type(m) is not dict or set(m) != {'version','wheel_sha256','base_prefix','python_version','qualification_sha256','files','directories','native_links'}
-            or type(m['version']) is not int or m['version'] != 1 or m['base_prefix'] != '/usr'
+            or type(m['version']) is not int or m['version'] != 2
             or m['python_version'] != '.'.join(map(str, sys.version_info[:3])) or sys.version_info[:2] != (3,12)
             or Path(sys.executable).resolve() != Path('/usr/bin/python3.12')
             or m['wheel_sha256'] != digest(wheel) or prefix != Path('/opt/nodus/managed-local/python')):
@@ -562,9 +635,11 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
     if not (6 <= len(m['files']) <= 8192 and len(m['directories']) <= 2048 and len(m['native_links']) <= 64):
         raise RuntimeError('managed installation census limit')
     venv_root = prefix/'releases'/m['wheel_sha256'][:20]
-    stdlib, site = Path('/usr/lib/python3.12'), venv_root/'lib/python3.12/site-packages'
+    if m['base_prefix'] != str(venv_root):
+        raise RuntimeError('managed Python private prefix mismatch')
+    stdlib, site = venv_root/'lib/python3.12', venv_root/'lib/python3/dist-packages'
     def inside(path):
-        return path == stdlib or stdlib in path.parents or path == site or site in path.parents
+        return path == venv_root or venv_root in path.parents
     if any(type(m[key]) is not list for key in ('files','directories','native_links')):
         raise RuntimeError('managed installation census invalid')
     rows, links = {}, {}
@@ -613,9 +688,9 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
             if not final and (path == venv_root or venv_root in path.parents):
                 continue
             if inside(path):
-                if path.suffix == '.pth' or path.name.startswith(('sitecustomize.','usercustomize.')) or (site in path.parents and path.suffix in {'.pyc','.pyo'}):
+                if managed_source_reason(path.relative_to(venv_root).parts) != 'source' and not (site in path.parents and managed_source_reason(path.relative_to(site).parts) == 'source'):
                     raise RuntimeError('managed Python startup injection')
-            elif path not in {venv_root/'bin/python', venv_root/'pyvenv.cfg', Path('/usr/bin/python3.12')}:
+            elif path != Path('/usr/bin/python3.12'):
                 path = native_path(path)
             if path in physical:
                 raise RuntimeError('duplicate managed native file')
@@ -627,10 +702,10 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
             target = native_path(name)
             if not target.is_dir() and target not in physical:
                 raise RuntimeError('unbound managed native alias')
-        for absent in (Path('/usr/lib/python312.zip'), stdlib/'site-packages', Path('/etc/ld.so.preload')):
+        for absent in (venv_root/'lib/python312.zip', stdlib/'site-packages', stdlib/'dist-packages', venv_root/'local', Path('/etc/ld.so.preload')):
             if absent.exists() or absent.is_symlink():
                 raise RuntimeError('unlisted managed Python startup path')
-        roots = (stdlib, site) if final else (stdlib,)
+        roots = (venv_root,) if final else ()
         expected_dirs = m['directories']
         if expected_dirs != sorted(set(expected_dirs)) or any(not inside(Path(p)) for p in expected_dirs):
             raise RuntimeError('managed Python directory set invalid')
@@ -644,23 +719,26 @@ def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_downloa
                     raise RuntimeError('managed installation verification deadline')
                 for name in dirs + files:
                     path = protected(Path(directory)/name)
+                    relative = path.relative_to(site).parts if path == site or site in path.parents else path.relative_to(venv_root).parts
+                    if managed_source_reason(relative) != 'source':
+                        raise RuntimeError('managed Python startup injection')
                     (actual_dirs if path.is_dir() else actual_files).add(str(path))
             if actual_dirs != {p for p in expected_dirs if p == str(root) or p.startswith(str(root)+'/')} or actual_files != {p for p in rows if p.startswith(str(root)+'/')}:
                 raise RuntimeError('managed Python import tree mismatch')
-        required = (venv_root/'bin/python', venv_root/'bin/nodus-dc', venv_root/'pyvenv.cfg', Path('/usr/bin/python3.12'), site/'nodus_dc/__main__.py', site/'nodus_dc/__init__.py', stdlib/'site.py', Path('/etc/ld.so.cache'))
+        required = (venv_root/'bin/python', venv_root/'bin/nodus-dc', Path('/usr/bin/python3.12'), site/'nodus_dc/__main__.py', site/'nodus_dc/__init__.py', stdlib/'site.py', stdlib/'os.py', stdlib/'encodings/__init__.py', Path('/etc/ld.so.cache'))
         if any(str(p) not in rows for p in required):
             raise RuntimeError('managed Python required file missing')
         interpreter = release['files'].get('python')
         if interpreter != {'path':str(venv_root/'bin/python'),'sha256':rows[str(venv_root/'bin/python')]['sha256']} or interpreter['sha256'] != rows['/usr/bin/python3.12']['sha256']:
             raise RuntimeError('managed Python interpreter mismatch')
-        if final:
-            cfg = unique(line.split(' = ',1) for line in read(venv_root/'pyvenv.cfg', 16 << 10).decode().splitlines() if line)
-            if not set(cfg) <= {'home','include-system-site-packages','version','executable','command'}:
-                raise RuntimeError('managed Python configuration keys')
-            if cfg.get('home') != '/usr/bin' or cfg.get('include-system-site-packages') != 'false' or cfg.get('version') != m['python_version'] or cfg.get('executable') != '/usr/bin/python3.12':
-                raise RuntimeError('managed Python configuration mismatch')
+    acquisition = managed_source_census(venv_root, deadline)
+    copied = {row['destination']: {'path':row['destination'],'sha256':row['sha256'],'bytes':row['bytes']}
+              for row in acquisition['entries'] if row['disposition'] == 'copied' and row['kind'] == 'file'}
+    expected_source = {path:row for path,row in rows.items() if path == str(venv_root/'bin/python') or path.startswith(str(stdlib)+'/')}
+    if copied != expected_source:
+        raise RuntimeError('managed Python source differs from qualified copy')
     check(False)
-    return {'root':venv_root,'site':site,'rows':rows,'check':check,'pin':pin}
+    return {'root':venv_root,'site':site,'rows':rows,'check':check,'pin':pin,'acquisition':acquisition,'deadline':deadline}
 
 
 def install_managed_wheel(wheel, prepared):
@@ -686,7 +764,41 @@ def install_managed_wheel(wheel, prepared):
             row = expected[name]
             if len(body) != row['bytes'] or hashlib.sha256(body).hexdigest() != row['sha256']:
                 raise RuntimeError('managed wheel byte mismatch')
-        venv.EnvBuilder(with_pip=False, symlinks=False).create(destination)
+        # The prefix is independent from host site initialization, not a venv pointing back to /usr.
+        deadline = prepared['deadline']
+        acquisition = managed_source_census(destination, deadline)
+        if acquisition != prepared['acquisition']:
+            raise RuntimeError('managed Python acquisition changed before copy')
+        destination.mkdir(parents=True, mode=0o755)
+        (destination/'bin').mkdir(mode=0o755)
+        for row in acquisition['entries']:
+            if row['disposition'] != 'copied': continue
+            if time.monotonic() >= deadline:
+                raise RuntimeError('managed installation copy deadline')
+            path = Path(row['destination'])
+            if row['kind'] == 'directory':
+                path.mkdir(parents=True, exist_ok=True, mode=0o755)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            with os.fdopen(os.open(row['source'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+                info = os.fstat(source.fileno())
+                import stat
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size != row['bytes']:
+                    raise RuntimeError('managed Python copy source changed')
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o755 if path == destination/'bin/python' else 0o644)
+                with os.fdopen(fd,'wb') as stream:
+                    h, count = hashlib.sha256(), 0
+                    while True:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('managed installation copy deadline')
+                        block = source.read(65536)
+                        if not block: break
+                        count += len(block); h.update(block)
+                        if count > row['bytes']: raise RuntimeError('managed Python copy exceeded census')
+                        stream.write(block)
+                    stream.flush(); os.fsync(stream.fileno())
+                if count != row['bytes'] or h.hexdigest() != row['sha256']:
+                    raise RuntimeError('managed Python copy bytes changed')
         for name in names:
             path = site/name
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -755,6 +867,8 @@ def main(argv=None):
     existing = read_manifest(prefix, state)
     if existing and existing.get('managed') and not args.managed:
         raise RuntimeError("use --managed for this paired installation")
+    if args.managed and not (sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode):
+        raise RuntimeError("start managed installation with /usr/bin/python3.12 -I -S -B install.py")
     if args.managed and (args.action not in {"install", "uninstall"} or args.recovery_upgrade):
         raise RuntimeError("managed activation requires install with the qualified wheel")
     deadline = time.monotonic() + 120

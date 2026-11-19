@@ -6,6 +6,7 @@ executable. A PASS is neither a signature nor managed-provider qualification.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -250,6 +251,81 @@ def verify_install(root, wheel):
         module.subprocess.run = real_run
 
 
+def bootstrap_verifier(root, work, end):
+    module = installer(root)
+    require(all(limit == resource.RLIM_INFINITY or limit >= 135178161 for limit in resource.getrlimit(resource.RLIMIT_FSIZE)),
+            'parent file limit cannot hold independently pinned verifier')
+    Path('/opt/nodus/managed-local').mkdir(parents=True, mode=0o755, exist_ok=True)
+    handles = module.lock_managed_installation(PREFIX, work/'uncreated-host/authority')
+    try:
+        path = module.MANAGED_VERIFIER
+        require(not path.exists() and not path.is_symlink(), "component verifier must exercise fresh bootstrap")
+        module.managed_verifier(end/1e9, allow_download=True)
+        before = path.lstat()
+        module.managed_verifier(end/1e9)
+        require(os.path.samestat(before,path.lstat()), "component verifier reuse replaced bytes")
+        refused = []
+        backup = path.with_name('component-verifier-retained')
+        path.rename(backup)
+        try:
+            for name in ('missing-retained-verifier', 'verifier-alias'):
+                if name == 'verifier-alias': path.symlink_to('/usr/bin/false')
+                try: module.managed_verifier(end/1e9)
+                except (RuntimeError, OSError): refused.append(name)
+                else: raise RuntimeError('component verifier boundary accepted unsafe file')
+                finally: path.unlink(missing_ok=True)
+        finally:
+            backup.rename(path)
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        original = os.pread(fd, 1, 0)
+        try:
+            os.pwrite(fd, bytes([original[0] ^ 1]), 0); os.fsync(fd)
+            try: module.managed_verifier(end/1e9)
+            except RuntimeError: refused.append('verifier-checksum')
+            else: raise RuntimeError('component verifier accepted different bytes')
+        finally:
+            os.pwrite(fd, original, 0); os.fsync(fd); os.close(fd)
+        module.managed_verifier(end/1e9)
+        require(os.path.samestat(before,path.lstat()) and not list(path.parent.glob('.download-*')),
+                'component verifier restoration/temp closure')
+        print(json.dumps({'path':str(path), 'sha256':module.MANAGED_VERIFIER_SHA256, 'bytes':before.st_size,
+                          'device':before.st_dev, 'inode':before.st_ino, 'mode':stat.S_IMODE(before.st_mode),
+                          'uid':before.st_uid, 'gid':before.st_gid,
+                          'reused_identity':True, 'refusals':refused, 'restored':True, 'temporary_absent':True}), flush=True)
+    finally:
+        for handle in handles: handle.close()
+
+
+@contextlib.contextmanager
+def host_hook_control(work, commands):
+    """Only the owned /usr overlay is changed; original hook bytes are never read."""
+    hook, backup, marker = STDLIB/'sitecustomize.py', STDLIB/'.nodus-component-original-hook', work/'hook-ran'
+    require(not backup.exists() and not backup.is_symlink(), 'component hook backup exists')
+    existed = hook.exists() or hook.is_symlink()
+    original = hook.lstat() if existed else None
+    require(original is None or stat.S_ISREG(original.st_mode) or stat.S_ISLNK(original.st_mode), 'unsupported original hook type')
+    if existed: hook.rename(backup)
+    try:
+        put(hook, ('import os\nf=os.open('+repr(str(marker))+',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\nos.close(f)\n').encode())
+        os.utime(hook, (1, 1))
+        control = commands.run([PYTHON, '-I', '-B', '-c', 'pass'])
+        require(control['returncode'] == 0 and marker.is_file(), 'old host startup control did not execute known hook')
+        marker.unlink()
+        safe = commands.run([PYTHON, '-I', '-S', '-B', '-c', 'pass'])
+        require(safe['returncode'] == 0 and not marker.exists(), 'isolated host bootstrap executed hook')
+        yield {'old_control':control, 'isolated_control':safe, 'private_hook_absent':False, 'restored':False}
+        require(not marker.exists(), 'private runtime or managed bootstrap executed host hook')
+    finally:
+        hook.unlink(missing_ok=True)
+        if existed:
+            backup.rename(hook)
+            after = hook.lstat()
+            require((after.st_mode,after.st_uid,after.st_gid,after.st_size,after.st_mtime_ns)
+                    == (original.st_mode,original.st_uid,original.st_gid,original.st_size,original.st_mtime_ns),
+                    'component original hook restoration')
+        require(not backup.exists() and not backup.is_symlink(), 'component hook backup remains')
+
+
 def import_probe():
     """Companion census; actual -m console/serve/status are separate commands."""
     import importlib
@@ -266,14 +342,15 @@ def import_probe():
         if isinstance(origin, str) and origin.startswith("/"):
             origins[name] = origin
     print(json.dumps({"python_executable": sys.executable, "prefix": sys.prefix, "base_prefix": sys.base_prefix,
-                      "sys_path": sys.path, "module_origins": origins,
+                      "exec_prefix": sys.exec_prefix, "base_exec_prefix": sys.base_exec_prefix,
+                      "stdlib_dir": sys._stdlib_dir, "sys_path": sys.path, "module_origins": origins,
                       "maps": Path("/proc/self/maps").read_text()}, sort_keys=True), flush=True)
 
 
 def tree_census(roots, commands):
     files, dirs = {}, set()
     for root in roots:
-        stage = "stdlib-census" if root == STDLIB else "site-census"
+        stage = "private-prefix-census"
         protected(root, stage=stage); dirs.add(str(root))
         for directory, children, leaves in os.walk(root, followlinks=False):
             commands.left()
@@ -353,11 +430,10 @@ def mapped_paths(text):
     return result
 
 
-def namespace_measure(root, value, end, parent_ns):
+def namespace_prepare(root, value, end, parent_ns):
     os.umask(0o077)
     out = Path(value["output_directory"]); components, work = out/"components", out/"work"
-    commands = Commands(work/"child", end)
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT, MAX_OUTPUT))
+    commands = Commands(work/"preparation", end)
     def expired(_signum, _frame):
         raise TimeoutError("original component deadline expired")
     signal.signal(signal.SIGALRM, expired)
@@ -376,8 +452,55 @@ def namespace_measure(root, value, end, parent_ns):
     mountinfo = Path("/proc/self/mountinfo").read_text()
     require(all(any(line.split()[4] == target and " - overlay " in line for line in mountinfo.splitlines())
                 for target in mounts), "component overlay observation")
+    with host_hook_control(work, commands) as hook_control:
+        bootstrap = commands.run([PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "bootstrap", str(root), str(work), str(end)], cap=commands.left(60))
+        require(bootstrap["returncode"] == 0, "actual verifier bootstrap/reuse/refusal")
+    hook_control.update(private_hook_absent=True, restored=True)
+    identity = json.loads(bootstrap["stdout"])
+    require(identity["bytes"] == 135178161 and identity["sha256"] == installer(root).MANAGED_VERIFIER_SHA256,
+            "actual fixed verifier asset identity")
+    preparation = {"parent_namespaces":parent_ns, "namespaces":namespaces(), "mountinfo":mountinfo,
+                   "bootstrap":bootstrap, "host_hook_control":hook_control,
+                   "original_end_monotonic_ns":end, "input_sha256":sha(canonical(value))}
+    put(work/"preparation.json", preparation)
+    put(work/"measurement-input.json", value)
+    child = commands.run(["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=KILL",
+                          PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "measurement", str(root),
+                          str(out), str(end), json.dumps(namespaces(),sort_keys=True)], cap=commands.left(240))
+    require(child["returncode"] == 0, "component measurement child failed")
+
+
+def namespace_measure(root, out, end, parent_ns):
+    os.umask(0o077)
+    protected(out, stage="measurement-output")
+    work, components = out/"work", out/"components"
+    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT, MAX_OUTPUT))
+    commands = Commands(work/"child", end)
+    def expired(_signum, _frame):
+        raise TimeoutError("original component deadline expired")
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, commands.left(240))
+    require(all(namespaces()[key] != parent_ns[key] for key in parent_ns), "measurement namespace isolation")
+    preparation = json.loads(read(work/"preparation.json"))
+    require(preparation["namespaces"] == parent_ns and preparation["original_end_monotonic_ns"] == end,
+            "measurement original owner/deadline")
+    mountinfo = Path("/proc/self/mountinfo").read_text()
+    require(all(any(line.split()[4] == target and " - overlay " in line for line in mountinfo.splitlines())
+                for target in ("/usr", "/etc", "/opt", "/var/lib")), "measurement inherited owned overlays")
+    value = json.loads(read(work/"measurement-input.json"))
+    require(sha(canonical(value)) == preparation["input_sha256"] and value["output_directory"] == str(out),
+            "measurement input handoff")
+    bootstrap = preparation["bootstrap"]
+    identity = json.loads(bootstrap["stdout"])
+    verifier = Path(installer(root).managed_verifier(end/1e9))
+    observed = verifier.lstat()
+    require(str(verifier) == identity["path"] and (observed.st_dev,observed.st_ino,observed.st_size,
+            stat.S_IMODE(observed.st_mode),observed.st_uid,observed.st_gid)
+            == tuple(identity[k] for k in ("device","inode","bytes","mode","uid","gid")),
+            "measurement inherited exact verifier identity")
     wheel = components/"package.whl"; wheel_sha = sha(read(wheel, 4 << 20))
-    destination = PREFIX/"releases"/wheel_sha[:20]; site = destination/"lib/python3.12/site-packages"
+    destination = PREFIX/"releases"/wheel_sha[:20]; site = destination/"lib/python3/dist-packages"
+    private_stdlib = destination/"lib/python3.12"
     require(not PREFIX.exists(), "component canonical installation already exists")
     require(not Path("/var/lib/nodus-dc-authority/fence.json").exists()
             and not Path("/var/lib/nodus-dc/authority-path.json").exists(), "existing physical authority is outside component scope")
@@ -398,33 +521,47 @@ def namespace_measure(root, value, end, parent_ns):
         require(final and read(destination/"bin/python") == read(Path(PYTHON)), "component interpreter copy")
         for name, row in wheel_rows.items():
             body = read(Path(name)); require(len(body) == row["bytes"] and sha(body) == row["sha256"], "component assembled wheel")
-    installer(root).install_managed_wheel(wheel, {"root": destination, "site": site, "rows": wheel_rows, "check": assembled})
-    commands.left()
-    python = str(destination/"bin/python")
-    console = commands.run([str(destination/"bin/nodus-dc"), "--version"])
-    module_console = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--version"])
-    require(console["returncode"] == module_console["returncode"] == 0
-            and console["stdout"] == module_console["stdout"], "component public console")
-    state = work/"observe-state"; state.mkdir(mode=0o700)
-    serve = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--state-dir", str(state),
-                          "--allocation-authority", "observe", "serve", "--port", "0", "--local-socket", str(work/"local.sock")], ready=True)
-    require(serve["returncode"] == 0, "component observe serve natural stop")
-    status = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--state-dir", str(state), "status"])
-    require(status["returncode"] == 0, "component observe status")
-    status_body = json.loads(status["stdout"])
-    require(status_body["leases"] == [] and status_body["hardware_qualified"] is False
-            and not (status_body.get("bridge_policy") or {}).get("enabled"), "component status created authority")
-    require(not Path("/var/lib/nodus-dc-authority/fence.json").exists()
-            and not Path("/var/lib/nodus-dc/authority-path.json").exists(), "component authority absence")
-    probe = commands.run([python, "-I", "-B", str(Path(__file__).resolve()), "probe"])
-    require(probe["returncode"] == 0, "component complete package import")
+    module = installer(root)
+    acquisition = module.managed_source_census(destination, end/1e9)
+    module.install_managed_wheel(wheel, {"root": destination, "site": site, "rows": wheel_rows, "check": assembled,
+                                         "acquisition": acquisition, "deadline": end/1e9})
+    with host_hook_control(work, commands) as hook_control:
+        python = str(destination/"bin/python")
+        console = commands.run([str(destination/"bin/nodus-dc"), "--version"])
+        module_console = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--version"])
+        require(console["returncode"] == module_console["returncode"] == 0
+                and console["stdout"] == module_console["stdout"], "component public console")
+        state = work/"observe-state"; state.mkdir(mode=0o700)
+        serve = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--state-dir", str(state),
+                              "--allocation-authority", "observe", "serve", "--port", "0", "--local-socket", str(work/"local.sock")], ready=True)
+        require(serve["returncode"] == 0, "component observe serve natural stop")
+        status = commands.run([python, "-I", "-B", "-v", "-m", "nodus_dc", "--state-dir", str(state), "status"])
+        require(status["returncode"] == 0, "component observe status")
+        status_body = json.loads(status["stdout"])
+        require(status_body["leases"] == [] and status_body["hardware_qualified"] is False
+                and not (status_body.get("bridge_policy") or {}).get("enabled"), "component status created authority")
+        require(not Path("/var/lib/nodus-dc-authority/fence.json").exists()
+                and not Path("/var/lib/nodus-dc/authority-path.json").exists(), "component authority absence")
+        probe = commands.run([python, "-I", "-B", str(Path(__file__).resolve()), "probe"])
+        require(probe["returncode"] == 0, "component complete package import")
+    hook_control.update(private_hook_absent=True, restored=True)
+    require(module.managed_source_census(destination, end/1e9) == acquisition,
+            "restored acquisition changed; no sentinel target may be qualified")
+    verifier_identity = json.loads(bootstrap["stdout"])
+    verifier_version = commands.run([verifier_identity["path"], "version"])
+    verifier_elf = commands.run(["/usr/bin/readelf", "-W", "-h", "-l", "-d", verifier_identity["path"]])
+    require(verifier_version["returncode"] == verifier_elf["returncode"] == 0
+            and "ELF64" in verifier_elf["stdout"] and "Advanced Micro Devices X86-64" in verifier_elf["stdout"]
+            and "(NEEDED)" not in verifier_elf["stdout"] and "Requesting program interpreter:" not in verifier_elf["stdout"],
+            "component fixed verifier requires observed static Linux-amd64 closure")
     imports = json.loads(probe["stdout"])
     require(imports["python_executable"] == python and imports["prefix"] == str(destination)
-            and imports["base_prefix"] == "/usr", "component actual interpreter roots")
-    allowed_path = {"/usr/lib/python312.zip", str(STDLIB), str(STDLIB/"lib-dynload"), str(site)}
-    require(set(imports["sys_path"]) == allowed_path and len(imports["sys_path"]) == len(allowed_path), "component isolated sys.path")
-    files, dirs = tree_census((STDLIB, site), commands)
-    for name in (destination/"bin/python", destination/"bin/nodus-dc", destination/"pyvenv.cfg", Path(PYTHON), Path("/etc/ld.so.cache")):
+            and all(imports[key] == str(destination) for key in ("base_prefix", "exec_prefix", "base_exec_prefix"))
+            and imports["stdlib_dir"] == str(private_stdlib), "component actual interpreter roots")
+    allowed_path = [str(destination/"lib/python312.zip"), str(private_stdlib), str(private_stdlib/"lib-dynload"), str(site)]
+    require(imports["sys_path"] == allowed_path, "component isolated sys.path")
+    files, dirs = tree_census((destination,), commands)
+    for name in (Path(PYTHON), Path("/etc/ld.so.cache")):
         protected(name, stage="interpreter-and-cache"); body = read(name); files[str(name)] = {"path": str(name), "sha256": sha(body), "bytes": len(body)}
     # Python's verbose importer supplies origins for the real -m paths. The
     # companion imports all shipped modules; neither alone is a dynamic-path proof.
@@ -434,7 +571,7 @@ def namespace_measure(root, value, end, parent_ns):
         trace_origins.update(re.findall(r"^# code object from '?(/[^\n']+)'?$", record["stderr"], re.M))
         trace_origins.update(re.findall(r"extension module '[^']+' loaded from '(/[^']+)'", record["stderr"]))
     origins = set(imports["module_origins"].values()) | trace_origins
-    require(origins and all(path in files for path in origins), "component import origin escaped complete census")
+    require(origins and all(path.startswith(str(destination)+"/") and path in files for path in origins), "component import origin escaped complete private census")
     mapped = mapped_paths(imports["maps"]) | mapped_paths(serve["maps"])
     seeds = {name for name in files if name.endswith(".so") or ".so." in name} | mapped | {PYTHON, python, "/etc/ld.so.cache"}
     native, links, dependencies = native_census(seeds, commands)
@@ -447,8 +584,9 @@ def namespace_measure(root, value, end, parent_ns):
               "kernel_release": platform.release(), "python_version": platform.python_version(),
               "base_python_sha256": files[PYTHON]["sha256"], "native_census_sha256": sha(canonical({"files": sorted(native.values(), key=lambda r:r["path"]), "native_links": links})),
               "os_release_sha256": sha(read(Path("/etc/os-release").resolve())), "package_census_sha256": sha(packages["stdout"].encode()),
-              "stdlib_census_sha256": sha(canonical({"files": [files[p] for p in sorted(files) if p.startswith(str(STDLIB)+"/")],
-                                                       "directories": sorted(p for p in dirs if p == str(STDLIB) or p.startswith(str(STDLIB)+"/"))}))}
+              "stdlib_census_sha256": sha(canonical({"files": [files[p] for p in sorted(files) if p.startswith(str(private_stdlib)+"/")],
+                                                       "directories": sorted(p for p in dirs if p == str(private_stdlib) or p.startswith(str(private_stdlib)+"/"))})),
+              "source_stdlib_census_sha256": sha(canonical([row for row in acquisition["entries"] if row["source"] == str(STDLIB) or row["source"].startswith(str(STDLIB)+"/")]))}
     for key in ("os_release_sha256", "package_census_sha256"):
         expected = value["expected_" + key]
         require(expected is None or expected == target[key], "component target byte mismatch")
@@ -457,15 +595,16 @@ def namespace_measure(root, value, end, parent_ns):
     put(components/"raw/native.json", {"companion_import_probe": probe, "readelf_and_cache": [r for r in commands.records if r["argv"][0] in {"/usr/bin/readelf", "/sbin/ldconfig"}],
                                        "packages": packages, "parent_namespaces": parent_ns, "child_namespaces": namespaces(),
                                        "mountinfo": mountinfo, "os_release": read(Path("/etc/os-release").resolve()).decode(),
-                                       "actual_entry_import_origins": sorted(trace_origins)})
+                                       "actual_entry_import_origins": sorted(trace_origins), "host_hook_control": hook_control,
+                                       "preparation_owner": preparation, "verifier_bootstrap": bootstrap, "verifier_version": verifier_version, "verifier_elf": verifier_elf})
     raw_refs = [pointer(components, "raw/" + name + ".json") for name in ("console", "serve", "status", "native")]
-    measured = {"schema": "managed-python-import-closure.v1", "python_head": value["python_head"], "python_tree": value["python_tree"],
-                "wheel_sha256": wheel_sha, "target_tuple": target, **{key: imports[key] for key in ("python_executable", "prefix", "base_prefix", "sys_path", "module_origins")},
-                "elf_dependencies": dependencies, "mapped_libraries": sorted(mapped), "raw_refs": raw_refs,
+    measured = {"schema": "managed-python-import-closure.v2", "python_head": value["python_head"], "python_tree": value["python_tree"],
+                "wheel_sha256": wheel_sha, "target_tuple": target, **{key: imports[key] for key in ("python_executable", "prefix", "base_prefix", "exec_prefix", "base_exec_prefix", "stdlib_dir", "sys_path", "module_origins")},
+                "acquisition_sha256": sha(canonical(acquisition)), "elf_dependencies": dependencies, "mapped_libraries": sorted(mapped), "raw_refs": raw_refs,
                 "all_resolved_within_census": True, "scope": "python-os-import-native-components",
                 "managed_provider_execution": False, "host_lifecycle_qualified": False}
     put(components/"import-closure.json", measured)
-    manifest = {"version": 1, "wheel_sha256": wheel_sha, "base_prefix": "/usr", "python_version": target["python_version"],
+    manifest = {"version": 2, "wheel_sha256": wheel_sha, "base_prefix": str(destination), "python_version": target["python_version"],
                 "qualification_sha256": sha(canonical(measured)), "files": [files[p] for p in sorted(files)],
                 "directories": sorted(dirs), "native_links": links}
     require(len(canonical(manifest)) <= 2 << 20, "component installation manifest bound")
@@ -477,13 +616,13 @@ def namespace_measure(root, value, end, parent_ns):
                "guardian": None, "image_reference": None, "shared": None, "pids": None, "max_claims": None}
     put(Path("/opt/nodus/managed-local/release.json"), release)
     put(Path("/opt/nodus/managed-local/release.json.bundle"), b"component-signature-seam\n")
-    verification = commands.run([PYTHON, "-I", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])
+    verification = commands.run([PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])
     require(verification["returncode"] == 0, "actual installer component verifier refused measured tuple")
     cases = []
     native_alias = next((Path(row["path"]) for row in links if row["path"].startswith("/usr/") and Path(row["path"]).is_file()), None)
     require(native_alias is not None, "component native alias refusal witness unavailable")
     for name, path in (("member-tamper", site/"nodus_dc/__init__.py"), ("extra-startup-file", site/"component-extra.pth"),
-                       ("pyvenv-drift", destination/"pyvenv.cfg"), ("interpreter-alias", Path(python)),
+                       ("private-prefix-drift", destination/"pyvenv.cfg"), ("interpreter-alias", Path(python)),
                        ("native-alias-drift", native_alias), ("missing-pin", installation_path)):
         existed = path.exists() or path.is_symlink(); info = path.lstat() if existed else None
         old_link = os.readlink(path) if existed and path.is_symlink() else None
@@ -496,7 +635,7 @@ def namespace_measure(root, value, end, parent_ns):
             elif name == "interpreter-alias": path.unlink(); path.symlink_to(PYTHON)
             elif name == "missing-pin": path.unlink()
             else: path.write_bytes((body or b"") + b"\n# component refusal\n")
-            refused = commands.run([PYTHON, "-I", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])
+            refused = commands.run([PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])
             require(refused["returncode"] == 23 and refused["stdout"] == "component-installation-refused\n", "component expected typed refusal")
         finally:
             path.unlink(missing_ok=True)
@@ -507,13 +646,13 @@ def namespace_measure(root, value, end, parent_ns):
         require(restored, "component counterexample not restored")
         cases.append({"name": name, "returncode": refused["returncode"], "refused": True,
                       "authority_absent": not Path("/var/lib/nodus-dc-authority/fence.json").exists(), "restored_exact": restored})
-    require(commands.run([PYTHON, "-I", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])["returncode"] == 0,
+    require(commands.run([PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "verify", str(root), str(wheel)])["returncode"] == 0,
             "component restored tuple verification")
-    put(components/"refusals.json", {"schema": "managed-python-component-refusals.v1", "cases": cases, "signature_seam": True})
-    put(components/"census.json", {"schema": "managed-python-component-census.v1", **{k: manifest[k] for k in ("files", "directories", "native_links")},
+    put(components/"refusals.json", {"schema": "managed-python-component-refusals.v2", "cases": cases, "signature_seam": True})
+    put(components/"census.json", {"schema": "managed-python-component-census.v2", **{k: manifest[k] for k in ("files", "directories", "native_links")},
                                   "source_members": len(json.loads(read(components/"source-manifest.json"))["files"]),
                                   "wheel_members": len(wheel_rows), "output_members": ["components/" + p for p in OUTPUTS],
-                                  "total_bytes": sum(row["bytes"] for row in files.values())})
+                                  "total_bytes": sum(row["bytes"] for row in files.values()), "acquisition": acquisition})
     put(work/"namespace-result.json", {"target_tuple": target, "wheel_sha256": wheel_sha,
                                       "wheel_bytes": wheel.stat().st_size, "raw_refs": raw_refs,
                                       "authority_absent": True, "children": commands.children})
@@ -536,9 +675,12 @@ def measure(root, wheel):
     put(components/"source-manifest.json", manifest); put(components/"package.whl", read(wheel, 4 << 20))
     before_mounts = Path("/proc/self/mountinfo").read_bytes(); parent_ns = namespaces()
     result = commands.run(["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=KILL",
-                           PYTHON, "-I", "-B", str(Path(__file__).resolve()), "namespace", str(root), str(input_path), input_sha,
+                           PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "namespace", str(root), str(input_path), input_sha,
                            str(end), json.dumps(parent_ns, sort_keys=True)], cap=max(0.001, (end-time.monotonic_ns())/1e9))
-    namespace_children = json.loads(read(work/"child/children.json", 1 << 20)) if (work/"child/children.json").exists() else []
+    namespace_children = []
+    for name in ("preparation", "child"):
+        record = work/name/"children.json"
+        if record.exists(): namespace_children.extend(json.loads(read(record, 1 << 20)))
     source_clean = source_manifest(root, commands) == manifest
     namespace_row = next(row for row in commands.children if row["argv_sha256"] == sha(canonical(result["argv"])))
     try: os.killpg(namespace_row["pid"], 0)
@@ -555,7 +697,7 @@ def measure(root, wheel):
     put(components/"closure.json", closure)
     require(result["returncode"] == 0 and partial and group_absent and owned_mounts_absent and source_clean,
             "component namespace/measurement failed; retain partial owned evidence")
-    receipt = {"schema": "managed-python-components.v1", "scope": "python-os-import-native-components", "outcome": "PASS",
+    receipt = {"schema": "managed-python-components.v2", "scope": "python-os-import-native-components", "outcome": "PASS",
                **{k: value[k] for k in ("platform_head", "python_head", "python_tree", "source_manifest_sha256")},
                "target_tuple": partial["target_tuple"], "wheel": {"path": "components/package.whl", "sha256": partial["wheel_sha256"], "bytes": partial["wheel_bytes"]},
                "raw": partial["raw_refs"], "source_clean": True, "entry_signature_verified": False,
@@ -576,13 +718,17 @@ def measure(root, wheel):
 if __name__ == "__main__":
     if sys.argv[1:] == ["probe"]:
         import_probe()
+    elif len(sys.argv) == 5 and sys.argv[1] == "bootstrap":
+        bootstrap_verifier(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]))
     elif len(sys.argv) == 4 and sys.argv[1] == "verify":
         try: verify_install(Path(sys.argv[2]), Path(sys.argv[3]))
         except (RuntimeError, OSError, ValueError, KeyError):
             print("component-installation-refused", flush=True); raise SystemExit(23)
+    elif len(sys.argv) == 6 and sys.argv[1] == "measurement":
+        namespace_measure(Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]), json.loads(sys.argv[5]))
     elif len(sys.argv) == 7 and sys.argv[1] == "namespace":
         try:
-            namespace_measure(Path(sys.argv[2]), input_record(Path(sys.argv[3]), sys.argv[4]), int(sys.argv[5]), json.loads(sys.argv[6]))
+            namespace_prepare(Path(sys.argv[2]), input_record(Path(sys.argv[3]), sys.argv[4]), int(sys.argv[5]), json.loads(sys.argv[6]))
         except Exception as exc:
             print(json.dumps({"component_failure_type": type(exc).__name__,
                               "component_failure": str(exc) if type(exc) is RuntimeError else "component-step-failed"}), flush=True)
