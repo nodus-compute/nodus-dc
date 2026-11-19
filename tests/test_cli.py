@@ -3,6 +3,7 @@ import unittest
 import contextlib
 import io
 import json
+import os
 from unittest.mock import patch
 from pathlib import Path
 
@@ -13,6 +14,41 @@ from tests.test_authority import Backend, Clock
 
 
 class CliTests(unittest.TestCase):
+    @unittest.skipUnless(os.geteuid() == 0, "protected preparation needs the root native owner")
+    def test_preparation_retry_keeps_lock_and_exact_atomic_artifacts(self):
+        from nodus_dc.partition_prepare import publish
+        from nodus_dc.errors import Error
+        with tempfile.TemporaryDirectory(prefix=".nodus-prepare-", dir=Path.home().resolve()) as folder:
+            state = Path(folder); template = state / "request.json"
+            template.write_text("{}"); template.chmod(0o600)
+            args = ["--state-dir", str(state), "--allocation-authority", "standalone", "serve",
+                    "--prepare-local-template", str(template), "--prepare-local-sha256", "1" * 64,
+                    "--prepare-until", "200"]
+            original = None
+            for _ in range(2):
+                stderr = io.StringIO()
+                with patch("nodus_dc.cli.time.time", return_value=100), contextlib.redirect_stderr(stderr):
+                    self.assertEqual(main(args), 1)
+                self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "local_preparation_unavailable")
+                lock = (state / "daemon.lock").stat()
+                identity = (lock.st_dev, lock.st_ino)
+                if original is None: original = identity
+                self.assertEqual(identity, original)
+                self.assertFalse((state / "authority.sqlite3").exists())
+            target = state / "devices.json"; value = {"bounded": [1, 2]}
+            with patch("nodus_dc.partition_prepare.os.fsync", side_effect=OSError("interrupted fsync")):
+                with self.assertRaises(OSError): publish(target, value)
+            self.assertFalse(target.exists())
+            leftovers = {p: p.read_bytes() for p in state.glob(".devices.json.*.tmp")}
+            self.assertEqual(len(leftovers), 1)
+            published = publish(target, value); identity = target.stat().st_ino
+            self.assertEqual(publish(target, value), published)
+            self.assertEqual(target.stat().st_ino, identity)
+            self.assertTrue(all(p.read_bytes() == raw for p, raw in leftovers.items()))
+            target.write_bytes(b"{")
+            with self.assertRaises(Error): publish(target, value)
+            self.assertEqual(target.read_bytes(), b"{")
+
     def test_preparation_refuses_bridge_or_expired_setup_before_opening_state(self):
         for extra in (["--bridge-token-file", "must-not-be-read"], ["--prepare-until", "99"], ["--require-clean-start"]):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder:

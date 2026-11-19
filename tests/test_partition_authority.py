@@ -96,6 +96,37 @@ class Partitions(unittest.TestCase):
         with self.assertRaises(Error) as exc: callback()
         self.assertEqual(exc.exception.code,code)
 
+    def test_preparation_retry_preserves_maintenance_and_refuses_ambiguous_history(self):
+        from nodus_dc.partition_prepare import preparation_history
+        root = self.root / "preparation"; root.mkdir(mode=0o700)
+        service = Service(Store(root / "state.db"), Backend(self.clock, root), clock=self.clock)
+        service.partitions.devices = self.p.devices
+        service.partitions.executor = self.executor
+        request_sha = "e" * 64; prefix = "local-prepare:" + request_sha + ":"
+        with service.authority(): service.partitions.ensure_durable()
+        with service.store.connection() as db: incarnation = service.store.fence.verify(db)["incarnation"]
+        first = service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1500, request_key=prefix + "1")
+        with service.store.connection() as db:
+            rows, configuration = preparation_history(service, db, GPU, request_sha)
+        self.assertEqual([r["id"] for r in rows], [first["id"]]); self.assertIsNone(configuration)
+        self.assertEqual(service.release(first["id"], generation=first["generation"], request_key=prefix + "1:release")["state"], "released")
+        second = service.reserve(resources=[GPU], mode="gpu_configuration", expires_at=1600, request_key=prefix + "2")
+        service.adopt_partitions(second["id"], generation=second["generation"], request_key=prefix + "2:adopt")
+        service.release(second["id"], generation=second["generation"], request_key=prefix + "2:release")
+        with service.store.connection() as db:
+            rows, configuration = preparation_history(service, db, GPU, request_sha)
+            self.assertEqual(service.store.fence.verify(db)["incarnation"], incarnation)
+            self.assertEqual([r["expires_at"] for r in rows], [1500, 1600])
+            self.assertEqual([r["state"] for r in rows], ["released", "released"])
+            self.assertEqual(configuration["generation"], 1)
+            self.assertEqual(preparation_history(service, db, GPU, request_sha)[1], configuration)
+            with self.assertRaises(Error): preparation_history(service, db, GPU, "f" * 64)
+        with service.store.transaction(self.clock()) as db:
+            Store.update(db, Store.lease(db, second["id"]), self.clock(), state="starting")
+        with service.store.connection() as db:
+            with self.assertRaises(Error): preparation_history(service, db, GPU, request_sha)
+            self.assertEqual(Store.lease(db, second["id"])["state"], "starting")
+
     def enable_ephemeral_profile(self, task=None, capacity=None):
         """Explicit synthetic aggregate provider shared with the Go/private Unix fixture."""
         from nodus_dc import ephemeral

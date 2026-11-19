@@ -193,16 +193,15 @@ def main(argv=None):
         prepared = None
         if preparing:
             from .partition_host import Evidence, path
-            from .partition_prepare import prepare_local_host
+            from .partition_prepare import daemon_lock, prepare_local_host
             if str(path(args.state_dir)) != str(state):
-                raise Error("local_preparation_unavailable", "preparation requires a fresh protected local-only standalone owner", 403)
+                raise Error("local_preparation_unavailable", "preparation requires the same protected local-only standalone owner", 403)
             owner = Evidence().protected(state, directory=True)
             if owner.st_gid != 0 or owner.st_mode & 0o077:
                 raise Error("local_preparation_unavailable", "preparation directory must be private", 403)
             if time.time() >= args.prepare_until or time.monotonic() >= prepare_end:
                 raise Error("local_preparation_unavailable", "local preparation deadline expired", 503)
-            prepared_daemon = os.fdopen(os.open(state / "daemon.lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600), "w")
-            fcntl.flock(prepared_daemon.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            prepared_daemon = daemon_lock(state)
             service, prepared = prepare_local_host(state, args.prepare_local_template, args.prepare_local_sha256, expires_at=args.prepare_until)
         else:
             service = Service(Store(state / "authority.sqlite3"),

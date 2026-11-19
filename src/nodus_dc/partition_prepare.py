@@ -6,12 +6,15 @@ No runtime, cgroup, MIG topology, release qualification or replacement registry 
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
+import json
 import math
 import os
 import re
 import stat
 import time
+import uuid
 from pathlib import Path
 
 from . import ephemeral
@@ -32,8 +35,8 @@ DEVICE_POLICY = ("accelerator model parent_memory_bytes profile partition_memory
                  "driver_source_version driver_banner_digest")
 
 
-def refused():
-    return Error("local_preparation_unavailable", "local host preparation did not complete; retain its authority state", 503)
+def refused(message="local host preparation did not complete; retain its authority state"):
+    return Error("local_preparation_unavailable", message, 503)
 
 
 def pinned_record(pointer, limit=256 << 10):
@@ -199,16 +202,106 @@ def compute_cdi(raw, devices, policy):
     return spec
 
 
+def daemon_lock(directory):
+    """Keep the same protected inode across a pre-Store setup refusal."""
+    directory = path(str(directory)); owner = Evidence().protected(directory, directory=True)
+    if owner.st_gid != 0 or owner.st_mode & 0o077: raise refused()
+    name = directory / "daemon.lock"
+    try:
+        fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    stream = os.fdopen(fd, "r+")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        observed = os.fstat(fd)
+        if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != 0 or observed.st_gid != 0
+                or stat.S_IMODE(observed.st_mode) != 0o600 or observed.st_nlink != 1
+                or not os.path.samestat(observed, os.lstat(name))
+                or not os.path.samestat(owner, Evidence().protected(directory, directory=True))): raise refused()
+        return stream
+    except BaseException:
+        stream.close()
+        raise
+
+
 def publish(name, value):
+    """A destination is absent or complete; exact retained bytes are never replaced."""
     raw = canonical(value).encode()
     if len(raw) > 256 << 10: raise refused()
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    if os.path.lexists(name):
+        info = Evidence().protected(name)
+        if not stat.S_ISREG(info.st_mode) or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600: raise refused()
+        current, _ = Evidence().read(name, 256 << 10)
+        if current != raw: raise refused("preparation artifact differs; retain it for diagnosis")
+        return hashlib.sha256(raw).hexdigest()
+    # Interrupted temporary writes remain evidence; only this invocation's complete temporary is removed.
+    if len(Evidence().names(name.parent, limit=128)) >= 128: raise refused()
+    temporary = name.with_name("." + name.name + "." + uuid.uuid4().hex + ".tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     with os.fdopen(fd, "wb") as file:
         file.write(raw); file.flush(); os.fsync(file.fileno())
+        written = os.fstat(file.fileno())
+    if not os.path.samestat(written, os.lstat(temporary)): raise refused()
+    try:
+        os.link(temporary, name, follow_symlinks=False)
+    except FileExistsError:
+        if Evidence().read(name, 256 << 10)[0] != raw: raise refused()
     fd = os.open(name.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: os.fsync(fd)
+    try:
+        os.fsync(fd)
+        if not os.path.samestat(written, os.lstat(temporary)): raise refused()
+        temporary.unlink()
+        os.fsync(fd)
     finally: os.close(fd)
     return hashlib.sha256(raw).hexdigest()
+
+
+def preparation_history(service, db, parent, request_sha):
+    """Only this input's unused maintenance history can continue preparation."""
+    if service.store.fence is None: raise refused()
+    anchor = service.store.fence.verify(db)
+    prefix = "local-prepare:" + request_sha + ":"
+    rows = db.execute("SELECT * FROM leases ORDER BY generation LIMIT 33").fetchall()
+    if len(rows) > 32 or rows and anchor is None or any(db.execute("SELECT 1 FROM " + table + " LIMIT 1").fetchone() for table in
+            ("bridge_policy", "platform_claims", "partition_claims", "partition_policy_grants", "host_reservations", "local_partition_demands")):
+        raise refused("preparation found other authority history; use its owning recovery path")
+    leases = [Store.decode(row) for row in rows]
+    by_id = {lease["id"]: lease for lease in leases}
+    for index, lease in enumerate(leases, 1):
+        payload = {"resources": [parent], "mode": "gpu_configuration", "expires_at": lease["expires_at"],
+                   "owner": "local", "authorization": None}
+        if (lease["request_key"] != prefix + str(index) or lease["request_hash"] != digest(payload)
+                or lease["owner"] != "local" or lease["mode"] != "gpu_configuration" or lease["resources"] != [parent]
+                or any(lease[key] is not None for key in ("authorization", "workload", "runtime", "error"))
+                or lease["state"] not in ("reserved", "released")):
+            raise refused("preparation maintenance is ambiguous; retain its lease and authority")
+        if lease["state"] == "released":
+            proof = lease["cleanup"]
+            if (not isinstance(proof, dict) or proof.get("clean") is not True or proof.get("lease_id") != lease["id"]
+                    or proof.get("generation") != lease["generation"] or proof.get("resource_ids") != [parent]): raise refused()
+        elif lease is not leases[-1] or lease["cleanup"] is not None:
+            raise refused()
+    operations = db.execute("SELECT * FROM operations LIMIT 65").fetchall()
+    if len(operations) > 64: raise refused()
+    adopted, released = set(), set()
+    for operation in operations:
+        lease = by_id.get(operation["lease_id"]); action = operation["action"]
+        if (lease is None or action not in ("adopt_partitions", "release") or operation["generation"] != lease["generation"]
+                or operation["request_key"] != lease["request_key"] + (":adopt" if action == "adopt_partitions" else ":release")
+                or operation["request_hash"] != digest({"lease": lease["id"], "generation": lease["generation"], "action": action, "payload": {}})):
+            raise refused()
+        (adopted if action == "adopt_partitions" else released).add(lease["id"])
+    if released != {lease["id"] for lease in leases if lease["state"] == "released"}:
+        raise refused("preparation cleanup did not return a verified release; retain its state")
+    configs = db.execute("SELECT * FROM partition_configurations LIMIT 2").fetchall()
+    committed = dict(configs[0]) if len(configs) == 1 else None
+    if (len(configs) > 1 or len(adopted) > 1 or bool(adopted) != bool(committed)
+            or committed and (committed["parent_uuid"] != parent or committed["state"] != "committed"
+                or committed["error"] is not None or not leases or adopted != {leases[-1]["id"]}
+                or committed["operation_id"] != leases[-1]["request_key"] + ":adopt")):
+        raise refused("preparation adoption is ambiguous; retain its configuration and lease")
+    return leases, committed
 
 
 def prepare_local_host(directory, template_path, template_sha256, *, expires_at):
@@ -230,18 +323,60 @@ def prepare_local_host(directory, template_path, template_sha256, *, expires_at)
     policy = release_policy(request)
     store_path, config_path, cdi_path, qualification_path = (root / name for name in
             ("authority.sqlite3", "provider-config.json", "devices.json", "qualification.json"))
-    if any(os.path.lexists(p) for p in (store_path, Path(str(store_path) + "-wal"), Path(str(store_path) + "-shm"), config_path, cdi_path, qualification_path)): raise refused()
+    inputs_path, authority_path = root / "preparation-input.json", root / "preparation-authority.json"
+    retained = (store_path, Path(str(store_path) + "-wal"), Path(str(store_path) + "-shm"), config_path, cdi_path, qualification_path)
+    if not os.path.lexists(inputs_path) and any(os.path.lexists(p) for p in (*retained, authority_path)):
+        raise refused("existing authority has no matching preparation input; retain it for diagnosis")
+    live(); publish(inputs_path, {"version": 1, "request_sha256": template_sha256,
+                                 "directory_device": owner.st_dev, "directory_inode": owner.st_ino})
+    for name in retained:
+        if os.path.lexists(name):
+            info = Evidence().protected(name)
+            if not stat.S_ISREG(info.st_mode) or info.st_gid != 0 or info.st_mode & 0o077: raise refused()
+    if not store_path.exists() and any(os.path.lexists(p) for p in (*retained[1:], authority_path)): raise refused()
+    if authority_path.exists():
+        saved, _ = Evidence().record(authority_path)
+        fields(saved, "version request_sha256 database_device database_inode authority_incarnation")
+        database = Evidence().protected(store_path)
+        if (type(saved["version"]) is not int or saved["version"] != 1 or saved["request_sha256"] != template_sha256
+                or any(type(saved[key]) is not int for key in ("database_device", "database_inode"))
+                or (saved["database_device"], saved["database_inode"]) != (database.st_dev, database.st_ino)):
+            raise refused("preparation database identity changed; retain the original authority")
     live()
     service = Service(Store(store_path), NvidiaDockerBackend(allocation_authority="standalone"), bridge_enabled=False)
     with service.authority():
-        live(); service.partitions.ensure_durable()
-        with service.store.connection() as db: anchor = service.store.fence.verify(db)
+        live()
+        if service.store.fence is None: raise refused()
+        with service.store.connection() as db:
+            anchor = service.store.fence.verify(db)
+            leases, committed = preparation_history(service, db, request["parent_uuid"], template_sha256)
+            if anchor is None and (leases or committed or authority_path.exists() or any(p.exists() for p in retained[3:])): raise refused()
+            if not authority_path.exists() and (leases or committed): raise refused()
+        if anchor is None:
+            service.partitions.ensure_durable()
+            with service.store.connection() as db: anchor = service.store.fence.verify(db)
+        database = Evidence().protected(store_path)
+        live(); publish(authority_path, {"version": 1, "request_sha256": template_sha256,
+                                       "database_device": database.st_dev, "database_inode": database.st_ino,
+                                       "authority_incarnation": anchor["incarnation"]})
     if request["host_budget"].get("boot_id") != service.backend.boot_id(): raise refused()
+    if committed and (committed["boot_id"] != request["host_budget"]["boot_id"]
+                      or not all(p.exists() for p in retained[3:])): raise refused()
+    # A known unused reservation retires through the ordinary proof path before any new finite attempt.
+    if leases and leases[-1]["state"] == "reserved":
+        live(); previous = leases[-1]
+        previous = service.release(previous["id"], generation=previous["generation"], request_key=previous["request_key"] + ":release")
+        if previous["state"] != "released": raise refused()
+    if not committed:
+        if len(leases) >= 32: raise refused("bounded preparation history is full; retain it for diagnosis")
+        live()
+        held = service.reserve(resources=[request["parent_uuid"]], mode="gpu_configuration", expires_at=expires_at,
+                               request_key="local-prepare:" + template_sha256 + ":" + str(len(leases) + 1))
     live()
-    held = service.reserve(resources=[request["parent_uuid"]], mode="gpu_configuration", expires_at=expires_at,
-                           request_key="local-prepare-parent")
     with service.authority():
         live()
+        if committed and service.partitions._observation(service.backend.inventory(), request["parent_uuid"]) != json.loads(committed["binding"]):
+            raise refused("prepared configuration changed; retain the original authority")
         devices = device_rows(service, request["parent_uuid"], policy)
         cdi = compute_cdi(pinned_record(request["raw_cdi"], 1 << 20), devices, policy)
         if devices != device_rows(service, request["parent_uuid"], policy): raise refused()
@@ -261,12 +396,14 @@ def prepare_local_host(directory, template_path, template_sha256, *, expires_at)
         service.partitions.executor = LinuxPartitionProvider(str(config_path), config_sha)
         if service.partitions.devices is not None or service.partitions.executor.verify_startup(anchor["incarnation"]) is not True: raise refused()
     live()
-    service.adopt_partitions(held["id"], generation=held["generation"], request_key="local-prepare-adopt")
+    if not committed:
+        service.adopt_partitions(held["id"], generation=held["generation"], request_key=held["request_key"] + ":adopt")
     with service.authority():
         live()
         if devices != device_rows(service, request["parent_uuid"], policy): raise refused()
-    released = service.release(held["id"], generation=held["generation"], request_key="local-prepare-release")
-    if released["state"] != "released": raise refused()
+    if not committed:
+        live(); released = service.release(held["id"], generation=held["generation"], request_key=held["request_key"] + ":release")
+        if released["state"] != "released": raise refused()
     # The maintenance lease has no host reservation; accounting it as a workload would correctly refuse.
     with service.authority(), service.store.transaction(time.time()) as db:
         live(); service.partitions._host_account(db, accounting_version=ephemeral.ACCOUNTING)

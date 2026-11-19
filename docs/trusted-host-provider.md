@@ -15,7 +15,7 @@ and supplies the observed finite host budget and exact runtime paths. It cannot
 supply a device binding, an authority incarnation or a qualification boolean.
 It requires root standalone allocation, refuses bridge/MPS
 and existing-provider options, and holds the existing daemon lock before opening
-fresh authority state. The same real Service initializes its durable incarnation,
+authority state. The same real Service initializes its durable incarnation,
 reserves one parent maintenance lease, observes the current kernel/driver/MIG
 identities, matches the release's exact model/profile/memory/driver tuple, and
 reduces the CDI to those compute nodes and pinned hook/library artifacts. It writes
@@ -42,6 +42,27 @@ pins for that reuse. Before opening a listener, it holds the original daemon loc
 refuses held leases or enabled/unretired external policy and claims, and verifies
 full aggregate accounting including retained retirement records. This opt-in
 refusal leaves ordinary recovery serving available for uncertain held state.
+
+The paired command can retry a failed setup only after its original children and
+session guardian are positively joined, its exact retained groups are empty, and
+no node-execution intent exists. It supplies the identical protected request and
+a new finite setup deadline; it does not extend an old lease or erase a negative
+session. Python reuses the same private daemon-lock inode. Before opening SQLite,
+`preparation-input.json` binds the request digest and directory identity; before
+maintenance, `preparation-authority.json` binds the observed database inode and
+durable incarnation. Existing authority without these records is not upgraded.
+
+Continuation admits at most32 exact preparation maintenance rows and no foreign
+work or external policy history. An unused known reserved row is released through
+ordinary actual cleanup before a new finite reservation; starting, verifying,
+quarantined or mismatched state remains held. A committed configuration with
+released maintenance is reobserved and fully accounted without another adoption
+or configuration generation. Every record/artifact is published atomically without
+replacement; existing complete bytes must match exactly. Interrupted temporary
+files remain evidence, while changed or truncated final files refuse. On refusal,
+retain the same state for its owning diagnosis; deleting it or selecting a fresh
+directory cannot recover authority. Native start/work/stop/resume and failed-setup
+retry qualification remain required; these source checks are not host acceptance.
 
 `LinuxPartitionProvider(config_path, config_sha256, clock=...)` consumes an exact
 root-owned regular JSON file with protected ancestry. Its strict fields are:
