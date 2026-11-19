@@ -273,3 +273,51 @@ renewal does not extend the original creator's deadline. The existing Unix/SQLit
 case exercises routing with synthetic owner evidence; real kernel continuity and
 the complete Agent path remain unqualified. Consumed cancellation before a complete
 record pair still requires separate positive original-creator retirement work.
+
+
+## Managed-local representation (preparatory, unavailable)
+
+`partition_local.py` defines a closed local identity and immutable finite workload;
+no local managed route, CLI mode, ledger writer or runtime dispatch is installed.
+The existing local Docker workflow and external v2 wire keep their current behavior.
+This source alone does not satisfy local/borrower coexistence or authorize execution.
+
+The local reference is exactly `{authority_incarnation, lease_id, generation}`:
+canonical nonzero UUIDs and a positive signed-64-bit generation from the existing
+leases table. Its runtime name is `l_` plus lowercase unpadded base32 of the full
+SHA256 of `nodus.local-execution.v1\0` followed by the two UUID byte strings in
+network order. Generation is the runtime epoch; the complete ordinary key stays
+within75 bytes. It is not an external `att_` identity or arbitrary-name fallback.
+
+A `partition-local-lease.v1` has `contract`, `ref`, `partition`, `policy_revision`,
+`workload`, `resources`, `ephemeral`, `runtime_sha256`, `expires_at_unix_millis`.
+The authority incarnation must equal the device/configuration identity. The local
+policy revision and frozen finite expiry do not depend on platform permission.
+Image/device/runtime qualification, reservation and capability creation are separate
+checks; validating a value does not perform any of them or create an external claim.
+
+Workload fields are exactly `image`, `command`, `args`, `workdir`. The image is
+SHA256-pinned; command replaces entrypoint and args replaces image command.
+Command is nonempty; both lists contain at most64 valid UTF-8 strings, at most4096
+bytes each and32768 argument bytes total, without NUL. Workdir is `/`,
+`/nodus/state`, `/nodus/outputs` or `/tmp`. Environment, mounts, ports, transfers,
+secrets, restore and checkpoints are absent in this initial finite descriptor.
+Task C/M/S use the existing ephemeral charge unchanged; aggregate A is never a
+Docker task memory limit. The explicit feature counts are all zero.
+
+The local spec hash is SHA256 of `nodus.local-workload.v1\0`, image, command list,
+args list, cwd and C/M/S in order. Strings have uint32 big-endian UTF-8 byte lengths,
+lists have uint32 counts, and resources are uint64 big-endian. Both readers recompile
+it without interpreting a platform AttemptSpec or depending on JSON escaping.
+A `partition-local-dispatch.v1` contains only `contract`, `ref`, `request_key`:
+it selects immutable reserved work, never replaces it or supplies permission.
+
+The complete vertical implementation must use the same SQLite host_reservations
+ledger and sealed creator/cleanup engine. Before any new local row, all readers,
+retirement and host-history paths must support write-ahead floor9, including the
+current exact8 retirement check; already-open old readers must be fenced. No floor
+changes in this slice. No row or registry may be deleted to clear uncertainty.
+Host-owned local lifetime must survive platform permission loss, and local demand
+must stop new borrower grants while exact victim cleanup is pending. Unknown
+cleanup remains charged. These are remaining implementation and native-proof gates,
+not guarantees supplied by the new representation.

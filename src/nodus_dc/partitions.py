@@ -66,13 +66,7 @@ def budget(value):
     return value
 
 
-def validate_lease(value):
-    profile = isinstance(value, dict) and "ephemeral" in value
-    fields(value, "platform_lease_id platform_epoch generation offer workload resources expires_at_unix_millis" + (" ephemeral" if profile else ""))
-    identifier(value["platform_lease_id"]); integer(value["platform_epoch"], 1); integer(value["generation"])
-    offer = value["offer"]
-    fields(offer, "partition policy_revision agreement accelerator profile gpu_memory_bytes driver_version runtime_sha256 capacity available_until_unix_millis")
-    part = offer["partition"]
+def validate_partition(part):
     fields(part, "resource_id authority_incarnation configuration_generation boot_id parent_uuid mig_uuid gpu_instance compute_instance binding_sha256")
     identifier(part["resource_id"]); guid(part["authority_incarnation"]); guid(part["boot_id"])
     integer(part["configuration_generation"], 1)
@@ -81,6 +75,17 @@ def validate_lease(value):
             raise Error("invalid_request", "v2 device prefix is invalid", 400)
         guid(part[name][len(prefix):])
     integer(part["gpu_instance"], 0, 31); integer(part["compute_instance"], 0, 31); sha(part["binding_sha256"])
+    return copy.deepcopy(part)
+
+
+def validate_lease(value):
+    profile = isinstance(value, dict) and "ephemeral" in value
+    fields(value, "platform_lease_id platform_epoch generation offer workload resources expires_at_unix_millis" + (" ephemeral" if profile else ""))
+    identifier(value["platform_lease_id"]); integer(value["platform_epoch"], 1); integer(value["generation"])
+    offer = value["offer"]
+    fields(offer, "partition policy_revision agreement accelerator profile gpu_memory_bytes driver_version runtime_sha256 capacity available_until_unix_millis")
+    part = offer["partition"]
+    validate_partition(part)
     agreement = offer["agreement"]
     fields(agreement, "node_id consent_id generation terms_sha256")
     identifier(agreement["node_id"]); identifier(agreement["consent_id"])
