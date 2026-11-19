@@ -513,7 +513,17 @@ def managed_source_census(destination, deadline):
         kind = ('directory' if stat.S_ISDIR(info.st_mode) else 'file' if stat.S_ISREG(info.st_mode)
                 else 'symlink' if stat.S_ISLNK(info.st_mode) else None)
         if kind is None or (reason == 'source' and (kind == 'symlink' or info.st_uid != 0 or info.st_mode & 0o022)):
-            raise RuntimeError('managed Python acquisition alias/type/ownership refused')
+            requested = str(path)
+            detail = {'path':requested[:512], 'path_truncated':len(requested) > 512,
+                      'kind':kind, 'reason':reason, 'uid':info.st_uid, 'gid':info.st_gid,
+                      'mode':stat.S_IMODE(info.st_mode), 'file_type':stat.S_IFMT(info.st_mode),
+                      'device':info.st_dev, 'inode':info.st_ino,
+                      'flags':{'unsupported_type':kind is None,
+                               'source_alias':reason == 'source' and kind == 'symlink',
+                               'source_uid_not_root':reason == 'source' and info.st_uid != 0,
+                               'source_writable':reason == 'source' and bool(info.st_mode & 0o022)}}
+            raise RuntimeError('managed Python acquisition alias/type/ownership refused: '
+                               + json.dumps(detail, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False))
         target = destination/'lib/python3.12'/Path(*parts) if path != Path('/usr/bin/python3.12') else destination/'bin/python'
         row = {'source':str(path), 'destination':str(target) if reason == 'source' else None,
                'kind':kind, 'disposition':'copied' if reason == 'source' else 'excluded', 'reason':reason,
