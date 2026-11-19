@@ -70,6 +70,9 @@ into the same directory as its verified `SHA256SUMS`. Verify before unpacking,
 then run the examples from the unpacked source directory:
 
 ```sh
+curl --fail --location --show-error \
+  --output nodus_datacenter-0.1.0.dev16.tar.gz \
+  https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/nodus_datacenter-0.1.0.dev16.tar.gz &&
 sha256sum --check --ignore-missing SHA256SUMS &&
 tar -xzf nodus_datacenter-0.1.0.dev16.tar.gz &&
 cd nodus_datacenter-0.1.0.dev16
