@@ -73,10 +73,12 @@ def state_compatible(python, state, *, snapshot_timeout=10, require_recovery=Fal
         except sqlite3.Error:
             raise RuntimeError("current authority state could not be read for compatibility; activation refused") from None
         try:
-            result = subprocess.run([str(python), "-I", "-c", COMPATIBILITY_PROBE, str(snapshot),
+            result = subprocess.run([str(python), "-I", *(["-B"] if str(python).startswith("/opt/nodus/managed-local/python/releases/") else []), "-c", COMPATIBILITY_PROBE, str(snapshot),
                                      "recovery" if require_recovery else "normal"],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, timeout=30, check=False)
+                                    text=True, timeout=30, check=False,
+                                    env={"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "HOME":"/root"}
+                                    if str(python).startswith("/opt/nodus/managed-local/python/releases/") else None)
             supported = result.returncode == 0 and json.loads(result.stdout).get("supported") is True
         except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
             supported = False
@@ -355,6 +357,253 @@ def recover_pending(prefix, manifest):
         raise RuntimeError("unknown installation journal state")
 
 
+# Managed installation accepts only the release owner's qualified CPython 3.12 host tuple.
+# This does not generate qualification or change the ordinary wheel installation path.
+def managed_installation(prefix, wheel):
+    import stat
+    if os.geteuid() != 0:
+        raise RuntimeError("managed installation requires root")
+    release_path = Path('/opt/nodus/managed-local/release.json')
+    def protected(path):
+        path = Path(path)
+        if not path.is_absolute() or str(path) != os.path.normpath(path):
+            raise RuntimeError('managed installation path is not canonical')
+        for item in (path, *path.parents):
+            st = item.lstat()
+            if st.st_uid != 0 or stat.S_ISLNK(st.st_mode) or st.st_mode & 0o022:
+                raise RuntimeError('managed installation requires protected canonical paths')
+        return path
+    def read(path, limit):
+        path = protected(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            st = os.fstat(stream.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+                raise RuntimeError('managed installation file limit')
+            body = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+            if len(body) != st.st_size or (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                raise RuntimeError('managed installation file changed')
+            return body
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise RuntimeError('duplicate managed installation key')
+            result[key] = value
+        return result
+    raw = read(release_path, 256 << 10)
+    bundle = read(str(release_path) + '.bundle', 1 << 20)
+    import shutil
+    verifier = shutil.which('cosign')
+    if not verifier:
+        raise RuntimeError('qualified managed release verifier unavailable')
+    verifier = protected(Path(verifier).resolve())
+    with tempfile.TemporaryDirectory(prefix='nodus-managed-verify-') as folder:
+        signed, signature = Path(folder)/'release.json', Path(folder)/'release.bundle'
+        signed.write_bytes(raw); signature.write_bytes(bundle)
+        subprocess.run([str(verifier), 'verify-blob', '--bundle', str(signature),
+                        '--certificate-identity-regexp', r'^https://github\.com/nodus-compute/nodus-platform/\.github/workflows/release\.yml@refs/heads/main$',
+                        '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com', str(signed)],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, check=True)
+    release = json.loads(raw, object_pairs_hook=unique)
+    keys = {'version','policy','files','python_installation','guardian','image_reference','shared','pids','max_claims'}
+    if type(release) is not dict or set(release) != keys or type(release['version']) is not int or release['version'] != 2:
+        raise RuntimeError('qualified managed release unavailable')
+    pin = release['python_installation']
+    if type(pin) is not dict or set(pin) != {'path','sha256'}:
+        raise RuntimeError('managed installation pin invalid')
+    body = read(pin['path'], 2 << 20)
+    if hashlib.sha256(body).hexdigest() != pin['sha256']:
+        raise RuntimeError('managed installation pin mismatch')
+    m = json.loads(body, object_pairs_hook=unique)
+    if (type(m) is not dict or set(m) != {'version','wheel_sha256','base_prefix','python_version','qualification_sha256','files','directories','native_links'}
+            or type(m['version']) is not int or m['version'] != 1 or m['base_prefix'] != '/usr'
+            or m['python_version'] != '.'.join(map(str, sys.version_info[:3])) or sys.version_info[:2] != (3,12)
+            or Path(sys.executable).resolve() != Path('/usr/bin/python3.12')
+            or m['wheel_sha256'] != digest(wheel) or prefix != Path('/opt/nodus/managed-local/python')):
+        raise RuntimeError('unqualified managed Python installation tuple')
+    def sha(value):
+        return type(value) is str and len(value) == 64 and value != '0'*64 and all(c in '0123456789abcdef' for c in value)
+    if not sha(m['wheel_sha256']) or not sha(m['qualification_sha256']):
+        raise RuntimeError('managed installation qualification missing')
+    if not (6 <= len(m['files']) <= 8192 and len(m['directories']) <= 2048 and len(m['native_links']) <= 64):
+        raise RuntimeError('managed installation census limit')
+    venv_root = prefix/'releases'/m['wheel_sha256'][:20]
+    stdlib, site = Path('/usr/lib/python3.12'), venv_root/'lib/python3.12/site-packages'
+    def inside(path):
+        return path == stdlib or stdlib in path.parents or path == site or site in path.parents
+    if any(type(m[key]) is not list for key in ('files','directories','native_links')):
+        raise RuntimeError('managed installation census invalid')
+    rows, links = {}, {}
+    previous, total = '', 0
+    for row in m['files']:
+        if (type(row) is not dict or set(row) != {'path','sha256','bytes'} or row['path'] <= previous
+                or not Path(row['path']).is_absolute() or os.path.normpath(row['path']) != row['path']
+                or not sha(row['sha256']) or type(row['bytes']) is not int or not 0 <= row['bytes'] <= 64 << 20):
+            raise RuntimeError('managed installation file set invalid')
+        previous = row['path']; total += row['bytes']; rows[row['path']] = row
+    if total > 512 << 20:
+        raise RuntimeError('managed installation byte limit')
+    previous = ''
+    for link in m['native_links']:
+        if (type(link) is not dict or set(link) != {'path','target'} or link['path'] <= previous
+                or not Path(link['path']).is_absolute() or os.path.normpath(link['path']) != link['path']
+                or not link['target'] or inside(Path(link['path'])) or str(link['path']).startswith(str(prefix)+'/')):
+            raise RuntimeError('managed native link invalid')
+        previous = link['path']; links[link['path']] = link['target']
+    def native_path(path):
+        path = Path(path)
+        for _ in range(41):
+            parts, at = path.parts[1:], Path('/')
+            for index, part in enumerate(parts):
+                at = at/part; st = at.lstat()
+                if st.st_uid != 0:
+                    raise RuntimeError('managed native dependency owner')
+                if stat.S_ISLNK(st.st_mode):
+                    target = os.readlink(at)
+                    if links.get(str(at)) != target:
+                        raise RuntimeError('unlisted managed native alias')
+                    target = Path(target) if target.startswith('/') else at.parent/target
+                    path = Path(os.path.normpath(target.joinpath(*parts[index+1:])))
+                    break
+                if st.st_mode & 0o022:
+                    raise RuntimeError('managed native dependency mode')
+            else:
+                return path
+        raise RuntimeError('managed native alias cycle')
+    deadline = time.monotonic() + 120
+    def check(final):
+        physical = set()
+        for name, row in rows.items():
+            if time.monotonic() >= deadline:
+                raise RuntimeError('managed installation verification deadline')
+            path = Path(name)
+            if not final and (path == venv_root or venv_root in path.parents):
+                continue
+            if inside(path):
+                if path.suffix == '.pth' or path.name.startswith(('sitecustomize.','usercustomize.')) or (site in path.parents and path.suffix in {'.pyc','.pyo'}):
+                    raise RuntimeError('managed Python startup injection')
+            elif path not in {venv_root/'bin/python', venv_root/'pyvenv.cfg', Path('/usr/bin/python3.12')}:
+                path = native_path(path)
+            if path in physical:
+                raise RuntimeError('duplicate managed native file')
+            physical.add(path)
+            body = read(path, 64 << 20)
+            if len(body) != row['bytes'] or hashlib.sha256(body).hexdigest() != row['sha256']:
+                raise RuntimeError('managed Python file mismatch')
+        for name in links:
+            target = native_path(name)
+            if not target.is_dir() and target not in physical:
+                raise RuntimeError('unbound managed native alias')
+        for absent in (Path('/usr/lib/python312.zip'), stdlib/'site-packages', Path('/etc/ld.so.preload')):
+            if absent.exists() or absent.is_symlink():
+                raise RuntimeError('unlisted managed Python startup path')
+        roots = (stdlib, site) if final else (stdlib,)
+        expected_dirs = m['directories']
+        if expected_dirs != sorted(set(expected_dirs)) or any(not inside(Path(p)) for p in expected_dirs):
+            raise RuntimeError('managed Python directory set invalid')
+        for root in roots:
+            actual_files, actual_dirs = set(), {str(root)}
+            protected(root)
+            def walk_failed(_error):
+                raise RuntimeError('managed Python directory unavailable')
+            for directory, dirs, files in os.walk(root, followlinks=False, onerror=walk_failed):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('managed installation verification deadline')
+                for name in dirs + files:
+                    path = protected(Path(directory)/name)
+                    (actual_dirs if path.is_dir() else actual_files).add(str(path))
+            if actual_dirs != {p for p in expected_dirs if p == str(root) or p.startswith(str(root)+'/')} or actual_files != {p for p in rows if p.startswith(str(root)+'/')}:
+                raise RuntimeError('managed Python import tree mismatch')
+        required = (venv_root/'bin/python', venv_root/'bin/nodus-dc', venv_root/'pyvenv.cfg', Path('/usr/bin/python3.12'), site/'nodus_dc/__main__.py', site/'nodus_dc/__init__.py', stdlib/'site.py', Path('/etc/ld.so.cache'))
+        if any(str(p) not in rows for p in required):
+            raise RuntimeError('managed Python required file missing')
+        interpreter = release['files'].get('python')
+        if interpreter != {'path':str(venv_root/'bin/python'),'sha256':rows[str(venv_root/'bin/python')]['sha256']} or interpreter['sha256'] != rows['/usr/bin/python3.12']['sha256']:
+            raise RuntimeError('managed Python interpreter mismatch')
+        if final:
+            cfg = unique(line.split(' = ',1) for line in read(venv_root/'pyvenv.cfg', 16 << 10).decode().splitlines() if line)
+            if not set(cfg) <= {'home','include-system-site-packages','version','executable','command'}:
+                raise RuntimeError('managed Python configuration keys')
+            if cfg.get('home') != '/usr/bin' or cfg.get('include-system-site-packages') != 'false' or cfg.get('version') != m['python_version'] or cfg.get('executable') != '/usr/bin/python3.12':
+                raise RuntimeError('managed Python configuration mismatch')
+    check(False)
+    return {'root':venv_root,'site':site,'rows':rows,'check':check,'pin':pin}
+
+
+def install_managed_wheel(wheel, prepared):
+    destination, site = prepared['root'], prepared['site']
+    # This wheel has no dependencies or install-time hooks. Every file comes from its signed byte map.
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+        if len(names) != len(set(names)) or len(names) > 256:
+            raise RuntimeError('managed wheel member set invalid')
+        expected = {str(Path(n).relative_to(site)): row for n, row in prepared['rows'].items() if Path(n).is_relative_to(site)}
+        if set(names) != set(expected):
+            raise RuntimeError('managed wheel differs from qualified package set')
+        bodies = {}
+        for item in archive.infolist():
+            name = item.filename
+            if (name.startswith('/') or '..' in Path(name).parts or item.is_dir()
+                    or item.file_size > 1 << 20 or (item.external_attr >> 16) & 0o170000 not in {0,0o100000}):
+                raise RuntimeError('managed wheel unsafe member')
+            body = archive.read(name)
+            bodies[name] = body
+            if sum(map(len, bodies.values())) > 4 << 20:
+                raise RuntimeError('managed wheel total byte limit')
+            row = expected[name]
+            if len(body) != row['bytes'] or hashlib.sha256(body).hexdigest() != row['sha256']:
+                raise RuntimeError('managed wheel byte mismatch')
+        venv.EnvBuilder(with_pip=False, symlinks=False).create(destination)
+        for name in names:
+            path = site/name
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd,'wb') as stream:
+                stream.write(bodies[name]); stream.flush(); os.fsync(stream.fileno())
+    # Same public console entry point; managed runtime itself uses the pinned interpreter with -m.
+    script = destination/'bin/nodus-dc'
+    with script.open('x') as stream:
+        stream.write('#!'+str(destination/'bin/python')+' -IB\nfrom nodus_dc.cli import main\nraise SystemExit(main())\n')
+        stream.flush(); os.fsync(stream.fileno())
+    script.chmod(0o755)
+    prepared['check'](True)
+
+
+def lock_managed_installation(prefix, state):
+    import stat
+    handles = []
+    def acquire(path, create=False):
+        for parent in path.parents:
+            st = parent.lstat()
+            if st.st_uid != 0 or not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022:
+                raise RuntimeError("managed installation lock ancestry")
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_CREAT if create else 0), 0o600)
+        stream = os.fdopen(fd, 'r+b'); handles.append(stream)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or st.st_nlink != 1 or stat.S_IMODE(st.st_mode) != 0o600:
+            raise RuntimeError("managed installation lock identity")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("stop the managed host session before changing installation") from None
+    try:
+        if prefix != Path('/opt/nodus/managed-local/python') or state.name != 'authority':
+            raise RuntimeError("managed installation state must be its host directory/authority")
+        acquire(prefix.parent/'python-install.lock', True)
+        if state.parent.exists() or state.parent.is_symlink():
+            acquire(state.parent/'owner.lock')
+            if state.exists() or state.is_symlink():
+                for name in ('daemon.lock','host.lock'):
+                    acquire(state/name)
+        return handles
+    except BaseException:
+        for stream in handles:
+            stream.close()
+        raise
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["install", "activate", "uninstall"])
@@ -362,6 +611,7 @@ def main(argv=None):
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--wheel")
     parser.add_argument("--release")
+    parser.add_argument("--managed", action="store_true", help="install the same wheel against the installed signed managed-runtime qualification; missing qualification refuses")
     parser.add_argument("--recovery-upgrade", action="store_true",
                         help="install a compatible recovery-capable wheel while only quarantined local non-native leases remain; never releases them")
     args = parser.parse_args(argv)
@@ -372,8 +622,18 @@ def main(argv=None):
     prefix, state = Path(args.prefix).resolve(), Path(args.state_dir).resolve()
     if prefix in {Path("/"), Path.home(), Path("/usr"), Path("/opt"), state} or prefix in state.parents or state in prefix.parents:
         raise RuntimeError("use dedicated, disjoint installation and persistent state directories")
-    preflight_candidate(args, prefix, state)
-    locks = lock_state(state, recovery_upgrade=args.recovery_upgrade)
+    existing = read_manifest(prefix, state)
+    if existing and existing.get('managed') and not args.managed:
+        raise RuntimeError("use --managed for this paired installation")
+    if args.managed and (args.action not in {"install", "uninstall"} or args.recovery_upgrade):
+        raise RuntimeError("managed activation requires install with the qualified wheel")
+    try:
+        args.managed_install = managed_installation(prefix, Path(args.wheel or "").resolve()) if args.managed and args.action == "install" else None
+    except (KeyError, TypeError, AttributeError):
+        raise RuntimeError("invalid qualified managed installation contract") from None
+    if not args.managed:
+        preflight_candidate(args, prefix, state)
+    locks = lock_managed_installation(prefix, state) if args.managed else lock_state(state, recovery_upgrade=args.recovery_upgrade)
     try:
         return install_locked(args, prefix, state)
     finally:
@@ -384,18 +644,38 @@ def main(argv=None):
 def install_locked(args, prefix, state):
     # Recheck the requested target before pending-install recovery or any prefix
     # mutation. A CLI connection opt-in may have committed after the early read.
-    preflight_candidate(args, prefix, state)
+    if not getattr(args, "managed_install", None):
+        preflight_candidate(args, prefix, state)
     # Another installer may have completed between the early probe and locks.
     manifest = read_manifest(prefix, state)
+    if getattr(args, "managed", False) and state.parent.exists():
+        prepared = getattr(args, "managed_install", None)
+        release = prepared['root'].name if prepared else None
+        if (args.action != "install" or not manifest or not manifest.get('managed')
+                or manifest.get('pending') is not None or manifest.get('active_release') != release
+                or manifest.get('releases', {}).get(release, {}).get('wheel_sha256') != digest(Path(args.wheel))
+                or not (prefix/'current').is_symlink() or os.readlink(prefix/'current') != 'releases/'+release):
+            raise RuntimeError("managed host state exists; replacement or removal requires separately qualified migration")
+        prepared['check'](True)
+        print(json.dumps({'installed':True, 'unchanged':True, 'release':release,
+                          'state_preserved':str(state), 'service_started':False}))
+        return 0
     if manifest is None:
         if args.action != "install":
             raise RuntimeError("a new install requires an empty dedicated prefix")
         manifest = initialize_prefix(prefix, state)
+    if getattr(args, "managed", False):
+        manifest['managed'] = True
+        save_manifest(prefix, manifest)
     pending = manifest.get("pending") or {}
     if args.recovery_upgrade and pending.get("kind") == "uninstall":
         raise RuntimeError("recovery upgrade cannot resume an interrupted uninstall")
     if args.recovery_upgrade and pending.get("kind") == "activate" and not pending.get("recovery_upgrade"):
         raise RuntimeError("an earlier ordinary activation must be resolved after clean release")
+    if getattr(args, "managed_install", None) and pending.get("kind") == "activate":
+        if pending.get("release") != args.managed_install['root'].name:
+            raise RuntimeError("managed activation belongs to another release")
+        args.managed_install['check'](True)
     recover_pending(prefix, manifest)
     if args.action == "install":
         wheel = Path(args.wheel or "").resolve()
@@ -411,10 +691,13 @@ def install_locked(args, prefix, state):
             manifest["pending"] = {"kind": "install", "release": release, "wheel_sha256": digest(wheel),
                                    "recovery_upgrade": args.recovery_upgrade}
             save_manifest(prefix, manifest)
-            venv.EnvBuilder(with_pip=True).create(destination)
-            subprocess.run([str(destination / "bin/python"), "-I", "-m", "pip", "install", "--no-index", "--no-deps",
-                            "--disable-pip-version-check", str(wheel)], check=True, stdout=subprocess.DEVNULL)
-            subprocess.run([str(destination / "bin/python"), "-I", "-m", "nodus_dc", "--version"], check=True, stdout=subprocess.DEVNULL)
+            if getattr(args, "managed_install", None):
+                install_managed_wheel(wheel, args.managed_install)
+            else:
+                venv.EnvBuilder(with_pip=True).create(destination)
+                subprocess.run([str(destination / "bin/python"), "-I", "-m", "pip", "install", "--no-index", "--no-deps",
+                                "--disable-pip-version-check", str(wheel)], check=True, stdout=subprocess.DEVNULL)
+                subprocess.run([str(destination / "bin/python"), "-I", "-m", "nodus_dc", "--version"], check=True, stdout=subprocess.DEVNULL)
             owned = [str(p.relative_to(prefix)) for p in destination.rglob("*") if p.is_file() or p.is_symlink()]
             manifest["releases"][release] = {"wheel_sha256": digest(wheel), "files": sorted(owned)}
             manifest["pending"] = None
@@ -429,6 +712,8 @@ def install_locked(args, prefix, state):
         finish_uninstall(prefix, manifest)
         print(json.dumps({"uninstalled": True, "state_preserved": str(state), "untracked_files_preserved": str(prefix)}))
         return 0
+    if getattr(args, "managed_install", None):
+        args.managed_install['check'](True)
     activate(prefix, manifest, release, recovery_upgrade=args.recovery_upgrade)
     print(json.dumps({"installed": True, "release": release, "executable": str(prefix / "current/bin/nodus-dc"),
                       "state_dir": str(state), "service_started": False,
