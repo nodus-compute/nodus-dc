@@ -62,17 +62,18 @@ def split(row, proof, local=None):
     """Validate reserved authority provenance before exposing original provider data."""
     value = proof.pop(MEMBER)
     fields(value, "accounting_version lease provider_proof_sha256")
-    from .partitions import validate_lease
-    lease = validate_lease(value["lease"])
+    from . import partition_origin as origin
+    lease = origin.validate(value["lease"])
     if (value["accounting_version"] != ACCOUNTING or "ephemeral" not in lease
-            or not lease["generation"] or value["provider_proof_sha256"] != digest(proof)
+            or not origin.generation(lease) or value["provider_proof_sha256"] != digest(proof)
             or proof.get("accounting_version") != ACCOUNTING
             or any(row[k] != lease["ephemeral"]["charge"]["aggregate"][k] for k in lease["resources"])):
         raise Error("invalid_execution_binding", "aggregate reservation provenance differs", 409)
-    if local is not None and (local["id"] != row["lease_id"] or local["owner"] != "external"
-            or local["generation"] != lease["generation"]
-            or local["authorization"] != {"protocol":"partition-v2", "request_hash":digest({**lease,"generation":0})}):
+    if local is not None and (local["id"] != row["lease_id"] or not origin.matches_row(lease, local)):
         raise Error("invalid_execution_binding", "aggregate reservation owner differs", 409)
+    if proof.get("contract") == origin.LOCAL_PENDING:
+        from .partition_execution import pending_local_proof
+        pending_local_proof(proof, lease)
     return value
 
 

@@ -305,15 +305,20 @@ class Handler(BaseHTTPRequestHandler):
                 from .handback import terminal_retirement
                 return terminal_retirement(service, parts[3])
         if method == "POST":
-            body = self.body(limit=65536 if path.startswith("/v2/bridge/") else 1024*1024)
+            body = self.body(limit=65536 if path.startswith(("/v2/bridge/", "/v2/local/")) else 1024*1024)
             if path in {"/v2/bridge/partition-policy/context", "/v2/bridge/partition-policy/update"}:
                 if service.partition_policy is None:
                     raise Error("partition_policy_unavailable", "independent partition policy provider is not installed", 503)
                 operation = service.partition_policy.read_context if path.endswith("/context") else service.partition_policy.update
                 return operation(**body)
-            if path.startswith("/v2/bridge/partitions/"):
-                operation = path.removeprefix("/v2/bridge/partitions/")
-                methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete","bind","begin")}
+            if path.startswith(("/v2/bridge/partitions/", "/v2/local/partitions/")):
+                local = path.startswith("/v2/local/")
+                if local and self.server.scope != "local_unix":
+                    raise Error("private_transport_required", "local partition grants require the private owner socket", 403)
+                operation = path.removeprefix("/v2/local/partitions/" if local else "/v2/bridge/partitions/")
+                target = service.local_partitions if local else service.partitions
+                names = ("reserve","dispatch","pending","bind","begin","check","reclaim","complete") if local else ("offers","claim","check","inspect","reclaim","complete","bind","begin")
+                methods = {name: getattr(target,name) for name in names}
                 if operation not in methods: raise Error("not_found", "partition operation does not exist", 404)
                 if "_peer" in body:
                     raise Error("invalid_request", "peer identity is observed by the private socket", 400)

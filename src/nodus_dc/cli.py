@@ -31,6 +31,19 @@ def parser():
     sub = p.add_subparsers(dest="command", required=True)
     for command in ("inventory", "status", "reconcile"):
         sub.add_parser(command)
+    managed = sub.add_parser("managed", help="use the prepared host's local scoped execution owner")
+    managed.add_argument("--local-socket",default="/run/nodus-dc/local.sock")
+    managed.add_argument("--local-token-file")
+    actions = managed.add_subparsers(dest="managed_action",required=True)
+    q = actions.add_parser("reserve",help="reserve immutable local work and its full host budget")
+    q.add_argument("--resource",required=True); q.add_argument("--workload",required=True)
+    for name in ("cpu-millis","memory-bytes","scratch-bytes","expires-at-unix-millis"):
+        q.add_argument("--"+name,type=int,required=True)
+    q.add_argument("--request-key",required=True)
+    for action in ("run","reclaim","inspect"):
+        q = actions.add_parser(action); q.add_argument("--lease",required=True)
+        if action == "run": q.add_argument("--request-key",required=True)
+    actions.add_parser("status",help="observe all held local rows, including cleanup pending")
     doctor = sub.add_parser("doctor", help="read live daemon health and capacity without changing state")
     doctor.add_argument("--port", type=int, default=7441)
     doctor.add_argument("--local-token-file", help="daemon's local read token; defaults to STATE_DIR/local.token")
@@ -85,11 +98,18 @@ def parser():
     server.add_argument("--bridge-token-file")
     server.add_argument("--bridge-socket", default="/run/nodus-dc/bridge.sock")
     server.add_argument("--local-socket", default="/run/nodus-dc/local.sock")
+    server.add_argument("--partition-provider-config",help="existing protected prepared-host provider configuration")
+    server.add_argument("--partition-provider-sha256",help="exact SHA256 of that protected configuration")
     return p
 
 
 def sync_connection(service, connection):
     try:
+        if args.command == "managed":
+            from .partition_local_cli import run
+            result=run(args,state)
+            print(json.dumps(result,indent=2,sort_keys=True,allow_nan=False))
+            return 0
         result = connection.sync()
         service.bridge_health_error = None
         return result
@@ -131,6 +151,17 @@ def main(argv=None):
                           NvidiaDockerBackend(allocation_authority=args.allocation_authority, enable_trusted_mps=args.enable_trusted_mps),
                           bridge_enabled=bridge_token is not None or
                               args.command == "connection" and args.connection_action == "disconnect")
+        if args.command == "serve" and (args.partition_provider_config or args.partition_provider_sha256):
+            if not args.partition_provider_config or not args.partition_provider_sha256 or os.geteuid()!=0 or args.allocation_authority!="standalone":
+                raise Error("local_partition_unavailable", "prepared local execution requires root standalone ownership and both exact provider pins", 403)
+            from .partition_host import LinuxPartitionProvider
+            from .ephemeral import ACCOUNTING
+            service.partitions.executor=LinuxPartitionProvider(args.partition_provider_config,args.partition_provider_sha256)
+            # Installation never invents a registry/configuration or moves this initialized process.
+            # The existing prepared host must already place this service inside its Shared envelope.
+            with service.authority(),service.store.transaction(service.clock()) as db:
+                service.partitions._durable(db)
+                service.partitions._host_account(db,accounting_version=ACCOUNTING,continuation=True)
         request_key = getattr(args, "request_key", None) or str(uuid.uuid4())
         if args.command in {"inventory", "status", "reconcile"}:
             result = getattr(service, args.command.replace("-", "_"))()

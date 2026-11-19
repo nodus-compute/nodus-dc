@@ -85,6 +85,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("/v1/bridge/status", token=self.bridge.bridge_token, transport="tcp")[0], 403)
 
     def test_v2_is_bridge_only_and_rejects_unknown_fields(self):
+        local="/v2/local/partitions/pending"
+        self.assertEqual(self.call(local,{"after_generation":0},token=self.bridge.bridge_token,transport="unix")[0],404)
+        self.assertEqual(self.call(local,{"after_generation":0},token=self.bridge.bridge_token,transport="local_unix")[0],401)
+        self.assertEqual(self.call(local,{"after_generation":0},token=self.server.local_token,transport="tcp")[0],403)
+        self.assertEqual(self.call(local,{"after_generation":0,"unknown":True},token=self.server.local_token,transport="local_unix")[0],400)
         path = "/v2/bridge/partitions/offers"
         self.assertEqual(self.call(path,token=self.server.local_token,transport="unix")[0],401)
         self.assertEqual(self.call(path,token=self.bridge.bridge_token,transport="local_unix")[0],403)

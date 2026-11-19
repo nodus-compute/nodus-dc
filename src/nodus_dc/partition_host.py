@@ -17,7 +17,7 @@ import stat
 import time
 from pathlib import Path
 
-from . import ephemeral, partition_execution as execution
+from . import ephemeral, partition_execution as execution, partition_origin as origin
 from .errors import Error
 from .model import CleanupProof, digest
 from .partition_binding import runtime_identity
@@ -299,6 +299,7 @@ class LinuxPartitionProvider:
 
     @staticmethod
     def _paths(c,ref):
+        ref=origin.runtime_reference(ref)
         ns=c["namespace"]; attempt=ref["attempt_id"]
         key=hashlib.sha256(f'{len(ns)}:{ns}/{len(attempt)}:{attempt}/{ref["epoch"]}'.encode()).hexdigest()
         root=path(c["host_budget"]["root"]["path"])
@@ -307,7 +308,7 @@ class LinuxPartitionProvider:
 
     @staticmethod
     def _grant_digest(binding):
-        p=binding["lease"]["offer"]["partition"]; d=binding["device_observation"]; r=binding["runtime_identity"]
+        p=origin.partition(binding["lease"]); d=binding["device_observation"]; r=binding["runtime_identity"]
         # Go MIGDeviceGrant field order is part of the runtime's raw JSON digest.
         grant={"ResourceID":p["resource_id"],"AuthorityIncarnation":p["authority_incarnation"],
                "ConfigurationGeneration":p["configuration_generation"],"BootID":p["boot_id"],
@@ -385,7 +386,7 @@ class LinuxPartitionProvider:
         if type(original["Version"]) is not int or original["Version"]!=4: raise refused()
         guard={**original,"Version":5,"HostSHA256":shash}
         if (guard["Executor"]!=2 or guard["Namespace"]!=c["namespace"]
-                or type(guard["Ref"].get("Epoch")) is not int or guard["Ref"]!={"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]}
+                or type(guard["Ref"].get("Epoch")) is not int or guard["Ref"]!={"AttemptID":origin.runtime_reference(binding["ref"])["attempt_id"],"Epoch":origin.runtime_reference(binding["ref"])["epoch"]}
                 or guard["BootID"]!=binding["host_budget"]["boot_id"] or guard["CgroupPath"]!=str(epoch)):
             raise refused()
         hostscope=guard["HostScope"]; b=binding["host_budget"]
@@ -449,7 +450,7 @@ class LinuxPartitionProvider:
     def _metadata(self,e,c,state,directory,guard):
         binding=state["binding"]
         metadata,_=e.record(directory/"metadata-intent.json",16384)
-        container=binding["ref"]["attempt_id"]+"-e"+str(binding["ref"]["epoch"])
+        container=origin.runtime_reference(binding["ref"])["attempt_id"]+"-e"+str(origin.runtime_reference(binding["ref"])["epoch"])
         fields(metadata,"Version Guard Snapshotter ContainerID SnapshotKey Daemon")
         if (type(metadata["Version"]) is not int or metadata["Version"]!=2 or metadata["Guard"]!=guard
                 or metadata["Snapshotter"]!=binding["image"]["snapshotter"] or metadata["ContainerID"]!=container
@@ -841,7 +842,7 @@ class LinuxPartitionProvider:
         limits={"Version":1,"BindingSHA256":state["binding_sha256"],"HostBudgetSHA256":digest(b),
                 "Task":{"CPUMillis":lease["resources"]["cpu_millis"],"MemoryBytes":lease["resources"]["memory_bytes"],"PIDs":512},
                 "HostScratchBytes":ch["host_memory_bytes"],"OwnerOverheadBytes":ch["owner_overhead_bytes"],"OwnerOverheadCPUMillis":ch["owner_cpu_millis"]}
-        expected={"Version":2,"Ref":{"AttemptID":binding["ref"]["attempt_id"],"Epoch":binding["ref"]["epoch"]},
+        expected={"Version":2,"Ref":{"AttemptID":origin.runtime_reference(binding["ref"])["attempt_id"],"Epoch":origin.runtime_reference(binding["ref"])["epoch"]},
                   "Namespace":c["namespace"],"Executor":2,"BindingSHA256":state["binding_sha256"],"LocalLeaseID":binding["local_lease_id"],
                   "QualificationSHA256":c["runtime_identity"]["qualification_sha256"],"RunscSHA256":c["runtime_identity"]["runsc_sha256"],
                   "Creator":who,"IssueSHA256":state["issue_sha256"],"StartSHA256":state["start_sha256"],"ConsumedRevision":3,
@@ -1004,6 +1005,14 @@ class LinuxPartitionProvider:
 
     def _reservation(self,e,c,local,row,context):
         lease=context["lease"]; proof=decode(row["enforcement"])
+        if proof.get("contract") == origin.LOCAL_PENDING:
+            execution.pending_local_proof(proof,lease)
+            if (not origin.matches_row(lease,local) or context["binding_state"] is not None
+                    or proof["provider_config_sha256"]!=self.sha256 or proof["host_budget"]!=c["host_budget"]
+                    or any(row[k]!=lease["ephemeral"]["charge"]["aggregate"][k] for k in lease["resources"])): raise refused()
+            _,directory,owner,_,_,host=self._paths(c,lease["ref"])
+            if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
+            return
         execution.qualified_proof(proof,lease)
         if (proof.get("provider_config_sha256")!=self.sha256 or proof["host_budget"]!=c["host_budget"]
                 or local["id"]!=row["lease_id"] or any(row[k]!=lease["ephemeral"]["charge"]["aggregate"][k] for k in lease["resources"])): raise refused()
@@ -1044,6 +1053,18 @@ class LinuxPartitionProvider:
         if resources!=lease["ephemeral"]["charge"]["aggregate"] or context["authority_scope"]!={"authority_incarnation":b["authority_incarnation"],"accounting_version":ephemeral.ACCOUNTING}: raise refused()
         return {"contract":execution.PROVIDER,"accounting_version":ephemeral.ACCOUNTING,"enforcement_ready":True,
                 "provider_config_sha256":self.sha256,"qualified_image":copy.deepcopy(context["qualified_image"]),"host_budget":copy.deepcopy(b)}
+
+    def prepare_local_reservation(self,local,resources,*,context):
+        lease=origin.validate(context["lease"])
+        if not origin.is_local(lease) or not origin.matches_row(lease,local): raise refused()
+        e=Evidence(self._immutable_hashes);c=self._configuration(e);b=self._envelope(e,c)
+        execution.host_budget(b,lease)
+        if (resources!=lease["ephemeral"]["charge"]["aggregate"] or context["authority_scope"]!={
+                "authority_incarnation":b["authority_incarnation"],"accounting_version":ephemeral.ACCOUNTING}): raise refused()
+        _,directory,owner,_,_,host=self._paths(c,lease["ref"])
+        if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
+        return {"contract":origin.LOCAL_PENDING,"accounting_version":ephemeral.ACCOUNTING,"enforcement_ready":True,
+                "provider_config_sha256":self.sha256,"host_budget":copy.deepcopy(b),"local_ref":copy.deepcopy(lease["ref"])}
 
     def verify_reservation(self,local,row,*,context):
         e=Evidence(self._immutable_hashes);c=self._configuration(e);self._envelope(e,c);self._reservation(e,c,local,row,context)
@@ -1115,7 +1136,13 @@ class LinuxPartitionProvider:
 
     def verify_clean(self,local,lease,*,context):
         e=Evidence(self._immutable_hashes);c=self._configuration(e,artifacts=False)
-        proof=decode(context["provider_row"]["enforcement"]);execution.qualified_proof(proof,lease)
+        proof=decode(context["provider_row"]["enforcement"])
+        if proof.get("contract") == origin.LOCAL_PENDING:
+            execution.pending_local_proof(proof,lease)
+            if not origin.matches_row(lease,local) or context["binding_state"] is not None: raise refused()
+            _,directory,owner,_,_,host=self._paths(c,lease["ref"])
+            if any(os.path.lexists(p) for p in (directory,owner,host)): raise refused()
+        else: execution.qualified_proof(proof,lease)
         if proof.get("provider_config_sha256")!=self.sha256: raise refused()
         state=context["binding_state"]
         clean=state is None  # No Bind/Begin exists in this exact authority row.

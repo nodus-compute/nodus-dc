@@ -55,7 +55,7 @@ def split_reservation(reservation, local=None):
         if not isinstance(proof, dict): raise ValueError()
         present = MEMBER in proof
         state = proof.pop(MEMBER, None)
-        from . import ephemeral
+        from . import ephemeral, partition_origin as origin
         aggregate = None
         if ephemeral.MEMBER in proof:
             aggregate = ephemeral.split(row, proof, local)
@@ -66,7 +66,7 @@ def split_reservation(reservation, local=None):
             from . import partition_execution as execution
             if not isinstance(state, dict) or not isinstance(state.get("binding"), dict): raise ValueError()
             binding = state["binding"]
-            v2 = binding.get("contract") == execution.CONTRACT
+            v2 = binding.get("contract") in {execution.CONTRACT, origin.LOCAL_BINDING}
             if v2:
                 if aggregate is None: raise ValueError()
                 fields(state, execution.STATE_FIELDS)
@@ -75,26 +75,25 @@ def split_reservation(reservation, local=None):
                 if aggregate is not None: raise ValueError()
                 fields(state, "binding binding_sha256 phase phase_revision")
                 fields(binding, "contract lease local_lease_id ref requested_resources device_observation runtime_identity reservation_proof_sha256")
-            lease = validate_lease(binding["lease"])
-            if not lease["generation"] or (not v2 and binding["contract"] != CONTRACT): raise ValueError()
+            lease = origin.validate(binding["lease"])
+            if not origin.generation(lease) or (not v2 and binding["contract"] != CONTRACT): raise ValueError()
             if v2:
                 if aggregate["lease"] != lease: raise ValueError()
                 execution.validate_state(state, proof)
             guid(binding["local_lease_id"])
             if local is not None and (local["id"] != binding["local_lease_id"]
-                    or local["generation"] != lease["generation"]
-                    or local["authorization"] != {"protocol":"partition-v2", "request_hash":digest({**lease,"generation":0})}):
+                    or not origin.matches_row(lease, local)):
                 raise ValueError()
-            reference(binding["ref"], lease["platform_epoch"])
-            runtime_identity(binding["runtime_identity"], lease["offer"]["runtime_sha256"])
+            origin.reference(binding["ref"], lease)
+            runtime_identity(binding["runtime_identity"], origin.runtime(lease))
             device = binding["device_observation"]
             resources = lease["ephemeral"]["charge"]["aggregate"] if v2 else lease["resources"]
             if (binding["local_lease_id"] != row["lease_id"]
                     or binding["requested_resources"] != lease["resources"]
                     or any(row[key] != resources[key] for key in resources)
                     or binding["reservation_proof_sha256"] != digest(proof)
-                    or state["binding_sha256"] != digest(binding)
-                    or digest({"device":device,"runtime_sha256":lease["offer"]["runtime_sha256"]}) != lease["offer"]["partition"]["binding_sha256"]
+                    or state["binding_sha256"] != origin.binding_digest(binding)
+                    or digest({"device":device,"runtime_sha256":origin.runtime(lease)}) != origin.partition(lease)["binding_sha256"]
                     or (not v2 and (state["phase"] not in {"committed", "materialization-begun", "retired"}
                         or type(state["phase_revision"]) is not int
                         or (state["phase"], state["phase_revision"]) not in {

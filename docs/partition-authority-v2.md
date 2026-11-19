@@ -275,49 +275,130 @@ the complete Agent path remain unqualified. Consumed cancellation before a compl
 record pair still requires separate positive original-creator retirement work.
 
 
-## Managed-local representation (preparatory, unavailable)
+## Managed-local scoped execution (unshipped source)
 
-`partition_local.py` defines a closed local identity and immutable finite workload;
-no local managed route, CLI mode, ledger writer or runtime dispatch is installed.
-The existing local Docker workflow and external v2 wire keep their current behavior.
-This source alone does not satisfy local/borrower coexistence or authorize execution.
+This source adds an explicit local origin to the same allocation ledger, provider
+and creator/retirement engine. It is not a published supported profile: the paired
+normal nodusd path and the owning native/GPU qualification remain required. The
+existing default service still has no installed partition provider or platform
+agreement. No external funding, consent, Attempt or permission is manufactured.
 
 The local reference is exactly `{authority_incarnation, lease_id, generation}`:
 canonical nonzero UUIDs and a positive signed-64-bit generation from the existing
-leases table. Its runtime name is `l_` plus lowercase unpadded base32 of the full
-SHA256 of `nodus.local-execution.v1\0` followed by the two UUID byte strings in
-network order. Generation is the runtime epoch; the complete ordinary key stays
-within75 bytes. It is not an external `att_` identity or arbitrary-name fallback.
+leases table. Its runtime name is `l_` plus lowercase unpadded base32 of SHA256 of
+`nodus.local-execution.v1\0` followed by the two UUID byte strings in network order.
+Generation is the runtime epoch. This disjoint internal name is not a platform
+`att_` reference. Runtime records still use the original name/epoch machinery.
 
 A `partition-local-lease.v1` has `contract`, `ref`, `partition`, `policy_revision`,
 `workload`, `resources`, `ephemeral`, `runtime_sha256`, `expires_at_unix_millis`.
-The authority incarnation must equal the device/configuration identity. The local
-policy revision and frozen finite expiry do not depend on platform permission.
-Image/device/runtime qualification, reservation and capability creation are separate
-checks; validating a value does not perform any of them or create an external claim.
+The policy revision is the immutable local lease generation. A root local request
+grants only that descriptor until its finite expiry or explicit retirement;
+platform disconnect, credential expiry and external policy withdrawal cannot
+extend or cancel it. Device, runtime, image, accounting and expiry checks remain
+independent prerequisites on every use. Reboot/configuration/registry uncertainty
+retains ownership and refuses execution; no database or registry reset is supported.
 
-Workload fields are exactly `image`, `command`, `args`, `workdir`. The image is
+Workload fields are exactly `image`, `command`, `args`, `workdir`. Image is
 SHA256-pinned; command replaces entrypoint and args replaces image command.
 Command is nonempty; both lists contain at most64 valid UTF-8 strings, at most4096
 bytes each and32768 argument bytes total, without NUL. Workdir is `/`,
 `/nodus/state`, `/nodus/outputs` or `/tmp`. Environment, mounts, ports, transfers,
-secrets, restore and checkpoints are absent in this initial finite descriptor.
-Task C/M/S use the existing ephemeral charge unchanged; aggregate A is never a
-Docker task memory limit. The explicit feature counts are all zero.
+secrets, restore and checkpoints are absent in this finite descriptor. Task C/M/S
+use the existing ephemeral charge unchanged. Aggregate A is charged to the ledger;
+it is never used as the task memory limit or passed to legacy Docker start.
 
-The local spec hash is SHA256 of `nodus.local-workload.v1\0`, image, command list,
-args list, cwd and C/M/S in order. Strings have uint32 big-endian UTF-8 byte lengths,
-lists have uint32 counts, and resources are uint64 big-endian. Both readers recompile
-it without interpreting a platform AttemptSpec or depending on JSON escaping.
-A `partition-local-dispatch.v1` contains only `contract`, `ref`, `request_key`:
-it selects immutable reserved work, never replaces it or supplies permission.
+The spec hash uses the fixed binary framing already shared with Go: SHA256 of
+`nodus.local-workload.v1\0`, image, command list, args list, cwd and C/M/S in order.
+Strings have uint32 big-endian UTF-8 byte lengths, lists uint32 counts, and resources
+uint64 big-endian. The local binding digest separately uses compact sorted-key JSON,
+UTF-8 without HTML escaping, explicit lowercase `\u2028`/`\u2029` escapes and no
+trailing newline. Empty arrays stay arrays. External binding/digest bytes are unchanged.
 
-The complete vertical implementation must use the same SQLite host_reservations
-ledger and sealed creator/cleanup engine. Before any new local row, all readers,
-retirement and host-history paths must support write-ahead floor9, including the
-current exact8 retirement check; already-open old readers must be fenced. No floor
-changes in this slice. No row or registry may be deleted to clear uncertainty.
-Host-owned local lifetime must survive platform permission loss, and local demand
-must stop new borrower grants while exact victim cleanup is pending. Unknown
-cleanup remains charged. These are remaining implementation and native-proof gates,
-not guarantees supplied by the new representation.
+All eight local operations are POSTs under `/v2/local/partitions/` on the existing
+private root LocalUnixServer with its local token. The bridge socket/token and
+loopback HTTP cannot authorize them. Bodies and responses remain bounded to64KiB;
+reserve measures the largest future state/retirement envelope before committing.
+An escape-heavy descriptor can exceed this encoded bound despite its argv byte
+bound; it is refused without truncation or changing Unicode values.
+
+| Operation | Exact request and effect |
+| --- | --- |
+| `reserve` | `resource_id`, `workload`, `resources`, `expires_at_unix_millis`, `request_key`; returns `{lease}`. |
+| `dispatch` | `contract:partition-local-dispatch.v1`, full `ref`, `request_key`; selects immutable held work and returns `{lease,dispatched:true}`. |
+| `pending` | `{after_generation}`; returns at most one full `{lease,dispatched,retired}` row in `leases` plus `has_more`. Use its generation as the next cursor, scan at most64 and restart at0 next poll. |
+| `bind` | `{lease,ref}` plus first-bind `qualified_image`, or separate `purpose:retirement`; returns the exact local state or identity-only local retirement. |
+| `begin` | `{lease,ref,binding_sha256,expected_phase_revision,operation}` with the original issue/consume/publish token fields and observed socket creator. |
+| `check` | `{lease}` plus either `creation_token` or `published_ref`; returns `{lease,authorized}`. |
+| `reclaim` | `{lease}`; durably retires its binding and drains the row, returning `{lease,retired:true}`. |
+| `complete` | `{lease,cleanup_verified:true}`; requires independent exact provider cleanup, returning `{lease,released}`. |
+
+Reserve first writes a local-only pending-image provider proof with the complete
+host budget and aggregate charge, but no executable image or creator authority.
+Its derived owner paths must remain absent. After dispatch, the host owner prepares
+and observes the pinned image; first Bind atomically upgrades that same reservation
+to the qualified proof and `partition-local-execution-binding.v1`. The original
+one-return creator CAS and positive retirement engine then apply. A never-bound
+retired row requires exact absence proof; consumed/published uncertainty stays held.
+
+Pending enumerates all held local rows, including expired, retired and cleanup-pending
+ones, even if they were never dispatched. Pagination is an observation, not permission.
+The paired host owner must run independently of external Agent.Run, recheck before
+every effect and share the same weighted creation gate with the external client.
+It reclaims before retirement and Complete; no restart reconstructs creator tokens.
+
+If a reserve needs borrower resources, a durable local demand records the immutable
+request and exact victims, retires those external claims, and fences new borrower
+grants. Local siblings are not victims. `local_demand_pending` means cleanup is still
+required; repeat only the identical request key, payload and absolute expiry. Charges
+and tombstones remain until positive cleanup. Waiting demand expiry stops the new-grant
+fence but does not revive retired borrowers or delete history. No new orchestrator
+or resource-reset path is introduced.
+
+The first local demand or lease advances SQLite and the independent write-ahead
+registry to reader floor9. Current aggregate/provider/history/retirement readers
+understand both origins. Already-open old writers fail the registry read before
+mutation; old packages cannot reopen floor9. Read-only old status output is not
+local execution authority. All local legacy start/release/reboot-recovery paths
+refuse managed rows; ordinary expiry only retires them for the shared host owner.
+
+### Prepared-host operator commands
+
+These commands require an already qualified, protected prepared host and the paired
+normal nodusd local owner. They do not prepare cgroups, install runtimes, adopt a
+registry, create platform permission or move an initialized process. The service
+must already run in the configured Shared envelope. Configuration and its SHA256
+are explicit operator inputs, and missing preparation refuses startup:
+
+```sh
+sudo nodus-dc --allocation-authority standalone --state-dir /var/lib/nodus-dc serve \
+  --partition-provider-config /etc/nodus-dc/provider.json \
+  --partition-provider-sha256 "$PROVIDER_SHA256"
+```
+
+Use a workload JSON object such as
+`{"image":"registry/image@sha256:…","command":["/app/task"],"args":[],"workdir":"/"}`
+with an actual full digest. Choose a finite absolute expiry within24hours so repeating
+a request cannot recompute its lifetime. Save the exact successful reservation:
+
+```sh
+sudo nodus-dc --state-dir /var/lib/nodus-dc managed reserve \
+  --resource "$MIG_UUID" --workload workload.json \
+  --cpu-millis 1000 --memory-bytes 268435456 --scratch-bytes 4194304 \
+  --expires-at-unix-millis "$EXPIRY_MILLIS" --request-key local-job-1 > lease.json
+sudo nodus-dc --state-dir /var/lib/nodus-dc managed run \
+  --lease lease.json --request-key local-job-1-run
+sudo nodus-dc --state-dir /var/lib/nodus-dc managed status
+sudo nodus-dc --state-dir /var/lib/nodus-dc managed reclaim --lease lease.json
+sudo nodus-dc --state-dir /var/lib/nodus-dc managed inspect --lease lease.json
+```
+
+Run acknowledges dispatch, not application success. Inspect reads the original local
+row, including terminal cleanup; disappearance from pending alone is not a successful
+application result. Lost mutation replies remain uncertain, and the CLI does not
+retry them automatically. Never remove authority state to make a command succeed.
+
+The owning Unix/SQLite source case covers local creator CAS, external-disconnect
+independence, borrower-demand retirement, aggregate retention, pagination, legacy
+Docker refusal and positive cleanup with declared synthetic enforcement. It is
+not executed by this source change and cannot establish real GPU progress or limits.

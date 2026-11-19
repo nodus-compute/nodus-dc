@@ -11,7 +11,7 @@ import secrets
 from .errors import Error
 from .model import digest
 from .partitions import fields, guid, integer, sha, budget
-from . import ephemeral
+from . import ephemeral, partition_origin as origin
 
 CONTRACT = "partition-execution-binding.v2"
 PROVIDER = "partition-trusted-host.v1"
@@ -32,9 +32,10 @@ def qualified_image(value, lease):
     for name in ("manifest_sha256", "config_sha256", "rootfs_chain_sha256", "spec_sha256"):
         sha(value[name])
     workdir = value["workdir"]
-    if ("ephemeral" not in lease or value["reference"] != lease["workload"]["workload_image"]
+    if ("ephemeral" not in lease or value["reference"] != origin.image(lease)
             or not value["reference"].endswith("@sha256:" + value["manifest_sha256"])
             or value["spec_sha256"] != lease["ephemeral"]["spec_sha256"]
+            or (origin.is_local(lease) and value["workdir"] != lease["workload"]["workdir"])
             or value["os"] != "linux" or value["architecture"] != "amd64" or value["user"] not in {"", "0:0"}
             or not isinstance(workdir, str) or len(workdir) > 256
             or (workdir not in {"/", "/nodus/state", "/nodus/outputs", "/tmp"}
@@ -71,8 +72,8 @@ def host_budget(value, lease):
             or capacity["cpu_millis"] != root["cpu_millis"] - shared["cpu_millis"]
             or capacity["memory_bytes"] != root["memory_bytes"] - shared["memory_bytes"]
             or root["pids"] < shared["pids"] + 576 * value["max_claims"]
-            or value["boot_id"] != lease["offer"]["partition"]["boot_id"]
-            or value["authority_incarnation"] != lease["offer"]["partition"]["authority_incarnation"]):
+            or value["boot_id"] != origin.partition(lease)["boot_id"]
+            or value["authority_incarnation"] != origin.partition(lease)["authority_incarnation"]):
         raise _denied()
     return copy.deepcopy(value)
 
@@ -93,7 +94,7 @@ def validate_state(state, proof):
     binding = state["binding"]
     fields(binding, BINDING_FIELDS)
     lease = binding["lease"]
-    if (binding["contract"] != CONTRACT or "ephemeral" not in lease
+    if (binding["contract"] != (origin.LOCAL_BINDING if origin.is_local(lease) else CONTRACT) or "ephemeral" not in lease
             or binding["accounting_version"] != ephemeral.ACCOUNTING
             or binding["aggregate_resources"] != lease["ephemeral"]["charge"]["aggregate"]
             or proof.get("contract") != PROVIDER or proof.get("enforcement_ready") is not True
@@ -154,6 +155,18 @@ def qualified_proof(proof, lease):
     return proof
 
 
+def pending_local_proof(proof, lease):
+    """A held local budget before image binding is never creator authority."""
+    fields(proof, "contract accounting_version enforcement_ready provider_config_sha256 host_budget local_ref")
+    if (not origin.is_local(lease) or proof["contract"] != origin.LOCAL_PENDING
+            or proof["accounting_version"] != ephemeral.ACCOUNTING or proof["enforcement_ready"] is not True
+            or proof["local_ref"] != lease["ref"]):
+        raise _denied()
+    sha(proof["provider_config_sha256"])
+    host_budget(proof["host_budget"], lease)
+    return proof
+
+
 def renewal_target(state, lease, ref):
     """Derive accounting context only from the exact current published binding."""
     if (state is None or state["phase"] != "host-published" or state["phase_revision"] != 4
@@ -192,6 +205,46 @@ def permission(state, purpose, peer=None, token=None, host_scope_sha256=None):
             "host_scope_sha256":host_scope_sha256}
 
 
+def transition(binding, state, proof, *, operation=None, binding_sha256=None, expected_phase_revision=None,
+               token=None, host_scope_sha256=None, peer=None):
+    """The one original creator CAS engine; callers supply already checked origin permission."""
+    from .model import canonical
+    if state is None:
+        if operation is not None: raise _denied()
+        state = {"binding":binding,"binding_sha256":origin.binding_digest(binding),"phase":"committed","phase_revision":1,
+                 "creator":None,"issue_sha256":"","start_sha256":"","host_scope_sha256":""}
+    elif state["binding"] != binding or state["phase"] == "retired":
+        raise _denied()
+    returned = ""
+    if operation is not None:
+        if binding_sha256 != state["binding_sha256"] or expected_phase_revision != state["phase_revision"]:
+            raise _denied()
+        if operation == "issue":
+            who = peer.verify()
+            creator(who)
+            if any(who[key] != binding["host_budget"][key] for key in (
+                    "boot_id", "pid_namespace", "user_namespace", "cgroup_namespace")): raise _denied()
+            returned = issue_token()
+            state = {**state,"phase":"creation-issued","phase_revision":2,"creator":who,
+                     "issue_sha256":capability_hash(returned)}
+        elif operation == "consume":
+            authorize_creator(state, peer, token, "consume")
+            returned = issue_token(state["issue_sha256"])
+            state = {**state,"phase":"creation-consumed","phase_revision":3,"start_sha256":capability_hash(returned)}
+        else:
+            authorize_creator(state, peer, token, "publish")
+            # _checked's provider independently validates the supplied identity against the live exact scope.
+            sha(host_scope_sha256)
+            state = {**state,"phase":"host-published","phase_revision":4,"host_scope_sha256":host_scope_sha256}
+    validate_state(state, proof)
+    response = {"state":state,"creation_token":returned} if operation is not None else state
+    if len(canonical(response).encode()) > 65536: raise _denied()
+    if binding["contract"] == origin.LOCAL_BINDING:
+        import json
+        if len(json.dumps(response,sort_keys=True,allow_nan=False).encode()) > 65536: raise _denied()
+    return response
+
+
 def retirement(authority, *, lease, ref):
     """Read terminal same-row provenance, never current permission or kernel absence."""
     from .partitions import validate_lease
@@ -208,7 +261,7 @@ def retirement(authority, *, lease, ref):
             anchor = authority._durable(db)
             prior = authority._lookup(db, request)
             if (not prior or not prior["retired"] or not prior["lease_id"]
-                    or authority._echo(prior) != request or anchor.get("reader_schema") != 8
+                    or authority._echo(prior) != request or anchor.get("reader_schema") not in {8, 9}
                     or anchor["incarnation"] != request["offer"]["partition"]["authority_incarnation"]):
                 raise _denied()
             stored = authority._echo(prior)
@@ -294,34 +347,9 @@ def resolve(authority, *, lease, ref, binding_sha256=None, expected_phase_revisi
                     (local["id"], '$."nodus.execution_binding".binding.ref.attempt_id', ref["attempt_id"],
                      '$."nodus.execution_binding".binding.ref.epoch', ref["epoch"])).fetchone()
                 if used: raise _denied()
-                state = {"binding":binding,"binding_sha256":digest(binding),"phase":"committed","phase_revision":1,
-                         "creator":None,"issue_sha256":"","start_sha256":"","host_scope_sha256":""}
-            elif state["binding"] != binding or state["phase"] == "retired":
-                raise _denied()
-            returned = ""
-            if operation is not None:
-                if binding_sha256 != state["binding_sha256"] or expected_phase_revision != state["phase_revision"]:
-                    raise _denied()
-                if operation == "issue":
-                    who = peer.verify()
-                    creator(who)
-                    if any(who[key] != binding["host_budget"][key] for key in (
-                            "boot_id", "pid_namespace", "user_namespace", "cgroup_namespace")): raise _denied()
-                    returned = issue_token()
-                    state = {**state,"phase":"creation-issued","phase_revision":2,"creator":who,
-                             "issue_sha256":capability_hash(returned)}
-                elif operation == "consume":
-                    authorize_creator(state, peer, token, "consume")
-                    returned = issue_token(state["issue_sha256"])
-                    state = {**state,"phase":"creation-consumed","phase_revision":3,"start_sha256":capability_hash(returned)}
-                else:
-                    authorize_creator(state, peer, token, "publish")
-                    # _checked's provider independently validates the supplied identity against the live exact scope.
-                    sha(host_scope_sha256)
-                    state = {**state,"phase":"host-published","phase_revision":4,"host_scope_sha256":host_scope_sha256}
-            validate_state(state, proof)
-            response = {"state":state,"creation_token":returned} if operation is not None else state
-            if len(canonical(response).encode()) > 65536: raise _denied()
+            response = transition(binding, state, proof, operation=operation, binding_sha256=binding_sha256,
+                expected_phase_revision=expected_phase_revision, token=token, host_scope_sha256=host_scope_sha256, peer=peer)
+            state = response["state"] if operation is not None else response
             policy = authority._policy(db, request=request)
             if policy["agreement"] != request["offer"]["agreement"] or local["expires_at"] <= service.clock():
                 raise _denied()

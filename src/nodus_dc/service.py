@@ -36,6 +36,8 @@ class Service:
             self.store.fence = AuthorityFence(fence_path, store.path)
         from .partitions import PartitionAuthority
         self.partitions = PartitionAuthority(self)
+        from .partition_local_authority import LocalPartitionAuthority
+        self.local_partitions = LocalPartitionAuthority(self)
         self.partition_policy = None  # Explicit enrollment/provider installation is not production-qualified.
         self.bridge_authorization_check = None
         self.lock_path = str(Path(store.path).with_name("host.lock"))
@@ -263,6 +265,9 @@ class Service:
                 return Store.decode(prior)
             self._expires(expires_at)
             if owner == "external":
+                from .partition_local_authority import demand_pending
+                if demand_pending(db,now):
+                    raise Error("local_demand_pending", "local demand fences new borrower grants until retirement completes", 409)
                 policy = self._policy(db, expected_revision=authorization["policy_revision"])
                 for field in ("authorization_id", "consent_reference"):
                     if authorization.get(field) != policy[field]:
@@ -324,6 +329,9 @@ class Service:
             now = self.clock()
             with self.store.transaction(now) as db:
                 lease = Store.lease(db, lease_id)
+                from .partition_local_authority import managed
+                if managed(lease):
+                    raise Error("managed_local_dispatch_required", "managed local work uses its immutable scoped dispatch", 409)
                 if self._operation(db, lease, generation, "start", request_key, workload):
                     return lease
                 if lease["owner"] != "local":
@@ -475,6 +483,9 @@ class Service:
             with self.store.transaction(self.clock()) as db:
                 lease = Store.lease(db, lease_id)
                 self._fence(lease, generation)
+                from .partition_local_authority import managed
+                if managed(lease):
+                    raise Error("managed_local_cleanup_required", "managed local ownership requires exact scoped retirement evidence", 409)
                 if lease["owner"] != "local":
                     raise Error("recovery_not_applicable", "only uncertain local leases can be recovered")
                 if self._native_handoff(lease):
@@ -551,6 +562,10 @@ class Service:
                 return lease
             if lease["state"] == "released":
                 return lease
+            from .partition_local_authority import managed
+            if managed(lease):
+                from .partition_binding import retire
+                retire(db, lease_id)
             lease = Store.update(db, lease, self.clock(), state="quarantined" if self._native_handoff(lease) else "draining", error=reason)
             Store.event(db, self.clock(), lease, "drain_requested", {"reason": reason})
             return lease
@@ -564,6 +579,9 @@ class Service:
             raise Error("bridge_cleanup_required", "external allocation requires exact platform cleanup evidence", 403)
         if lease["state"] == "released":
             return lease
+        from .partition_local_authority import managed
+        if managed(lease):
+            raise Error("managed_local_cleanup_required", "the scoped host owner must finish exact local retirement", 409)
         if self._native_handoff(lease):
             raise Error("native_return_unsupported", "native ownership cannot be returned by process inventory, TTL or a local cleanup assertion", 409)
         # An interrupted launch can leave a daemon request in flight. A clean
@@ -600,6 +618,9 @@ class Service:
             with self.store.transaction(self.clock()) as db:
                 lease = Store.lease(db, lease_id)
                 self._fence(lease, generation)
+                from .partition_local_authority import managed
+                if managed(lease):
+                    raise Error("managed_local_cleanup_required", "use the managed local reclaim operation", 409)
                 if self._native_handoff(lease):
                     raise Error("native_return_unsupported", "native handoff stays held until a supported out-of-band return fence exists", 409)
                 if self._operation(db, lease, generation, "release", request_key, {}):
@@ -640,7 +661,8 @@ class Service:
                     Store.event(db, self.clock(), lease, "recovery_quarantine", {})
             elif lease["expires_at"] <= self.clock() and lease["state"] not in {"draining", "verifying", "quarantined"}:
                 lease = self._drain(lease["id"], lease["generation"], f"expiry:{lease['generation']}", "lease_expired")
-            if lease["owner"] == "local" and lease["state"] in {"draining", "verifying"}:
+            from .partition_local_authority import managed
+            if lease["owner"] == "local" and not managed(lease) and lease["state"] in {"draining", "verifying"}:
                 try:
                     lease = self._finish_local(lease)
                 except Error as exc:

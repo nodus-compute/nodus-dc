@@ -169,6 +169,101 @@ class Partitions(unittest.TestCase):
                 "input_count":0,"input_bytes":0,"output_count":0}}
         return task, descriptor, image
 
+    def test_managed_local_same_ledger_creator_demand_and_positive_retirement(self):
+        """Real Unix/SQLite peers; synthetic enforcement remains explicitly not GPU proof."""
+        from nodus_dc.api import LocalUnixServer
+        from nodus_dc import ephemeral, partition_local as local, partition_origin as origin
+        from nodus_dc.partition_binding import split_reservation
+        task, descriptor, image = self.enable_trusted_profile()
+        def pending(row, resources, *, context):
+            self.assertEqual(resources,context["lease"]["ephemeral"]["charge"]["aggregate"])
+            return {"contract":origin.LOCAL_PENDING,"accounting_version":ephemeral.ACCOUNTING,
+                "enforcement_ready":True,"provider_config_sha256":"8"*64,
+                "host_budget":self.executor.accounting_budget(context["authority_scope"]),"local_ref":context["lease"]["ref"]}
+        self.executor.prepare_local_reservation=pending
+        offer=next(o for o in self.p.offers(include_host_budget=True,accounting_version=ephemeral.ACCOUNTING)["offers"] if o["partition"]["resource_id"]==B)
+        borrowed=self.p.claim(platform_lease_id="local-demand-borrower",platform_epoch=1,generation=0,offer=offer,
+            resources=task,workload={"workload_image":IMAGE,"workload_kind":"Job"},expires_at_unix_millis=1100000,
+            ephemeral=descriptor,qualified_image=image)["lease"]
+        borrowed_ref={"attempt_id":"att_00000000000000000000000001","epoch":1}
+        self.p.bind(lease=borrowed,ref=borrowed_ref)
+        server=LocalUnixServer(str(self.root/"managed.sock"),self.service,"local-"+"x"*40,owner_uid=os.geteuid())
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        def call(operation,body):
+            connection=UnixHTTPConnection(server.path)
+            try:
+                connection.request("POST","/v2/local/partitions/"+operation,json.dumps(body).encode(),
+                    {"Authorization":"Bearer "+server.local_token})
+                response=connection.getresponse();return response.status,json.loads(response.read())
+            finally: connection.close()
+        def ok(operation,body):
+            code,value=call(operation,body);self.assertEqual(code,200,value);return value
+        def saved(lease):
+            with self.service.store.connection() as db:
+                row=db.execute("SELECT * FROM host_reservations WHERE lease_id=?",(lease["ref"]["lease_id"],)).fetchone()
+                return dict(row),split_reservation(row,Store.lease(db,lease["ref"]["lease_id"]))[1]
+        request={"resource_id":A,"workload":{"image":IMAGE,"command":["/bin/echo"],"args":["é<&\u2028\u2029\t"],"workdir":"/"},
+                 "resources":task,"expires_at_unix_millis":1100000,"request_key":"managed-reserve"}
+        try:
+            held=ok("reserve",request)["lease"]
+            self.assertEqual(ok("reserve",request)["lease"],held)
+            self.assertEqual(self.service.store.fence.read()["reader_schema"],9)
+            self.assertEqual(saved(held)[0]["memory_bytes"],held["ephemeral"]["charge"]["aggregate"]["memory_bytes"])
+            self.assertNotEqual(saved(held)[0]["memory_bytes"],held["resources"]["memory_bytes"])
+            self.assertFalse(ok("check",{"lease":held})["authorized"])
+            self.assert_error("managed_local_dispatch_required",lambda:self.service.start(held["ref"]["lease_id"],
+                generation=held["ref"]["generation"],request_key="wrong-docker",workload=held["workload"]))
+            dispatch={"contract":local.DISPATCH,"ref":held["ref"],"request_key":"managed-run"}
+            self.assertTrue(ok("dispatch",dispatch)["dispatched"])
+            local_image={**image,"spec_sha256":held["ephemeral"]["spec_sha256"]}
+            state=ok("bind",{"lease":held,"ref":held["ref"],"qualified_image":local_image})
+            self.assertEqual(state["binding_sha256"],origin.binding_digest(state["binding"]))
+            base={"lease":held,"ref":held["ref"],"binding_sha256":state["binding_sha256"]}
+            issued=ok("begin",{**base,"operation":"issue","expected_phase_revision":1})
+            self.assertNotEqual(call("begin",{**base,"operation":"issue","expected_phase_revision":1})[0],200)
+            consumed=ok("begin",{**base,"operation":"consume","expected_phase_revision":2,"creation_token":issued["creation_token"]})
+            self.assertFalse(ok("check",{"lease":held})["authorized"])
+            self.assertTrue(ok("check",{"lease":held,"creation_token":consumed["creation_token"]})["authorized"])
+            self.executor.published=True
+            ok("begin",{**base,"operation":"publish","expected_phase_revision":3,"creation_token":consumed["creation_token"],"host_scope_sha256":"9"*64})
+            self.service.bridge_enabled=False;self.service.bridge_health_error="synthetic_disconnect"
+            self.assertTrue(ok("check",{"lease":held,"published_ref":held["ref"]})["authorized"])
+            self.service.bridge_enabled=True;self.service.bridge_health_error=None
+            demand={**request,"resource_id":B,"request_key":"managed-demand"}
+            status,value=call("reserve",demand)
+            self.assertEqual((status,value["error"]["code"]),(409,"local_demand_pending"))
+            self.assertEqual(self.p.offers(include_host_budget=True,accounting_version=ephemeral.ACCOUNTING)["offers"],[])
+            self.assertFalse(self.p.check(**borrowed)["authorized"])
+            self.assertEqual(self.p.bind(lease=borrowed,ref=borrowed_ref,purpose="retirement")["disposition"],"never-consumed")
+            self.executor.clean=False
+            self.assertFalse(self.p.complete(lease=borrowed,cleanup_verified=True)["released"])
+            self.assertEqual(call("reserve",demand)[0],409)
+            self.executor.clean=True
+            self.assertTrue(self.p.complete(lease=borrowed,cleanup_verified=True)["released"])
+            sibling=ok("reserve",demand)["lease"]
+            first=ok("pending",{"after_generation":0})
+            self.assertEqual(first["leases"][0]["lease"],held);self.assertTrue(first["has_more"])
+            second=ok("pending",{"after_generation":held["ref"]["generation"]})
+            self.assertEqual(second["leases"][0]["lease"],sibling);self.assertFalse(second["has_more"])
+            ok("reclaim",{"lease":sibling})
+            self.assertEqual(ok("bind",{"lease":sibling,"ref":sibling["ref"],"purpose":"retirement"})["disposition"],"never-bound")
+            self.assertTrue(ok("complete",{"lease":sibling,"cleanup_verified":True})["released"])
+            ok("reclaim",{"lease":held})
+            self.assertTrue(ok("pending",{"after_generation":0})["leases"][0]["retired"])
+            retirement=ok("bind",{"lease":held,"ref":held["ref"],"purpose":"retirement"})
+            self.assertEqual(retirement["disposition"],"scope-required")
+            self.executor.clean=False
+            self.assertFalse(ok("complete",{"lease":held,"cleanup_verified":True})["released"])
+            self.assertIsNotNone(saved(held)[1])
+            self.executor.clean=True
+            self.assertTrue(ok("complete",{"lease":held,"cleanup_verified":True})["released"])
+            self.assertEqual(ok("pending",{"after_generation":0}),{"leases":[],"has_more":False})
+            self.assertFalse(ok("check",{"lease":held})["authorized"])
+            self.assertEqual(ok("reserve",request)["lease"],held)
+            self.assertNotEqual(call("dispatch",dispatch)[0],200)
+        finally:
+            server.shutdown();server.server_close();thread.join()
+
     def test_qualified_creator_cas_replay_loss_and_retirement(self):
         from nodus_dc import ephemeral
         from nodus_dc.partition_binding import split_reservation

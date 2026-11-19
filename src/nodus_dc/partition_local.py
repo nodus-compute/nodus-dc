@@ -1,4 +1,4 @@
-"""Closed managed-local identity; no route or execution capability is installed."""
+"""Closed managed-local identity and immutable finite workload descriptor."""
 from __future__ import annotations
 
 import base64

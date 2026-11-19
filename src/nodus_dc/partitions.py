@@ -229,9 +229,14 @@ class PartitionAuthority:
         db.execute("UPDATE partition_configurations SET state='quarantined',error=?,updated_at=? WHERE parent_uuid=?",
                    (reason, now, parent))
         records = {r["id"]: r["parent"] for r in db.execute("SELECT id,parent FROM resources")}
-        for raw in db.execute("SELECT * FROM leases WHERE owner='external' AND state!='released'").fetchall():
+        for raw in db.execute("SELECT * FROM leases WHERE state!='released'").fetchall():
             lease = Store.decode(raw)
+            from .partition_local_authority import managed
+            if lease["owner"] != "external" and not managed(lease): continue
             if overlap({parent}, set(lease["resources"]), records):
+                if managed(lease):
+                    from .partition_binding import retire
+                    retire(db,lease["id"])
                 Store.update(db, lease, now, state="quarantined", error=reason)
 
     def observe_inventory(self, snapshot):
@@ -296,7 +301,7 @@ class PartitionAuthority:
             if (profile is not None) != (accounting_version is not None):
                 raise Error("host_resources_unaccounted", "mixed accounting requires a separately qualified contract", 409)
             provider, state = split_reservation(reservation, lease)
-            qualified = json.loads(provider["enforcement"]).get("contract") == PROVIDER
+            qualified = json.loads(provider["enforcement"]).get("contract") in {PROVIDER, "partition-trusted-local-pending.v1"}
             context = {"lease":profile["lease"], "binding_state":state, "purpose":"account"} if qualified and profile else None
             if renewal_target is not None:
                 if context is None: raise Error("host_resources_unaccounted", "renewal ownership is unqualified", 409)
@@ -334,7 +339,7 @@ class PartitionAuthority:
             for row in retired:
                 local = Store.lease(db,row["lease_id"])
                 provider, state = split_reservation(row,local)
-                if json.loads(provider["enforcement"]).get("contract") == PROVIDER:
+                if json.loads(provider["enforcement"]).get("contract") in {PROVIDER, "partition-trusted-local-pending.v1"}:
                     scope["retired"].append({"lease":local,"provider_row":provider,"binding_state":state})
         observed = verify(copy.deepcopy(capacity), copy.deepcopy(held), scope)
         if accounting_version is None and observed is not True:
@@ -400,6 +405,8 @@ class PartitionAuthority:
 
     def _offer_rows(self, db, host_account=None, accounting_version=None):
         policy = self._policy(db)
+        from .partition_local_authority import demand_pending
+        if demand_pending(db,self.service.clock()): return []
         agreement = policy["agreement"]
         if not isinstance(agreement, dict): raise Error("partition_terms_unavailable", "partition terms are not authorized", 403)
         capacity = self._capacity(db, accounting_version=accounting_version) if host_account is None else host_account["available"]
