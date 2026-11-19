@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline versioned installation, upgrade/rollback, and owned-file uninstall.
 
+Explicit managed installation bootstraps its independently pinned signature verifier.
 No driver/package downloads, system configuration changes, service starts,
 database removal, or automatic lending. Run installed daemon as host operator.
 """
@@ -19,6 +20,132 @@ import urllib.parse
 import uuid
 import venv
 import zipfile
+
+
+# Independently reviewed cosign-installer 6f9f1778 action.yml, not release.json.
+MANAGED_VERIFIER = Path('/opt/nodus/managed-local/verifier/v3.0.6/cosign-linux-amd64')
+MANAGED_VERIFIER_SHA256 = 'c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74'
+MANAGED_VERIFIER_URL = 'https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64'
+MANAGED_VERIFIER_LIMIT = 256 << 20
+MANAGED_VERIFIER_DOWNLOAD = r'''
+import os, sys, urllib.parse, urllib.request
+class Redirect(urllib.request.HTTPRedirectHandler):
+    max_redirections, max_repeats = 3, 1
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        url = urllib.parse.urlsplit(newurl)
+        if (url.scheme != 'https' or url.hostname not in {'github.com', 'release-assets.githubusercontent.com'}
+                or url.port not in {None, 443} or url.username or url.password or url.fragment):
+            raise RuntimeError('verifier redirect refused')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), Redirect())
+with opener.open(sys.argv[2], timeout=float(sys.argv[4])) as response, os.fdopen(int(sys.argv[1]), 'wb') as out:
+    if response.status != 200:
+        raise RuntimeError('verifier download refused')
+    limit, count = int(sys.argv[3]), 0
+    while True:
+        block = response.read(65536)
+        if not block: break
+        count += len(block)
+        if count > limit: raise RuntimeError('verifier size refused')
+        out.write(block)
+    out.flush(); os.fsync(out.fileno())
+'''
+
+
+def managed_verifier(deadline, *, allow_download=False):
+    import platform
+    import stat
+    if os.geteuid() != 0 or sys.platform != 'linux' or platform.machine() != 'x86_64':
+        raise RuntimeError('managed verifier requires Linux amd64 root')
+    end = min(deadline, time.monotonic() + 30)
+    def remaining():
+        left = end - time.monotonic()
+        if left <= 0:
+            raise RuntimeError('managed verifier deadline')
+        return left
+    def directory(path):
+        for item in (path, *path.parents):
+            st = item.lstat()
+            if st.st_uid != 0 or st.st_gid != 0 or not stat.S_ISDIR(st.st_mode) or st.st_mode & 0o022:
+                raise RuntimeError('managed verifier directory refused')
+    def exact():
+        directory(MANAGED_VERIFIER.parent)
+        fd = os.open(MANAGED_VERIFIER, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            st = os.fstat(fd)
+            if (not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or st.st_nlink != 1
+                    or stat.S_IMODE(st.st_mode) != 0o555 or not 0 < st.st_size <= MANAGED_VERIFIER_LIMIT):
+                raise RuntimeError('managed verifier file refused')
+            digest, count = hashlib.sha256(), 0
+            while True:
+                remaining()
+                block = stream.read(65536)
+                if not block: break
+                count += len(block); digest.update(block)
+                if count > MANAGED_VERIFIER_LIMIT:
+                    raise RuntimeError('managed verifier size refused')
+            after = os.fstat(fd); named = MANAGED_VERIFIER.lstat()
+            if (count != st.st_size or digest.hexdigest() != MANAGED_VERIFIER_SHA256
+                    or (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino)):
+                raise RuntimeError('managed verifier bytes changed')
+        return str(MANAGED_VERIFIER)
+    if MANAGED_VERIFIER.exists() or MANAGED_VERIFIER.is_symlink():
+        return exact()
+    if not allow_download:
+        raise RuntimeError('managed verifier missing; existing host state cannot be changed')
+    # Only the explicit fresh managed install can publish this immutable prerequisite.
+    directory(MANAGED_VERIFIER.parents[2])
+    for path in (MANAGED_VERIFIER.parents[1], MANAGED_VERIFIER.parent):
+        try: path.mkdir(mode=0o755)
+        except FileExistsError: pass
+        directory(path)
+    dfd = os.open(MANAGED_VERIFIER.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = '.download-' + uuid.uuid4().hex
+    fd = None
+    try:
+        fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd)
+        child = subprocess.Popen(['/usr/bin/python3.12', '-I', '-S', '-B', '-c', MANAGED_VERIFIER_DOWNLOAD,
+                                  str(fd), MANAGED_VERIFIER_URL, str(MANAGED_VERIFIER_LIMIT), str(remaining())],
+                                 pass_fds=(fd,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 env={'PATH':'/usr/bin:/bin', 'HOME':'/nonexistent', 'LC_ALL':'C'})
+        try:
+            code = child.wait(timeout=remaining())  # Recompute after process creation.
+        except BaseException:
+            child.kill(); child.wait()
+            raise
+        if code != 0:
+            raise RuntimeError('managed verifier download failed')
+        os.lseek(fd, 0, os.SEEK_SET)
+        digest, count = hashlib.sha256(), 0
+        while True:
+            remaining()
+            block = os.read(fd, 65536)
+            if not block: break
+            count += len(block); digest.update(block)
+            if count > MANAGED_VERIFIER_LIMIT:
+                raise RuntimeError('managed verifier size refused')
+        if count == 0 or digest.hexdigest() != MANAGED_VERIFIER_SHA256:
+            raise RuntimeError('managed verifier digest mismatch')
+        os.fchmod(fd, 0o555); os.fsync(fd)
+        directory(MANAGED_VERIFIER.parent)
+        if not os.path.samestat(os.fstat(dfd), MANAGED_VERIFIER.parent.lstat()):
+            raise RuntimeError('managed verifier directory changed')
+        try:
+            os.link(temporary, MANAGED_VERIFIER.name, src_dir_fd=dfd, dst_dir_fd=dfd, follow_symlinks=False)
+        except FileExistsError:
+            pass  # A concurrent exact publication is checked below; no replacement or retry.
+        os.unlink(temporary, dir_fd=dfd); os.fsync(dfd)
+        return exact()
+    finally:
+        if fd is not None:
+            try:
+                if os.path.samestat(os.fstat(fd), os.stat(temporary, dir_fd=dfd, follow_symlinks=False)):
+                    os.unlink(temporary, dir_fd=dfd); os.fsync(dfd)
+            except FileNotFoundError:
+                pass
+            os.close(fd)
+        os.close(dfd)
 
 
 def digest(path):
@@ -359,10 +486,14 @@ def recover_pending(prefix, manifest):
 
 # Managed installation accepts only the release owner's qualified CPython 3.12 host tuple.
 # This does not generate qualification or change the ordinary wheel installation path.
-def managed_installation(prefix, wheel):
+def managed_installation(prefix, wheel, *, deadline=None, allow_verifier_download=False):
     import stat
+    deadline = time.monotonic() + 120 if deadline is None else deadline
     if os.geteuid() != 0:
         raise RuntimeError("managed installation requires root")
+    if (prefix != Path('/opt/nodus/managed-local/python') or sys.version_info[:2] != (3,12)
+            or Path(sys.executable).resolve() != Path('/usr/bin/python3.12')):
+        raise RuntimeError('unqualified managed Python installation tuple')
     release_path = Path('/opt/nodus/managed-local/release.json')
     def protected(path):
         path = Path(path)
@@ -394,11 +525,10 @@ def managed_installation(prefix, wheel):
         return result
     raw = read(release_path, 256 << 10)
     bundle = read(str(release_path) + '.bundle', 1 << 20)
-    import shutil
-    verifier = shutil.which('cosign')
-    if not verifier:
-        raise RuntimeError('qualified managed release verifier unavailable')
-    verifier = protected(Path(verifier).resolve())
+    verifier = managed_verifier(deadline, allow_download=allow_verifier_download)
+    verification_time = min(30, deadline - time.monotonic())
+    if verification_time <= 0:
+        raise RuntimeError('managed installation verification deadline')
     with tempfile.TemporaryDirectory(prefix='nodus-managed-verify-') as folder:
         signed, signature = Path(folder)/'release.json', Path(folder)/'release.bundle'
         signed.write_bytes(raw); signature.write_bytes(bundle)
@@ -406,7 +536,8 @@ def managed_installation(prefix, wheel):
                         '--certificate-identity-regexp', r'^https://github\.com/nodus-compute/nodus-platform/\.github/workflows/release\.yml@refs/heads/main$',
                         '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com', str(signed)],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=30, check=True)
+                       env={'PATH':'/usr/bin:/bin', 'HOME':folder, 'TMPDIR':folder, 'LC_ALL':'C'},
+                       timeout=verification_time, check=True)
     release = json.loads(raw, object_pairs_hook=unique)
     keys = {'version','policy','files','python_installation','guardian','image_reference','shared','pids','max_claims'}
     if type(release) is not dict or set(release) != keys or type(release['version']) is not int or release['version'] != 2:
@@ -473,7 +604,6 @@ def managed_installation(prefix, wheel):
             else:
                 return path
         raise RuntimeError('managed native alias cycle')
-    deadline = time.monotonic() + 120
     def check(final):
         physical = set()
         for name, row in rows.items():
@@ -627,14 +757,16 @@ def main(argv=None):
         raise RuntimeError("use --managed for this paired installation")
     if args.managed and (args.action not in {"install", "uninstall"} or args.recovery_upgrade):
         raise RuntimeError("managed activation requires install with the qualified wheel")
-    try:
-        args.managed_install = managed_installation(prefix, Path(args.wheel or "").resolve()) if args.managed and args.action == "install" else None
-    except (KeyError, TypeError, AttributeError):
-        raise RuntimeError("invalid qualified managed installation contract") from None
+    deadline = time.monotonic() + 120
     if not args.managed:
         preflight_candidate(args, prefix, state)
     locks = lock_managed_installation(prefix, state) if args.managed else lock_state(state, recovery_upgrade=args.recovery_upgrade)
     try:
+        try:
+            args.managed_install = managed_installation(prefix, Path(args.wheel or "").resolve(), deadline=deadline,
+                allow_verifier_download=not (state.parent.exists() or state.parent.is_symlink())) if args.managed and args.action == "install" else None
+        except (KeyError, TypeError, AttributeError):
+            raise RuntimeError("invalid qualified managed installation contract") from None
         return install_locked(args, prefix, state)
     finally:
         for handle in locks:

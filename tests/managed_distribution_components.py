@@ -224,30 +224,30 @@ def installer(root):
 def signature_seam(module, release_body):
     """Only verify-blob is intercepted, in this isolated test process.
 
-    The real parser/census/refusal code runs unchanged. No verifier executable,
-    signature bundle or production-qualified release leaves this namespace.
+    The real parser/census/refusal code and canonical verifier hash run unchanged.
+    The owner supplies the official pinned executable; no substitute executable,
+    valid signature bundle or production-qualified release leaves this namespace.
     """
-    real_run, real_which = module.subprocess.run, shutil.which
+    real_run = module.subprocess.run
     def verify(argv, **kwargs):
-        require(len(argv) == 9 and argv[0] == PYTHON and argv[1:3] == ["verify-blob", "--bundle"]
+        require(len(argv) == 9 and argv[0] == str(module.MANAGED_VERIFIER) and argv[1:3] == ["verify-blob", "--bundle"]
                 and argv[4:8] == ["--certificate-identity-regexp", r"^https://github\.com/nodus-compute/nodus-platform/\.github/workflows/release\.yml@refs/heads/main$",
                                   "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"]
                 and read(Path(argv[8])) == release_body and read(Path(argv[3])) == b"component-signature-seam\n",
                 "unexpected installer signature boundary")
         return subprocess.CompletedProcess(argv, 0)
     module.subprocess.run = verify
-    shutil.which = lambda name: PYTHON if name == "cosign" else real_which(name)
-    return real_run, real_which
+    return real_run
 
 
 def verify_install(root, wheel):
     module = installer(root); body = read(Path("/opt/nodus/managed-local/release.json"))
-    real_run, real_which = signature_seam(module, body)
+    real_run = signature_seam(module, body)
     try:
         prepared = module.managed_installation(PREFIX, wheel)
         prepared["check"](True)
     finally:
-        module.subprocess.run, shutil.which = real_run, real_which
+        module.subprocess.run = real_run
 
 
 def import_probe():

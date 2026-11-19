@@ -25,6 +25,26 @@ and authority locks. Retained rows/history are not deleted. Upgrade/migration re
 qualification and is not inferred from a clean stop. Managed installation
 starts no daemon and enables no external sharing.
 
+Explicit fresh `install --managed` bootstraps cosign v3.0.6 for Linux amd64 at
+`/opt/nodus/managed-local/verifier/v3.0.6/cosign-linux-amd64`. The reviewed installer
+bakes its official SHA256 independently of the release and bundle it verifies.
+Under the installation lock it downloads once from the fixed HTTPS release URL,
+allows only HTTPS GitHub release redirects, limits bytes to 256 MiB and bounds the
+child to 30 seconds within the original 120-second managed verification deadline.
+It hashes private temporary bytes before executable mode, then publishes without
+replacement. Exact protected 0555 bytes are reused; unsafe or different existing
+files refuse. Existing managed host state permits no missing-verifier bootstrap.
+Ordinary offline installation does not enter this path or download anything.
+
+Both this installer and the paired Go preparation entry use that canonical path
+and baked hash, with the existing fixed main-workflow signer and issuer. Neither
+accepts a PATH verifier, alternate version or identity. Install the paired Python
+package before starting `prepare-local-host`; the older preprepared service
+installer is separate and has not gained this bootstrap. A download or checksum
+match is not a successful signature or host qualification. Publication still
+requires the actual cosign version/ELF dependency receipt and Apache-2.0 license
+and notice custody, plus genuine signed-entry verification.
+
 Publication must first preserve current public main/help, produce the final wheel/sdist/provenance,
 review the minimal paired Go/runtime source export and dependency notices, and qualify the actual
 installed import/native closure using the existing Linux distribution owner. The paired normal host
@@ -45,8 +65,10 @@ recursive ELF dependencies are measured. Extra startup files, ambiguous loader-c
 or a different expected OS/package tuple refuse. A hosted-runner result applies only to byte-identical
 Python/OS/native installations; the same case must measure a different target separately.
 
-The component signature subprocess is an explicit test seam around the unchanged installer
-parser/checker. No fake verifier executable, valid bundle, or signed release is produced. Controlled
+The component signature subprocess is an explicit test seam around the installer
+parser/checker. Its owner must stage the actual independently pinned cosign bytes
+at the canonical path before the case; the production file/hash check remains active.
+No fake verifier executable, valid bundle, or signed release is produced. Controlled
 assembly precedes measurement; `qualification_sha256` names the actual import-closure receipt.
 Only a fully measured, naturally reaped, restored and cleaned case emits the twelve-file PASS set.
 Early failures retain partial owned evidence without inventing a complete receipt. The result always
