@@ -68,12 +68,25 @@ def read(path, limit=64 << 20):
     return body
 
 
-def protected(path, *, private=False):
+def protected(path, *, private=False, stage="component-path"):
     require(path.is_absolute() and str(path) == os.path.normpath(path), "noncanonical component path")
     for item in (path, *path.parents):
         info = item.lstat()
-        require(info.st_uid == 0 and info.st_gid == 0 and not stat.S_ISLNK(info.st_mode)
-                and not info.st_mode & 0o022, "unprotected component path")
+        try:
+            require(info.st_uid == 0 and info.st_gid == 0 and not stat.S_ISLNK(info.st_mode)
+                    and not info.st_mode & 0o022, "unprotected component path")
+        except RuntimeError:
+            detail = {"stage": stage, "requested_path": str(path)[:512],
+                      "requested_path_truncated": len(str(path)) > 512,
+                      "offending_ancestor": str(item)[:512],
+                      "ancestor_path_truncated": len(str(item)) > 512,
+                      "uid": info.st_uid, "gid": info.st_gid,
+                      "mode": stat.S_IMODE(info.st_mode), "file_type": stat.S_IFMT(info.st_mode),
+                      "inode": info.st_ino,
+                      "conditions": {"root_uid": info.st_uid == 0, "root_gid": info.st_gid == 0,
+                                     "not_symlink": not stat.S_ISLNK(info.st_mode),
+                                     "not_group_or_world_writable": not info.st_mode & 0o022}}
+            raise RuntimeError("unprotected component path: " + json.dumps(detail, sort_keys=True)) from None
     if private:
         info = path.lstat()
         require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
@@ -81,7 +94,7 @@ def protected(path, *, private=False):
 
 
 def input_record(path, expected):
-    protected(path, private=True); body = read(path, 16 << 10)
+    protected(path, private=True, stage="component-input"); body = read(path, 16 << 10)
     require(sha(body) == expected, "component input hash")
     def unique(pairs):
         result = {}
@@ -260,11 +273,12 @@ def import_probe():
 def tree_census(roots, commands):
     files, dirs = {}, set()
     for root in roots:
-        protected(root); dirs.add(str(root))
+        stage = "stdlib-census" if root == STDLIB else "site-census"
+        protected(root, stage=stage); dirs.add(str(root))
         for directory, children, leaves in os.walk(root, followlinks=False):
             commands.left()
             for name in children + leaves:
-                file = Path(directory)/name; protected(file)
+                file = Path(directory)/name; protected(file, stage=stage)
                 info = file.lstat()
                 if stat.S_ISDIR(info.st_mode): dirs.add(str(file))
                 else:
@@ -411,7 +425,7 @@ def namespace_measure(root, value, end, parent_ns):
     require(set(imports["sys_path"]) == allowed_path and len(imports["sys_path"]) == len(allowed_path), "component isolated sys.path")
     files, dirs = tree_census((STDLIB, site), commands)
     for name in (destination/"bin/python", destination/"bin/nodus-dc", destination/"pyvenv.cfg", Path(PYTHON), Path("/etc/ld.so.cache")):
-        protected(name); body = read(name); files[str(name)] = {"path": str(name), "sha256": sha(body), "bytes": len(body)}
+        protected(name, stage="interpreter-and-cache"); body = read(name); files[str(name)] = {"path": str(name), "sha256": sha(body), "bytes": len(body)}
     # Python's verbose importer supplies origins for the real -m paths. The
     # companion imports all shipped modules; neither alone is a dynamic-path proof.
     trace_origins = set()
@@ -512,7 +526,7 @@ def measure(root, wheel):
     input_path = Path(os.environ["NODUS_MANAGED_COMPONENT_INPUT"])
     input_sha = os.environ.get("NODUS_MANAGED_COMPONENT_INPUT_SHA256", "")
     value = input_record(input_path, input_sha)
-    out = Path(value["output_directory"]); protected(out.parent)
+    out = Path(value["output_directory"]); protected(out.parent, stage="component-output-parent")
     out.mkdir(mode=0o700); work = out/"work"; work.mkdir(mode=0o700)
     components = out/"components"; components.mkdir(mode=0o700)
     commands = Commands(work/"parent", end + 10_000_000_000)
