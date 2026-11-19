@@ -8,9 +8,11 @@ and retains private partition authority and durable ownership fences. Connected
 partition execution remains unavailable. See the [dev16 change record](release-dev16.md)
 for the scoped A100 configuration/restoration result and remaining limits.
 
-The source tree now builds the separate [dev17 candidate](release-dev17.md).
-The README continues to link the immutable dev16 downloads until new artifacts
-are published. Source-build and published-wheel identities are not interchangeable.
+The [dev17 prerelease](release-dev17.md) uses the exact retained wheel tested on an
+A100-SXM4-40GB with driver 580.105.08. Its standalone two-partition CUDA lifecycle
+passed; connected execution and framework serving remain separate, unqualified
+paths. The release manifest identifies the source of each artifact; later
+documentation-only changes do not change the tested wheel.
 
 ## Current implementation
 
@@ -19,8 +21,8 @@ are published. Source-build and published-wheel identities are not interchangeab
 | Observe | NVIDIA GPU inventory and utilization | No allocation ownership | Parser/HTTP CPU tests |
 | `exclusive_gpu` | One or more whole GPUs | Exclusive scheduling within this authority; Docker device selection | GPU qualification pending |
 | `exclusive_host` | Entire host GPU inventory | Whole-host allocation lock | GPU/host qualification pending |
-| `hardware_partition` | Existing whole MIG instances | NVIDIA MIG hardware boundary; driver/platform limits apply | GPU qualification pending |
-| `gpu_configuration` | One physical GPU maintenance lease | Exact-device MIG create/destroy plan; no automatic reset | GPU qualification pending |
+| `hardware_partition` | Existing whole MIG instances | NVIDIA MIG hardware boundary; driver/platform limits apply | Dev17 A100 standalone lifecycle passed; see exact scope above |
+| `gpu_configuration` | One physical GPU maintenance lease | Exact-device MIG create/destroy plan; no automatic reset | Dev17 A100 create/restore passed; no reset or reboot qualification |
 | `trusted_mps` | One whole GPU, 2–16 cooperating clients | Shared IPC/PID namespaces; cooperative compute/memory settings, **no hostile-tenant isolation** | Explicit opt-in; GPU qualification pending |
 | Native handoff intent | Sticky guard on an unused local whole-host lease | Refuses connected/enrolled/history-bearing hosts; expiry quarantines, never auto-returns | No SSH provisioning or supported native return adapter |
 | Connected | Whole-host external lease only | Shared authority, explicit finite consent, monotonic generation, verified cleanup | Cross-component/hardware qualification pending |
@@ -64,18 +66,18 @@ After starting or restarting the service, use the [read-only readiness checks](o
 
 ## Allocate and launch
 
-The wheel does not include `examples/`. If you followed the README's dev16 wheel
-installation, download the [matching source archive](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/nodus_datacenter-0.1.0.dev16.tar.gz)
+The wheel does not include `examples/`. If you followed the README's dev17 wheel
+installation, download the [matching source archive](https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/nodus_datacenter-0.1.0.dev17.tar.gz)
 into the same directory as its verified `SHA256SUMS`. Verify before unpacking,
 then run the examples from the unpacked source directory:
 
 ```sh
 curl --fail --location --show-error \
-  --output nodus_datacenter-0.1.0.dev16.tar.gz \
-  https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev16/nodus_datacenter-0.1.0.dev16.tar.gz &&
+  --output nodus_datacenter-0.1.0.dev17.tar.gz \
+  https://github.com/nodus-compute/nodus-dc/releases/download/v0.1.0-dev17/nodus_datacenter-0.1.0.dev17.tar.gz &&
 sha256sum --check --ignore-missing SHA256SUMS &&
-tar -xzf nodus_datacenter-0.1.0.dev16.tar.gz &&
-cd nodus_datacenter-0.1.0.dev16
+tar -xzf nodus_datacenter-0.1.0.dev17.tar.gz &&
+cd nodus_datacenter-0.1.0.dev17
 ```
 
 For the dev17 source build above, use that source directory instead. Keep examples
