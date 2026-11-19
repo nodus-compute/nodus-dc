@@ -8,8 +8,342 @@ concurrency:
   group: manual-native-service-control
   cancel-in-progress: false
 jobs:
+  managed-python-components:
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/managed-python-component-git-native-20261119'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Establish one original clock and exclusive root fixture
+        id: owned
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_REF="$GITHUB_REF" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" GITHUB_ENV="$GITHUB_ENV" GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+            ML_RUNNER_UID="$(id -u)" ML_RUNNER_GID="$(id -g)" /usr/bin/python3 -B - <<'PYINIT'
+          import json,os,pathlib,stat,time
+          t0=time.monotonic();epoch=time.time()
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0
+          runner_uid=int(os.environ['ML_RUNNER_UID']);runner_gid=int(os.environ['ML_RUNNER_GID'])
+          assert 0<runner_uid<2**31 and 0<runner_gid<2**31
+          run=os.environ['GITHUB_RUN_ID'];attempt=os.environ['GITHUB_RUN_ATTEMPT']
+          assert run.isdigit() and attempt=='1'
+          assert os.environ['GITHUB_EVENT_NAME']=='workflow_dispatch'
+          assert os.environ['GITHUB_REF']=='refs/heads/codex/managed-python-component-git-native-20261119'
+          assert os.environ['GITHUB_REPOSITORY']=='nodus-compute/nodus-dc'
+          event=json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          assert event.get('inputs') in (None,{}) and event['repository']['private'] is False
+          base=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          out=base/f'managed-python-component-evidence-{run}-{attempt}';fixture=pathlib.Path('/root')/f'managed-python-component-fixture-{run}-{attempt}'
+          assert not out.exists() and not out.is_symlink() and not fixture.exists() and not fixture.is_symlink()
+          out.mkdir(mode=0o700);fixture.mkdir(mode=0o700);(fixture/'tmp').mkdir(mode=0o700)
+          component=pathlib.Path('/run/nodus-managed-components-hosted-30cc-p1')
+          assert not component.exists() and not component.is_symlink()
+          st=fixture.lstat();home=pathlib.Path.home().resolve();rows={};ancestry=[]
+          assert home==pathlib.Path('/root') and not home.is_symlink()
+          for path in [fixture/'tmp',fixture,*fixture.parents]:
+              info=path.lstat()
+              assert stat.S_ISDIR(info.st_mode) and info.st_uid==info.st_gid==0 and not info.st_mode&0o022
+              ancestry.append({'path':str(path),'device':info.st_dev,'inode':info.st_ino,'uid':info.st_uid,'gid':info.st_gid,'mode':stat.S_IMODE(info.st_mode)})
+          output=out.lstat()
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  assert count<2047,'home census bound'
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          owner={'run_id':run,'attempt':attempt,'fixture':str(fixture),'fixture_identity':[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)],
+                 'component_output':str(component),'mounts_before':pathlib.Path('/proc/self/mountinfo').read_text(),'home':str(home),'home_before':rows,'root_ancestry':ancestry,'owner_uid':os.geteuid(),'owner_gid':os.getegid(),
+                 'runner_uid':runner_uid,'runner_gid':runner_gid,'output_identity':[output.st_dev,output.st_ino,output.st_uid,stat.S_IMODE(output.st_mode)],'started_epoch':epoch,'started_monotonic':t0,'work_end':t0+360,'closure_end':t0+420,'job_end':t0+480}
+          (out/'ownership.json').write_text(json.dumps(owner,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_ENV'],'a') as env:env.write(f'OUT={out}\nFIXTURE={fixture}\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('owned=true\n')
+          PYINIT
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Bind exact root-owned product source and protected hosted input
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYSOURCE'
+          import hashlib,json,os,pathlib,platform,shlex,stat,subprocess,sys,tarfile,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());root=pathlib.Path.cwd();fixture=pathlib.Path(owner['fixture'])
+          product='30cc258db0949a655b21543d87f1550de0a23c7a';tree='16933e272040028834c2a00fb2ef485c600afcf7'
+          workflow='.github/workflows/manual-native-systemd.yml'
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0 and pathlib.Path.home()==pathlib.Path('/root')
+          def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+          def git(*args,cwd=root):return subprocess.check_output(['/usr/bin/git','-c','safe.directory='+str(cwd),*args],cwd=cwd,timeout=min(15,max(.01,owner['work_end']-time.monotonic()-305)))
+          assert git('rev-parse','HEAD').decode().strip()==os.environ['GITHUB_SHA']
+          assert git('rev-parse','HEAD^').decode().strip()==product
+          assert git('rev-parse',product+'^{tree}').decode().strip()==tree
+          assert git('diff','--name-only',product,'HEAD').decode().splitlines()==[workflow]
+          before=git('status','--porcelain=v1','--untracked-files=all');(out/'source-before.txt').write_bytes(before);assert not before
+          (out/'workflow.yml').write_bytes((root/workflow).read_bytes())
+          # Real root ownership avoids changing global Git configuration or bypassing the case's Git reader.
+          source=fixture/'source';source.mkdir(mode=0o700)
+          # Local file transport clears inherited -c config before starting upload-pack.
+          git_dir=pathlib.Path(git('rev-parse','--absolute-git-dir').decode().strip())
+          assert git_dir==root/'.git' and git_dir.is_dir() and not git_dir.is_symlink()
+          upload_pack=shlex.join(['/usr/bin/git','-c','safe.directory='+str(root),'-c','safe.directory='+str(git_dir),'upload-pack'])
+          git('init',str(source));git('fetch','--depth=1','--no-tags','--upload-pack='+upload_pack,'file://'+str(root),product,cwd=source)
+          git('checkout','--detach',product,cwd=source)
+          assert git('rev-parse','HEAD',cwd=source).decode().strip()==product
+          assert not git('status','--porcelain=v1','--untracked-files=all',cwd=source)
+          rows=[]
+          for entry in git('ls-tree','-rz',product,cwd=source).decode().split('\0'):
+              if not entry:continue
+              metadata,name=entry.split('\t',1);mode,kind,obj=metadata.split()
+              assert mode in ('100644','100755') and kind=='blob' and not pathlib.PurePosixPath(name).is_absolute() and '..' not in pathlib.PurePosixPath(name).parts
+              p=source/name;s=p.lstat();b=p.read_bytes()
+              assert stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0 and not s.st_mode&0o022 and bool(s.st_mode&0o111)==(mode=='100755')
+              assert hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()==obj
+              rows.append({'path':name,'mode':mode,'git_object':obj,'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b)})
+          rows.sort(key=lambda r:r['path']);assert len(rows)==215
+          manifest={'schema':'managed-python-source-manifest.v1','head':product,'tree':tree,'files':rows,'total_bytes':sum(r['bytes'] for r in rows)}
+          body=canonical(manifest);assert hashlib.sha256(body).hexdigest()=='a095b0afdc93247a9346cc9d0a5696c9b642221feb3f2726e403d4898e72ddb8'
+          (out/'source-manifest.json').write_bytes(body)
+          archive=git('archive','--format=tar',product,cwd=source)
+          assert hashlib.sha256(archive).hexdigest()=='c4dbf54e04d99a248866c109e20468e61aa58a762e14c6faf130d4633b5eddd4'
+          (out/'product-source.tar').write_bytes(archive)
+          value={'schema':'managed-python-component-input.v1','platform_head':'dedc65078f0e747b329301cb14bb7e795f879bb5','python_head':product,'python_tree':tree,'source_manifest_sha256':hashlib.sha256(body).hexdigest(),'target_kind':'hosted-runner','target_identity':'github-actions:ubuntu-24.04:x86_64:managed-python-components-hosted-p1','expected_os_release_sha256':None,'expected_package_census_sha256':None,'output_directory':owner['component_output']}
+          input_body=canonical(value);fd=os.open(fixture/'component-input.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,'wb') as f:f.write(input_body)
+          (out/'component-input.json').write_bytes(input_body);(out/'component-input.sha256').write_text(hashlib.sha256(input_body).hexdigest()+'\n')
+          case=['/usr/bin/python3.12','-B','-m','unittest','-v','tests.test_distribution.DistributionTests.test_reproducible_build_offline_install_and_owned_uninstall']
+          # Outer PID containment prevents detached nested probe sessions surviving an outer case failure.
+          argv=['/usr/bin/unshare','--mount','--pid','--fork','--mount-proc','--propagation','private','--kill-child=KILL',*case]
+          (out/'argv.json').write_text(json.dumps(argv)+'\n');(out/'case-argv.json').write_text(json.dumps(case)+'\n')
+          (out/'native-identity.json').write_text(json.dumps({'python':sys.version,'executable':sys.executable,'kernel':platform.uname()._asdict(),'uid':os.getuid(),'euid':os.geteuid(),'gid':os.getgid(),'egid':os.getegid(),'home':str(pathlib.Path.home()),'namespace_wrapper':argv[:8],'source_owner':source.stat().st_uid},sort_keys=True)+'\n')
+          assert sys.platform=='linux' and platform.machine()=='x86_64' and pathlib.Path('/usr/bin/python3.12').is_file()
+          assert time.monotonic()<owner['work_end']-305,'original work window exhausted before invocation'
+          PYSOURCE
+      - name: Run the existing distribution case once within original deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYWORK'
+          import json,os,pathlib,signal,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());started=time.monotonic()
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0 and pathlib.Path.home()==pathlib.Path('/root')
+          p=None;rc=None;natural=False;group_absent=False;forced=False
+          try:
+              remaining=owner['work_end']-time.monotonic()
+              if remaining<305:raise RuntimeError('original work window exhausted')
+              argv=json.loads((out/'argv.json').read_text())
+              env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','HOME':'/root'}
+              env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(pathlib.Path(owner['fixture'])/'source/src'),TMPDIR=str(pathlib.Path(owner['fixture'])/'tmp'))
+              env.update(NODUS_MANAGED_COMPONENT_INPUT=str(pathlib.Path(owner['fixture'])/'component-input.json'),NODUS_MANAGED_COMPONENT_INPUT_SHA256=(out/'component-input.sha256').read_text().strip())
+              with (out/'work.stdout').open('xb') as stdout,(out/'work.stderr').open('xb') as stderr:
+                  p=subprocess.Popen(argv,cwd=pathlib.Path(owner['fixture'])/'source',stdout=stdout,stderr=stderr,env=env,start_new_session=True)
+                  (out/'process.json').write_text(json.dumps({'pid':p.pid,'pgid':p.pid,'start_epoch':time.time(),'start_monotonic':time.monotonic(),'owner_uid':os.geteuid(),'owner_gid':os.getegid()})+'\n')
+                  try:rc=p.wait(timeout=min(300,owner['work_end']-time.monotonic()-4));natural=True
+                  except subprocess.TimeoutExpired:pass
+          finally:
+              if p is not None:
+                  try:
+                      os.killpg(p.pid,0);forced=True;os.killpg(p.pid,signal.SIGTERM)
+                      until=min(time.monotonic()+2,owner['work_end']-2)
+                      while time.monotonic()<until:
+                          try:os.killpg(p.pid,0)
+                          except ProcessLookupError:break
+                          time.sleep(.05)
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                  except ProcessLookupError:pass
+                  try:p.wait(timeout=max(.01,min(2,owner['work_end']-time.monotonic())))
+                  except subprocess.TimeoutExpired:pass
+                  try:os.killpg(p.pid,0)
+                  except ProcessLookupError:group_absent=True
+              (out/'process-closure.json').write_text(json.dumps({'natural_exit':natural,'returncode':rc,'group_absent':group_absent,'forced_group_stop':forced,
+                  'creating_process_reaped':p is not None and p.poll() is not None,'elapsed_seconds':time.monotonic()-started,'finished_monotonic':time.monotonic()})+'\n')
+          if not(natural and rc==0 and group_absent and not forced):raise SystemExit(1)
+          PYWORK
+      - name: Preserve fixed outputs and verify actual source and namespace closure
+        if: always() && steps.owned.outputs.owned == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYCLOSE'
+          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());errors=[]
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0
+          fixed=('receipt.json','python-installation.json','import-closure.json','package.whl','source-manifest.json','census.json','refusals.json','closure.json','raw/console.json','raw/serve.json','raw/status.json','raw/native.json')
+          def record(n,v):(out/n).write_text(json.dumps(v,sort_keys=True)+'\n')
+          def require(v,label):
+              if not v:errors.append(label)
+          def load(p,limit=4<<20):
+              fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+              try:
+                  st=os.fstat(fd);assert stat.S_ISREG(st.st_mode) and st.st_nlink==1 and st.st_uid==st.st_gid==0 and st.st_size<=limit
+                  b=os.read(fd,limit+1);assert len(b)==st.st_size;return b
+              finally:os.close(fd)
+          process=json.loads((out/'process.json').read_text()) if (out/'process.json').exists() else None
+          absent=process is None
+          if process:
+              try:os.killpg(process['pgid'],0)
+              except ProcessLookupError:absent=True
+          require(absent,'owned case group remains')
+          mounts_same=pathlib.Path('/proc/self/mountinfo').read_text()==owner['mounts_before']
+          require(mounts_same,'host mount census drift')
+          fixture=pathlib.Path(owner['fixture']);source=fixture/'source';component=pathlib.Path(owner['component_output'])
+          source_ok=False
+          if (source/'.git').is_dir():
+              q=subprocess.run(['/usr/bin/git','-C',str(source),'status','--porcelain=v1','--untracked-files=all'],capture_output=True,timeout=max(.01,min(10,owner['closure_end']-time.monotonic())))
+              (out/'source-after.txt').write_bytes(q.stdout);(out/'source-after.stderr').write_bytes(q.stderr)
+              source_ok=q.returncode==0 and not q.stdout and not q.stderr
+          require(source_ok,'exact product source status absent or changed')
+          current=subprocess.run(['/usr/bin/git','-c','safe.directory='+str(pathlib.Path.cwd()),'status','--porcelain=v1','--untracked-files=all'],capture_output=True,timeout=max(.01,min(10,owner['closure_end']-time.monotonic())))
+          (out/'workflow-after.txt').write_bytes(current.stdout);require(current.returncode==0 and not current.stdout and not current.stderr,'workflow source changed')
+          exported=[];component_identity=None;component_removed=not(component.exists() or component.is_symlink());component_safe=False
+          if component.exists() or component.is_symlink():
+              cs=component.lstat();component_identity=[cs.st_dev,cs.st_ino,cs.st_uid,stat.S_IMODE(cs.st_mode)]
+              component_safe=component==pathlib.Path('/run/nodus-managed-components-hosted-30cc-p1') and stat.S_ISDIR(cs.st_mode) and cs.st_uid==cs.st_gid==0 and stat.S_IMODE(cs.st_mode)==0o700
+              require(component_safe,'component output identity')
+              if component_safe and absent and mounts_same:
+                  try:
+                      total=0
+                      for name in fixed:
+                          p=component/'components'/name
+                          if not p.exists() and not p.is_symlink():continue
+                          for parent in [p.parent,component/'components']:
+                              ps=parent.lstat();assert stat.S_ISDIR(ps.st_mode) and ps.st_uid==ps.st_gid==0 and not ps.st_mode&0o022
+                          b=load(p);total+=len(b);assert total<=16<<20
+                          dst=out/'components'/name;dst.parent.mkdir(parents=True,exist_ok=True,mode=0o700);dst.write_bytes(b)
+                          exported.append({'path':'components/'+name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+                      # Only finite command outputs and process records are retained on failure; observe-state and tokens are excluded.
+                      diagnostic_bytes=0;diagnostics=[]
+                      for side in ('parent','child'):
+                          directory=component/'work'/side
+                          if not directory.is_dir() or directory.is_symlink():continue
+                          ds=directory.lstat();assert ds.st_uid==ds.st_gid==0 and not ds.st_mode&0o022
+                          names=sorted(directory.iterdir());assert len(names)<=258
+                          for p in names:
+                              if p.name!='children.json' and not re.fullmatch(r'command-(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])\.(?:out|err)',p.name):continue
+                              b=load(p);diagnostic_bytes+=len(b);assert diagnostic_bytes<=16<<20
+                              name=side+'-'+p.name;dst=out/'diagnostics'/name;dst.parent.mkdir(exist_ok=True,mode=0o700);dst.write_bytes(b)
+                              diagnostics.append({'path':'diagnostics/'+name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+                      record('partial-export.json',{'components':exported,'diagnostics':diagnostics,'token_or_worktree_exported':False})
+                  except (AssertionError,OSError,ValueError) as exc:
+                      errors.append("bounded export refused: "+type(exc).__name__)
+                  now=component.lstat();assert [now.st_dev,now.st_ino,now.st_uid,stat.S_IMODE(now.st_mode)]==component_identity
+                  assert shutil.rmtree.avoids_symlink_attacks
+                  shutil.rmtree(component);component_removed=not component.exists() and not component.is_symlink()
+          require(component_removed,'component scratch remains')
+          rows={};home=pathlib.Path(owner['home']);census_ok=True
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  if count>=2047:census_ok=False;break
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          record('home-after.json',{'complete':census_ok,'rows':rows});require(census_ok and rows==owner['home_before'],'home prefix identity drift')
+          expected=pathlib.Path('/root')/f"managed-python-component-fixture-{owner['run_id']}-{owner['attempt']}"
+          st=fixture.lstat();identity=[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)]
+          fixture_ok=fixture==expected and fixture==pathlib.Path(os.environ['FIXTURE']) and identity==owner['fixture_identity'] and stat.S_ISDIR(st.st_mode)
+          require(fixture_ok,'fixture inode ownership')
+          removed=False
+          if fixture_ok and absent and mounts_same:
+              assert shutil.rmtree.avoids_symlink_attacks
+              shutil.rmtree(fixture);removed=not fixture.exists() and not fixture.is_symlink()
+          require(removed,'fixture not removed')
+          record('fixture-closure.json',{'group_absent':absent,'host_mounts_unchanged':mounts_same,'fixture_identity':identity,'fixture_removed':removed,'component_identity':component_identity,'component_output_removed':component_removed,'home_matches_before':census_ok and rows==owner['home_before'],'errors':list(errors)})
+          raw=(out/'work.stderr').read_bytes() if (out/'work.stderr').exists() else b'';require(len(raw)<=4<<20,'case log bound');log=raw.decode('utf-8',errors='strict')
+          case='tests.test_distribution.DistributionTests.test_reproducible_build_offline_install_and_owned_uninstall'
+          cls,method=case.rsplit('.',1);pattern=r'^'+re.escape(method)+r' \('+re.escape(cls)+r'(?:\.'+re.escape(method)+r')?\).* \.\.\. ok$'
+          require(len(re.findall(r'^(test_\w+) \(([^)]+)\)',log,re.M))==1 and len(re.findall(pattern,log,re.M))==1,'one exact case result')
+          require(len(re.findall(r'^Ran 1 test in [0-9.]+s$',log,re.M))==1 and log.rstrip().endswith('\nOK'),'unittest summary')
+          require(not re.search(r'^(?:FAIL|ERROR|FAILED|OK \(|UNEXPECTED SUCCESS)|\.\.\. (?:skipped|expected failure|FAIL|ERROR|unexpected success)',log,re.M),'negative or skipped case')
+          pc=json.loads((out/'process-closure.json').read_text()) if (out/'process-closure.json').exists() else {}
+          require(pc.get('natural_exit') is True and pc.get('returncode')==0 and pc.get('group_absent') is True and pc.get('forced_group_stop') is False and pc.get('creating_process_reaped') is True,'natural process closure')
+          require(pc.get('finished_monotonic',float('inf'))<=owner['work_end'],'original work deadline')
+          require(sorted(r['path'] for r in exported)==sorted('components/'+n for n in fixed),'exact twelve components')
+          if (out/'components/receipt.json').is_file():
+              receipt=json.loads((out/'components/receipt.json').read_bytes());require(receipt.get('outcome')=='PASS' and receipt.get('schema')=='managed-python-components.v1','component measured PASS')
+              require(receipt.get('entry_signature_verified') is False and receipt.get('host_lifecycle_qualified') is False and receipt.get('production_ready') is False,'component-only scope')
+              require(receipt.get('python_head')=='30cc258db0949a655b21543d87f1550de0a23c7a' and receipt.get('platform_head')=='dedc65078f0e747b329301cb14bb7e795f879bb5','component source provenance')
+              require(receipt.get('target_tuple',{}).get('kind')=='hosted-runner','hosted tuple scope')
+              for key in ('wheel','python_installation','import_closure','census','refusals','process_closure'):
+                  r=receipt.get(key,{});p=out/r.get('path','invalid');require(r.get('path') in ['components/'+n for n in fixed] and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==r.get('sha256'),'component '+key+' join')
+              c=json.loads((out/'components/closure.json').read_bytes());require(all(c.get(k) is True for k in ('group_absent','owned_mounts_absent','authority_absent','source_clean')) and c.get('namespace_exit_returncode')==0,'component lifecycle closure')
+          else:require(False,'component receipt absent')
+          require(time.monotonic()<owner['closure_end'],'original closure deadline')
+          record('qualification.json',{'schema':'managed-python-hosted-native-result.v1','product_head':'30cc258db0949a655b21543d87f1550de0a23c7a','workflow_head':os.environ['GITHUB_SHA'],'run_id':owner['run_id'],'run_attempt':owner['attempt'],'selected_cases':[case],'passed':not errors,'errors':errors,'entry_signature_verified':False,'host_lifecycle_qualified':False,'production_ready':False,'scope':'Actual hosted tuple only; not A100 target equality, managed provider, signature or host lifecycle proof'})
+          if errors:raise SystemExit('; '.join(errors))
+          PYCLOSE
+      - name: Hand back only bounded fixed evidence for upload
+        if: always() && steps.owned.outputs.owned == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYHANDBACK'
+          import hashlib,json,os,pathlib,re,stat,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text())
+          assert os.geteuid()==os.getegid()==0 and time.monotonic()<owner['closure_end']
+          expected=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()/f"managed-python-component-evidence-{owner['run_id']}-{owner['attempt']}"
+          assert out==expected and owner['run_id']==os.environ['GITHUB_RUN_ID'] and owner['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          flat={'ownership.json','workflow.yml','source-before.txt','source-after.txt','source-after.stderr','workflow-after.txt','product-source.tar','source-manifest.json','component-input.json','component-input.sha256','argv.json','case-argv.json','native-identity.json','work.stdout','work.stderr','process.json','process-closure.json','partial-export.json','home-after.json','fixture-closure.json','qualification.json'}
+          fixed={'receipt.json','python-installation.json','import-closure.json','package.whl','source-manifest.json','census.json','refusals.json','closure.json','raw/console.json','raw/serve.json','raw/status.json','raw/native.json'}
+          fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);dirs={'':fd};rows=[];total=0
+          try:
+              st=os.fstat(fd);identity=[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)];assert identity==owner['output_identity'] and st.st_gid==0
+              for name in ('components','components/raw','diagnostics'):
+                  parent,_,leaf=name.rpartition('/')
+                  if parent not in dirs or leaf not in os.listdir(dirs[parent]):continue
+                  item=os.open(leaf,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=dirs[parent]);info=os.fstat(item)
+                  assert info.st_uid==info.st_gid==0 and not info.st_mode&0o022;dirs[name]=item
+              for directory,item in dirs.items():
+                  names=sorted(os.listdir(item));assert len(names)<=258
+                  for name in names:
+                      rel=directory+'/'+name if directory else name
+                      if rel in dirs:continue
+                      assert (directory=='' and name in flat) or (directory.startswith('components') and rel.removeprefix('components/') in fixed) or (directory=='diagnostics' and re.fullmatch(r'(?:parent|child)-(?:children\.json|command-(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])\.(?:out|err))',name))
+                      f=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=item)
+                      try:
+                          info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==info.st_gid==0 and info.st_size<=8<<20
+                          total+=info.st_size;assert total<=40<<20
+                          rows.append({'name':rel,'bytes':info.st_size,'device':info.st_dev,'inode':info.st_ino})
+                      finally:os.close(f)
+              for row in rows:
+                  parent,_,leaf=row['name'].rpartition('/');f=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=dirs[parent])
+                  try:
+                      info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==info.st_gid==0 and (info.st_dev,info.st_ino,info.st_size)==(row['device'],row['inode'],row['bytes'])
+                      os.fchmod(f,0o600);os.fchown(f,owner['runner_uid'],owner['runner_gid'])
+                  finally:os.close(f)
+              for name,item in reversed(list(dirs.items())):
+                  os.fchmod(item,0o700);os.fchown(item,owner['runner_uid'],owner['runner_gid'])
+              for row in rows:
+                  parent,_,leaf=row['name'].rpartition('/');final=os.stat(leaf,dir_fd=dirs[parent],follow_symlinks=False)
+                  assert (final.st_dev,final.st_ino,final.st_size,final.st_uid,final.st_gid,stat.S_IMODE(final.st_mode))==(row['device'],row['inode'],row['bytes'],owner['runner_uid'],owner['runner_gid'],0o600)
+              def output_file(name):
+                  item=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd);os.fchown(item,owner['runner_uid'],owner['runner_gid']);return os.fdopen(item,'w')
+              with output_file('handback.json') as stream:json.dump({'passed':True,'source_uid':0,'runner_uid':owner['runner_uid'],'runner_gid':owner['runner_gid'],'files':rows,'bytes':total,'directory_identity':identity,'recursive_chown':False,'fixed_directory_allowlist':list(dirs)},stream,sort_keys=True);stream.write('\n')
+              with output_file('SHA256SUMS') as sums:
+                  for name in sorted([r['name'] for r in rows]+['handback.json']):sums.write(hashlib.sha256((out/name).read_bytes()).hexdigest()+'  '+name+'\n')
+          finally:
+              for item in reversed(list(dirs.values())):os.close(item)
+          PYHANDBACK
+      - name: Retain bounded positive or negative evidence
+        if: always() && steps.owned.outputs.owned == 'true'
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-python-components-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.OUT }}/
+          if-no-files-found: error
+          retention-days: 7
   service-control:
-    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.ref != 'refs/heads/codex/managed-python-component-git-native-20261119'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
