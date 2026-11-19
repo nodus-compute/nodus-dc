@@ -13,6 +13,24 @@ from tests.test_authority import Backend, Clock
 
 
 class CliTests(unittest.TestCase):
+    def test_preparation_refuses_bridge_or_expired_setup_before_opening_state(self):
+        for extra in (["--bridge-token-file", "must-not-be-read"], ["--prepare-until", "99"]):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as folder:
+                state = Path(folder) / "must-not-be-created"
+                stderr = io.StringIO()
+                with patch("nodus_dc.cli.os.geteuid", return_value=0), \
+                     patch("nodus_dc.cli.time.time", return_value=100), \
+                     patch("nodus_dc.cli.Store", side_effect=AssertionError("preparation opened a Store")), \
+                     patch("nodus_dc.cli.NvidiaDockerBackend", side_effect=AssertionError("preparation opened a backend")), \
+                     patch("nodus_dc.cli.token_file", side_effect=AssertionError("preparation read a credential")), \
+                     contextlib.redirect_stderr(stderr):
+                    code = main(["--state-dir", str(state), "--allocation-authority", "standalone", "serve",
+                                 "--prepare-local-template", "/protected/template.json",
+                                 "--prepare-local-sha256", "1" * 64, "--prepare-until", "200", *extra])
+                self.assertEqual(code, 1)
+                self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "local_preparation_unavailable")
+                self.assertFalse(state.exists())
+
     def test_managed_cli_uses_existing_private_owner_without_opening_another_store(self):
         with tempfile.TemporaryDirectory() as folder:
             state=Path(folder)/"must-not-be-created"

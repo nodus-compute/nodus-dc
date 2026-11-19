@@ -1,11 +1,42 @@
 # Private Linux provider contract
 
-This is unregistered source for the experimental trusted-host profile. It does
-not create a host envelope or establish host confidentiality. No installer,
-CLI or connection flow constructs it. The full task M limit is unchanged; the same
+This is source for the experimental trusted-host profile. It does
+not create a host envelope or establish host confidentiality. No connection flow
+constructs it. The full task M limit is unchanged; the same
 finite profile reserves A=M+H+O once, with S as total customer data and Internal
 charged within H. Numerical sizing and the complete Agent path need their native
 owning proof.
+
+The internal `serve --prepare-local-template PATH --prepare-local-sha256 SHA
+--prepare-until ABS_UNIX_SECONDS` seam accepts a protected private request from
+the paired host owner after that entry verifies the installed release-pair signature.
+The request pins the release-owned policy and raw CDI, names one physical GPU,
+and supplies the observed finite host budget and exact runtime paths. It cannot
+supply a device binding, an authority incarnation or a qualification boolean.
+It requires root standalone allocation, refuses bridge/MPS
+and existing-provider options, and holds the existing daemon lock before opening
+fresh authority state. The same real Service initializes its durable incarnation,
+reserves one parent maintenance lease, observes the current kernel/driver/MIG
+identities, matches the release's exact model/profile/memory/driver tuple, and
+reduces the CDI to those compute nodes and pinned hook/library artifacts. It writes
+the existing `qualification.json`, `provider-config.json` and narrowed `devices.json`
+shapes, adopts and releases the parent through ordinary ownership operations,
+then checks the complete host account before opening its local listener. It does not
+create a runtime or cgroup, reset MIG, or turn inventory into qualification. The
+paired preparation entry must supply the reviewed release/profile admission and
+actual current device/artifact evidence; an operator-authored template is not the
+supported preparation interface. No qualified release manifest is supplied by
+this source change.
+
+Setup accepts an original absolute deadline at most 300 seconds away and rechecks
+both wall and elapsed time. The host owner must enforce that same deadline across
+the whole child, including blocking locks, SQLite and device commands. Readiness
+reports only observed provider pins and existing listener metadata, never token
+bytes. Errors retain the database, independent fence, physical authority binding
+and any held lease; they do not reset or delete uncertain ownership. A later normal
+serve can reopen the same protected provider/database. Reuse after clean stop
+additionally requires the original boot, allocation/FIFO identities and complete
+released-owner history; this initialization seam does not rebind stale state.
 
 `LinuxPartitionProvider(config_path, config_sha256, clock=...)` consumes an exact
 root-owned regular JSON file with protected ancestry. Its strict fields are:

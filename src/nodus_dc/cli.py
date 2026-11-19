@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import hmac
 import json
+import math
 import os
 import sys
 import threading
@@ -100,6 +101,9 @@ def parser():
     server.add_argument("--local-socket", default="/run/nodus-dc/local.sock")
     server.add_argument("--partition-provider-config",help="existing protected prepared-host provider configuration")
     server.add_argument("--partition-provider-sha256",help="exact SHA256 of that protected configuration")
+    server.add_argument("--prepare-local-template", help="initialize fresh local-only authority from an observed protected host template")
+    server.add_argument("--prepare-local-sha256", help="exact template SHA256; never a qualification override")
+    server.add_argument("--prepare-until", type=float, help="original absolute setup deadline, at most 300 seconds away")
     return p
 
 
@@ -133,6 +137,8 @@ def connection_worker(server, connection):
 def main(argv=None):
     args = parser().parse_args(argv)
     state = Path(args.state_dir).expanduser().resolve()
+    prepared_daemon = None
+    prepare_end = None
     try:
         if args.command == "managed":
             from .partition_local_cli import run
@@ -144,13 +150,42 @@ def main(argv=None):
             result = inspect_daemon(port=args.port, token_path=args.local_token_file or state / "local.token")
             print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
             return 0 if result["ok"] else 1
+        preparing = args.command == "serve" and any((args.prepare_local_template is not None,
+                    args.prepare_local_sha256 is not None, args.prepare_until is not None))
+        if preparing:
+            # Reject incompatible modes before reading credentials, opening a Store or creating a lock.
+            now = time.time()
+            if (not args.prepare_local_template or not args.prepare_local_sha256
+                    or args.prepare_until is None or not math.isfinite(args.prepare_until)
+                    or not now < args.prepare_until <= now + 300
+                    or args.allocation_authority != "standalone" or args.enable_trusted_mps
+                    or args.bridge_token_file is not None or args.bridge_socket != "/run/nodus-dc/bridge.sock"
+                    or args.partition_provider_config is not None or args.partition_provider_sha256 is not None
+                    or os.geteuid() != 0):
+                raise Error("local_preparation_unavailable", "preparation requires a finite protected local-only standalone owner", 403)
+            prepare_end = time.monotonic() + args.prepare_until - now
         bridge_token = token_file(args.bridge_token_file) if getattr(args, "bridge_token_file", None) else None
         if args.command == "serve" and (bridge_token or args.allocation_authority == "standalone") and os.geteuid() != 0:
             raise Error("bridge_owner_required", "production allocation/bridge listeners must run as root", 403)
-        service = Service(Store(state / "authority.sqlite3"),
-                          NvidiaDockerBackend(allocation_authority=args.allocation_authority, enable_trusted_mps=args.enable_trusted_mps),
-                          bridge_enabled=bridge_token is not None or
-                              args.command == "connection" and args.connection_action == "disconnect")
+        prepared = None
+        if preparing:
+            from .partition_host import Evidence, path
+            from .partition_prepare import prepare_local_host
+            if str(path(args.state_dir)) != str(state):
+                raise Error("local_preparation_unavailable", "preparation requires a fresh protected local-only standalone owner", 403)
+            owner = Evidence().protected(state, directory=True)
+            if owner.st_gid != 0 or owner.st_mode & 0o077:
+                raise Error("local_preparation_unavailable", "preparation directory must be private", 403)
+            if time.time() >= args.prepare_until or time.monotonic() >= prepare_end:
+                raise Error("local_preparation_unavailable", "local preparation deadline expired", 503)
+            prepared_daemon = os.fdopen(os.open(state / "daemon.lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600), "w")
+            fcntl.flock(prepared_daemon.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            service, prepared = prepare_local_host(state, args.prepare_local_template, args.prepare_local_sha256, expires_at=args.prepare_until)
+        else:
+            service = Service(Store(state / "authority.sqlite3"),
+                              NvidiaDockerBackend(allocation_authority=args.allocation_authority, enable_trusted_mps=args.enable_trusted_mps),
+                              bridge_enabled=bridge_token is not None or
+                                  args.command == "connection" and args.connection_action == "disconnect")
         if args.command == "serve" and (args.partition_provider_config or args.partition_provider_sha256):
             if not args.partition_provider_config or not args.partition_provider_sha256 or os.geteuid()!=0 or args.allocation_authority!="standalone":
                 raise Error("local_partition_unavailable", "prepared local execution requires root standalone ownership and both exact provider pins", 403)
@@ -208,7 +243,7 @@ def main(argv=None):
                                   allowed_images=None if args.allow_qualified_jobs else (args.allow_image or ()))
             result = getattr(connection, args.connection_action)(**parameters)
         else:
-            daemon_file = open(state / "daemon.lock", "a")
+            daemon_file = prepared_daemon or open(state / "daemon.lock", "a")
             try:
                 fcntl.flock(daemon_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -235,10 +270,15 @@ def main(argv=None):
                     bridge_thread.start()
                     threading.Thread(target=connection_worker, args=(server, connection), daemon=True).start()
                 threading.Thread(target=server.maintain, daemon=True).start()
-                print(json.dumps({"listening": f"http://127.0.0.1:{server.server_port}",
+                ready = {"listening": f"http://127.0.0.1:{server.server_port}",
                                   "bridge_url": "unix://" + str(bridge_server.path) if bridge_server else None,
                                   "local_api_url": "unix://" + str(local_server.path) if local_server else None,
-                                  "local_token_file": str(local_path), "bridge_enabled": bridge_server is not None}), flush=True)
+                                  "local_token_file": str(local_path), "bridge_enabled": bridge_server is not None}
+                if prepared is not None:
+                    ready["prepared_provider"] = prepared
+                    if time.time() >= args.prepare_until or time.monotonic() >= prepare_end:
+                        raise Error("local_preparation_unavailable", "local preparation deadline expired before readiness", 503)
+                print(json.dumps(ready), flush=True)
                 server.serve_forever()
             except KeyboardInterrupt:
                 pass
@@ -265,6 +305,9 @@ def main(argv=None):
         error = exc.as_dict() if isinstance(exc, Error) else {"error": {"code": "local_failure", "message": str(exc)}}
         print(json.dumps(error), file=sys.stderr)
         return 1
+    finally:
+        if prepared_daemon is not None:
+            prepared_daemon.close()
 
 
 if __name__ == "__main__":
