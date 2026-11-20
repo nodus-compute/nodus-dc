@@ -44,7 +44,9 @@ class AuthorityFence:
                 raise Error("authority_fence_unavailable", "authority registry must be a private owned file", 503)
             raw = os.read(fd, 4097)
             value = json.loads(raw)
-            if (len(raw) > 4096 or set(value) != {"database", "incarnation", "sequence"}
+            if (len(raw) > 4096 or set(value) not in ({"database", "incarnation", "sequence"},
+                        {"database", "incarnation", "sequence", "reader_schema"})
+                    or ("reader_schema" in value and (type(value["reader_schema"]) is not int or value["reader_schema"] not in {6, 7, 8, 9}))
                     or value["database"] != self.database or type(value["sequence"]) is not int
                     or value["sequence"] < 0 or str(uuid.UUID(value["incarnation"])) != value["incarnation"]):
                 raise ValueError("invalid registry identity")
@@ -68,11 +70,16 @@ class AuthorityFence:
         finally:
             temp.unlink(missing_ok=True)
 
-    def verify(self, db):
+    def verify(self, db, *, binding_commit=False):
         row = db.execute("SELECT value FROM meta WHERE key='authority_fence'").fetchone()
         saved = json.loads(row[0]) if row else None
         current = self.read()
-        if saved != current:
+        schema = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        required = int(schema) if schema in {"6", "7", "8", "9"} else None
+        actual = current.get("reader_schema") if current is not None else None
+        floor_matches = required == actual
+        if saved != current or (not floor_matches and not (binding_commit and required is not None
+                and current is not None and (actual or 0) < required)):
             raise Error("authority_continuity_lost", "database and independent authority registry disagree; drained recovery required", 503)
         return saved
 
@@ -86,8 +93,14 @@ class AuthorityFence:
         return current
 
     def advance(self, db):
-        current = self.verify(db)
+        current = self.verify(db, binding_commit=True)
         if current is not None:
             current = {**current, "sequence": current["sequence"] + 1}
+            # Same write-ahead tuple as the database sequence: a first binding or
+            # aggregate claim fences even a Store opened before its reader floor.
+            schema = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+            if schema in {"6", "7", "8", "9"}: current["reader_schema"] = int(schema)
+            elif "reader_schema" in current:
+                raise Error("authority_continuity_lost", "reader floor cannot move backwards", 503)
             self.write(current)
             db.execute("UPDATE meta SET value=? WHERE key='authority_fence'", (canonical(current),))

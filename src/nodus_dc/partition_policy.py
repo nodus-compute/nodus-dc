@@ -1,6 +1,6 @@
 """Explicit partition permission delivered over the existing private bridge.
 
-This provider is not installed by the production service. Positive permission is
+The bounded prepared enrollment installs this provider explicitly. Positive permission is
 process-local; SQLite and the independent registry retain only replay/retirement
 authority. Neither a persisted grant nor whole-host consent can enable execution.
 """
@@ -9,7 +9,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
+import stat
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -103,6 +105,70 @@ def terms(raw, expected_sha):
     return value
 
 
+def partition_clean_start(service, db, identity):
+    """A new nonce cannot turn retained permission into a clean ownership record."""
+    if (db.execute("SELECT 1 FROM leases WHERE state!='released' LIMIT 1").fetchone()
+            or db.execute("SELECT 1 FROM bridge_policy WHERE enabled!=0 LIMIT 1").fetchone()
+            or any(db.execute("SELECT 1 FROM " + table + " WHERE retired=0 LIMIT 1").fetchone()
+                   for table in ("platform_claims", "partition_claims"))):
+        _deny("local_preparation_unavailable", "partition startup retains outstanding authority state", 503)
+    row = db.execute("SELECT value FROM meta WHERE key='partition_policy_scope'").fetchone()
+    if row is None:
+        if (db.execute("SELECT 1 FROM partition_policy_grants LIMIT 1").fetchone()
+                or db.execute("SELECT 1 FROM partition_claims LIMIT 1").fetchone()):
+            _deny("local_preparation_unavailable", "partition closure is absent", 503)
+        return
+    scope = json.loads(row[0])
+    if (not isinstance(scope, dict) or scope.get("closed") is not True
+            or {k:scope.get(k) for k in ("node_id", "host_epoch")} != identity()):
+        _deny("local_preparation_unavailable", "partition scope is not positively closed", 503)
+    guid(scope.get("nonce")); integer(scope.get("stream_epoch"), 1); integer(scope.get("revision"), 1)
+
+
+def enrolled_partition_policy(service, state, record_path, record_sha256, provider_sha256):
+    """Bind the ordinary BYOC agent identity on this same prepared authority."""
+    from .partition_host import Evidence, path
+    root = path(state).parent
+    if str(root) != "/var/lib/nodus/managed-local" or path(record_path) != root / "enrollment.json":
+        _deny("local_preparation_unavailable", "partition enrollment path differs", 503)
+    record, observed = Evidence().record(path(record_path), 16384)
+    fields(record, "version prepared_sha256 provider_sha256 boot_id deadline_boot_ns node_state_dir gateway_url api_url inference_url bootstrap_token_file image_reference")
+    if (observed != record_sha256 or record["version"] != 1 or type(record["version"]) is not int
+            or record["provider_sha256"] != provider_sha256
+            or record["node_state_dir"] != str(root / "enrolled-node-state")
+            or record["bootstrap_token_file"] != str(root / "enrolled-node-state" / "bootstrap-token")
+            or record["boot_id"] != service.backend.boot_id()):
+        _deny("local_preparation_unavailable", "partition enrollment binding differs", 503)
+    sha(record["prepared_sha256"]); integer(record["deadline_boot_ns"], 1)
+    _, prepared_sha = Evidence().record(root / "prepared.json", 256*1024)
+    if prepared_sha != record["prepared_sha256"]:
+        _deny("local_preparation_unavailable", "prepared ownership changed", 503)
+    allowed = images([record["image_reference"]])
+    # No remote identity lookup is allowed inside the physical host authority lock.
+    def identity():
+        if time.clock_gettime_ns(time.CLOCK_BOOTTIME) >= record["deadline_boot_ns"]:
+            _deny("partition_identity_changed", "prepared enrollment lifetime ended")
+        name = root / "enrolled-node-state" / "node.json"
+        Evidence().protected(name.parent, directory=True)
+        before = Evidence().protected(name)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            current = os.fstat(stream.fileno())
+            if (not os.path.samestat(before, current) or current.st_gid != 0
+                    or not stat.S_ISREG(current.st_mode) or current.st_mode & 0o077 or current.st_size > 65536):
+                _deny("partition_identity_changed", "enrolled identity is unprotected")
+            raw = stream.read(65537)
+            if len(raw) > 65536: _deny()
+            value = json.loads(raw, object_pairs_hook=_object)
+            node = value.get("nodeId")
+            if (not isinstance(node, str) or not re.fullmatch(r"nod_[0-7][0-9a-hjkmnp-tv-z]{25}", node)
+                    or not os.path.samestat(current, os.lstat(name))):
+                _deny("partition_identity_changed", "enrolled identity differs")
+        return {"node_id":"bnod_"+node[4:], "host_epoch":0}
+    return PartitionPolicy(service, identity=identity, local_images=lambda:allowed,
+                           boot_id=record["boot_id"])
+
+
 class PartitionPolicy:
     """Explicitly installed seam; identity and local restrictions are trusted callbacks.
 
@@ -186,6 +252,8 @@ class PartitionPolicy:
                     or revision is not None and request["offer"]["policy_revision"] != revision): continue
             db.execute("UPDATE partition_claims SET retired=1,updated_at=? WHERE platform_lease_id=? AND platform_epoch=?", (now,row["platform_lease_id"],row["platform_epoch"]))
             if row["lease_id"]:
+                from .partition_binding import retire
+                retire(db, row["lease_id"])
                 lease = Store.lease(db, row["lease_id"])
                 if lease["state"] != "released": Store.update(db, lease, now, state="draining", error="partition_permission_retired")
 
@@ -265,7 +333,7 @@ class PartitionPolicy:
                 else:
                     if old: self._retire(db, self.service.clock(), revision=old["revision"])
                 db.execute("INSERT INTO meta VALUES('partition_policy_scope',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (canonical(scope),))
-                db.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
+                db.execute("UPDATE meta SET value='5' WHERE key='schema_version' AND CAST(value AS INTEGER)<5")
             # A failed registry/SQLite commit never installs positive permission.
             if action == "grant":
                 self.live = {"scope": scope, "grant": copy.deepcopy(grant), "terms": parsed, "deadline": deadline,

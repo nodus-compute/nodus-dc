@@ -227,7 +227,8 @@ class _PrivateUnixServer(_BoundedServer, socketserver.ThreadingMixIn, socketserv
 
 
 class BridgeUnixServer(_PrivateUnixServer):
-    def __init__(self, path, service, bridge_token, *, owner_uid=0):
+    def __init__(self, path, service, bridge_token, *, owner_uid=0, partition_only=False):
+        self.partition_only = partition_only
         super().__init__(path, service, bridge_token, owner_uid=owner_uid, scope="bridge")
 
 
@@ -292,6 +293,9 @@ class Handler(BaseHTTPRequestHandler):
                     "maintenance_error": self.server.maintenance_error,
                     "connection_error": self.server.service.bridge_health_error}
         self.authorize(bridge)
+        if (self.server.bridge_only and self.server.partition_only
+                and not path.startswith(("/v2/bridge/partition-policy/", "/v2/bridge/partitions/"))):
+            raise Error("not_found", "prepared enrollment exposes only partition authority routes", 404)
         service = self.server.service
         if method == "GET":
             if path == "/v1/status":
@@ -305,16 +309,33 @@ class Handler(BaseHTTPRequestHandler):
                 from .handback import terminal_retirement
                 return terminal_retirement(service, parts[3])
         if method == "POST":
-            body = self.body(limit=65536 if path.startswith("/v2/bridge/") else 1024*1024)
+            body = self.body(limit=65536 if path.startswith(("/v2/bridge/", "/v2/local/")) else 1024*1024)
             if path in {"/v2/bridge/partition-policy/context", "/v2/bridge/partition-policy/update"}:
                 if service.partition_policy is None:
                     raise Error("partition_policy_unavailable", "independent partition policy provider is not installed", 503)
                 operation = service.partition_policy.read_context if path.endswith("/context") else service.partition_policy.update
                 return operation(**body)
-            if path.startswith("/v2/bridge/partitions/"):
-                operation = path.removeprefix("/v2/bridge/partitions/")
-                methods = {name: getattr(service.partitions,name) for name in ("offers","claim","check","inspect","reclaim","complete")}
+            if path.startswith(("/v2/bridge/partitions/", "/v2/local/partitions/")):
+                local = path.startswith("/v2/local/")
+                if local and self.server.scope != "local_unix":
+                    raise Error("private_transport_required", "local partition grants require the private owner socket", 403)
+                operation = path.removeprefix("/v2/local/partitions/" if local else "/v2/bridge/partitions/")
+                target = service.local_partitions if local else service.partitions
+                names = ("reserve","dispatch","pending","bind","begin","check","reclaim","complete") if local else ("offers","claim","check","inspect","reclaim","complete","bind","begin")
+                methods = {name: getattr(target,name) for name in names}
                 if operation not in methods: raise Error("not_found", "partition operation does not exist", 404)
+                if "_peer" in body:
+                    raise Error("invalid_request", "peer identity is observed by the private socket", 400)
+                if (operation == "begin" and "operation" in body) or (operation == "check" and "creation_token" in body):
+                    from .partition_peer import SocketCreator
+                    if operation == "begin":
+                        from .partitions import fields
+                        extras = {"issue":"", "consume":" creation_token", "publish":" creation_token host_scope_sha256"}
+                        if body.get("operation") not in extras:
+                            raise Error("invalid_request", "unsupported binding transition", 400)
+                        fields(body, "lease ref binding_sha256 expected_phase_revision operation" + extras[body["operation"]])
+                    with SocketCreator(self.connection) as peer:
+                        return methods[operation](_peer=peer, **body)
                 return methods[operation](**body)
             direct = {"/v1/reserve": service.reserve, "/v1/reconcile": service.reconcile,
                       "/v1/bridge/status": service.bridge_status,

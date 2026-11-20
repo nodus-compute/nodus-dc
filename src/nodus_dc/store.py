@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS leases(
 CREATE TABLE IF NOT EXISTS operations(
  request_key TEXT PRIMARY KEY, lease_id TEXT NOT NULL, generation INTEGER NOT NULL,
  action TEXT NOT NULL, request_hash TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS local_partition_demands(
+ request_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL, request TEXT NOT NULL,
+ expires_at REAL NOT NULL, status TEXT NOT NULL, lease_id TEXT, victims TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at REAL NOT NULL,
  lease_id TEXT, generation INTEGER, action TEXT NOT NULL, detail TEXT NOT NULL);
@@ -69,7 +72,7 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(SCHEMA)
             version = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
-            if version not in {"1", "2", "3", "4", "5"}:
+            if version not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
                 raise Error("schema_version", f"unsupported state schema {version}", 503)
         os.chmod(self.path, 0o600)
 
