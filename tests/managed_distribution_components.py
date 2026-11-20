@@ -127,6 +127,193 @@ def namespaces():
     return {name: os.readlink("/proc/self/ns/" + name) for name in ("mnt", "pid")}
 
 
+def mount_records(body, limit=256 << 10):
+    """Parse bounded kernel mountinfo without following any recorded path."""
+    import posixpath, re
+    if not isinstance(body, bytes) or not body or len(body) > limit or not body.endswith(b"\n"):
+        raise ValueError("mount snapshot bound or completeness")
+    text = body.decode("utf-8")
+    if any((ord(c) < 32 and c != "\n") or ord(c) == 127 for c in text):
+        raise ValueError("mount raw control character")
+    lines = text.splitlines()
+    if not lines or len(lines) > 4096:
+        raise ValueError("mount snapshot row bound")
+    def decoded(value):
+        if re.search(r"\\(?![0-7]{3})", value):
+            raise ValueError("mount escape")
+        if any(int(value, 8) > 255 for value in re.findall(r"\\([0-7]{3})", value)):
+            raise ValueError("mount escape byte")
+        value = re.sub(rb"\\([0-7]{3})", lambda m: bytes([int(m[1], 8)]), value.encode("utf-8")).decode("utf-8")
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("mount control character")
+        return value
+    rows = {}
+    for line in lines:
+        fields = line.split(" ")
+        if fields.count("-") != 1 or any(not field for field in fields):
+            raise ValueError("mount separator")
+        split = fields.index("-")
+        if split < 6 or len(fields) != split + 4:
+            raise ValueError("mount fields")
+        if not all(re.fullmatch(r"[1-9][0-9]*", fields[i]) for i in (0, 1)) or not re.fullmatch(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)", fields[2]):
+            raise ValueError("mount identity")
+        values = [decoded(field) for field in fields]
+        for value in values[3:5]:
+            if not value.startswith("/") or value.startswith("//") or posixpath.normpath(value) != value:
+                raise ValueError("mount path")
+        identity = int(fields[0])
+        if identity in rows:
+            raise ValueError("duplicate mount identity")
+        rows[identity] = {"record": line, "device": fields[2], "root": values[3],
+                          "mountpoint": values[4], "filesystem": values[split+1], "super_options": values[split+3],
+                          "references": values[3:split] + values[split+2:]}
+    return rows
+
+
+def mount_projection(before, after, protected_paths, scratch_paths, limit=256 << 10):
+    """Compare owned mount scope; unrelated host mount lifetimes are not ours."""
+    import posixpath, re
+    result = {"passed": False, "records_equal": False, "no_owned_references": False,
+              "anchors": [], "before_records": [], "after_records": [], "violations": [], "error": None}
+    try:
+        def within(path, root):
+            return path == root or path.startswith(root.rstrip("/") + "/")
+        for paths in (protected_paths, scratch_paths):
+            if not isinstance(paths, list) or not paths or len(paths) > 32 or any(
+                    not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or posixpath.normpath(path) != path
+                    or any(ord(c) < 32 for c in path) for path in paths):
+                raise ValueError("mount scope")
+        snapshots = [mount_records(body, limit) for body in (before, after)]
+        for scratch in scratch_paths:
+            candidates = [row for row in snapshots[0].values() if within(scratch, row["mountpoint"])]
+            if not candidates:
+                raise ValueError("missing scratch anchor")
+            depth = max(len(row["mountpoint"]) for row in candidates)
+            closest = [row for row in candidates if len(row["mountpoint"]) == depth]
+            if len(closest) != 1:
+                raise ValueError("ambiguous scratch anchor")
+            anchor = closest[0]
+            relative = posixpath.relpath(scratch, anchor["mountpoint"])
+            result["anchors"].append({"path": scratch, "device": anchor["device"],
+                                      "mountpoint": anchor["mountpoint"], "root": anchor["root"],
+                                      "scratch_root": posixpath.normpath(posixpath.join(anchor["root"], relative))})
+        for label, rows in zip(("before", "after"), snapshots):
+            result[label + "_records"] = [row["record"] for _, row in sorted(rows.items()) if any(
+                within(row["mountpoint"], path) or within(path, row["mountpoint"]) for path in protected_paths)]
+            for identity, row in rows.items():
+                direct = any(within(row["mountpoint"], path) for path in scratch_paths)
+                # A bind elsewhere exposes a filesystem-relative root, not the
+                # absolute /run path. Keep its original device/anchor binding.
+                bound = any(row["device"] == anchor["device"] and within(row["root"], anchor["scratch_root"])
+                            for anchor in result["anchors"])
+                new_ancestor = label == "after" and snapshots[0].get(identity, {}).get("record") != row["record"] and any(
+                    row["device"] == anchor["device"] and within(anchor["scratch_root"], row["root"])
+                    for anchor in result["anchors"])
+                references = [match[1] for value in row["references"]
+                              for match in re.finditer(r"(?:^|[=,:])(/[^,:]*)", value)]
+                if any(path.startswith("//") or posixpath.normpath(path) != path for path in references):
+                    raise ValueError("noncanonical mount reference")
+                if row["filesystem"] == "overlay":
+                    for option in row["super_options"].split(","):
+                        key, separator, value = option.partition("=")
+                        if key in {"lowerdir", "upperdir", "workdir"} and (
+                                not separator or any(not path.startswith("/") for path in value.split(":"))):
+                            raise ValueError("ambiguous overlay reference")
+                referenced = any(within(reference, path) for path in scratch_paths for reference in references)
+                if direct or bound or new_ancestor or referenced:
+                    result["violations"].append({"snapshot": label, "mount_id": identity,
+                                                 "mountpoint": direct, "bound_root": bound,
+                                                 "new_ancestor_alias": new_ancestor, "option_or_path": referenced})
+        result["records_equal"] = result["before_records"] == result["after_records"]
+        result["no_owned_references"] = not result["violations"]
+        result["passed"] = result["records_equal"] and result["no_owned_references"]
+    except (ValueError, UnicodeError, TypeError, KeyError) as error:
+        result["error"] = type(error).__name__
+    return result
+
+
+def mount_snapshot():
+    snapshot = {"namespace_before": None, "namespace_after": None, "raw_hex": "", "bytes_read": 0,
+                "sha256": None, "truncated": False, "complete": False, "error": None}
+    def identity():
+        path = "/proc/self/ns/mnt"; first = os.readlink(path); info = os.stat(path); last = os.readlink(path)
+        require(first == last and re.fullmatch(r"mnt:\[[0-9]+\]", first) and int(first[5:-1]) == info.st_ino,
+                "mount namespace capture changed")
+        return {"target": first, "device": info.st_dev, "inode": info.st_ino}
+    try:
+        snapshot["namespace_before"] = identity()
+        with open("/proc/self/mountinfo", "rb") as stream:
+            body = stream.read((256 << 10) + 1)
+        snapshot.update(raw_hex=body[:256 << 10].hex(), bytes_read=len(body), sha256=sha(body), truncated=len(body) > 256 << 10)
+        snapshot["namespace_after"] = identity()
+        snapshot["complete"] = not snapshot["truncated"] and snapshot["namespace_before"] == snapshot["namespace_after"]
+    except (OSError, RuntimeError) as error:
+        snapshot["error"] = type(error).__name__
+    return snapshot
+
+
+def mount_verification(before, after, protected_paths, scratch_paths):
+    evidence = {"before": before, "after": after, "complete": False, "namespace_unchanged": False,
+                "whole_mount_census_equal": None, "projection": None, "passed": False, "error": None}
+    try:
+        bodies = [bytes.fromhex(snapshot["raw_hex"]) for snapshot in (before, after)]
+        captured = all(0 < len(body) == snapshot["bytes_read"] <= 256 << 10 and sha(body) == snapshot["sha256"]
+                       and snapshot["truncated"] is False for snapshot, body in zip((before, after), bodies))
+        evidence["whole_mount_census_equal"] = bodies[0] == bodies[1] if captured else None
+        evidence["complete"] = captured and all(snapshot["complete"] is True and snapshot["error"] is None
+                                               for snapshot in (before, after))
+        identities = [snapshot[key] for snapshot in (before, after) for key in ("namespace_before", "namespace_after")]
+        evidence["namespace_unchanged"] = identities[0] is not None and all(value == identities[0] for value in identities)
+        evidence["projection"] = mount_projection(*bodies, protected_paths, scratch_paths)
+        evidence["passed"] = evidence["complete"] and evidence["namespace_unchanged"] and evidence["projection"]["passed"]
+    except (ValueError, TypeError, KeyError) as error:
+        evidence["error"] = type(error).__name__
+    return evidence
+
+
+def mount_projection_checks():
+    """Bounded pure counterexamples in the existing case, not host evidence."""
+    root = b"10 1 0:1 / / rw - ext4 /dev/root rw\n"
+    run = b"11 10 0:2 / /run rw - tmpfs tmpfs rw\n"
+    user = b"12 11 0:3 / /run/user/1000 rw - tmpfs tmpfs rw\n"
+    before = root + run + user
+    scratch = "/run/nodus-managed-components-counterexample"
+    paths = ["/root/component/source", scratch, "/usr", "/etc", "/opt", "/var/lib", "/proc"]
+    def check(body):
+        return mount_projection(before, body, paths, [scratch])["passed"]
+    cases = {"unchanged": check(before), "unrelated-removal": check(root + run),
+             "ancestor-change": not check(root.replace(b"/ rw", b"/ ro") + run + user),
+             "descendant-mount": not check(before + f"13 11 0:4 / {scratch}/x rw - tmpfs tmpfs rw\n".encode()),
+             "escaped-option-reference": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=\\057run/{scratch.split('/')[-1]}/upper\n".encode()),
+             "relative-bind-root": not check(before + f"13 10 0:2 /{scratch.split('/')[-1]}/upper /tmp/elsewhere rw - tmpfs tmpfs rw\n".encode()),
+             "new-ancestor-root-alias": not check(before + b"13 10 0:2 / /tmp/elsewhere rw - tmpfs tmpfs rw\n"),
+             "noncanonical-option": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=/run/other/../{scratch.split('/')[-1]}/upper\n".encode()),
+             "double-slash-option": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=/{scratch}/upper\n".encode()),
+             "relative-overlay-option": not check(before + b"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=relative/upper\n"),
+             "ambiguous-anchor": not mount_projection(before + b"13 10 0:2 / /run rw - tmpfs tmpfs rw\n",
+                                                       before, paths, [scratch])["passed"],
+             "malformed": not check(b"not mountinfo\n"), "truncated": not check(before[:-1]),
+             "unknown-escape": not check(before + b"13 10 0:4 / /tmp/\\q rw - tmpfs tmpfs rw\n")}
+    if not all(cases.values()):
+        raise ValueError("component owned mount projection counterexample")
+    return {"scope": "pure projection counterexamples, not native mount evidence", "cases": cases}
+
+
+def mount_capture_checks():
+    body = b"10 1 0:1 / / rw - ext4 /dev/root rw\n"
+    paths = ["/root/source", "/run/component"]
+    scratch = ["/run/component"]
+    identity = {"target": "mnt:[10]", "device": 4, "inode": 10}
+    snapshot = {"raw_hex": body.hex(), "bytes_read": len(body), "sha256": sha(body), "truncated": False,
+                "complete": True, "error": None, "namespace_before": identity, "namespace_after": identity}
+    cases = {"complete": mount_verification(snapshot, snapshot, paths, scratch)["passed"],
+             "namespace-change": not mount_verification(snapshot, {**snapshot, "namespace_after": {**identity, "inode": 11}}, paths, scratch)["passed"],
+             "missing-snapshot": not mount_verification(snapshot, {}, paths, scratch)["passed"],
+             "capture-truncation": not mount_verification(snapshot, {**snapshot, "truncated": True}, paths, scratch)["passed"]}
+    require(all(cases.values()), "component owned mount projection counterexample")
+    return {"scope": "pure capture counterexamples, not native mount evidence", "cases": cases}
+
+
 class Commands:
     """Every child shares one deadline; forced termination is always negative."""
     def __init__(self, work, end):
@@ -787,7 +974,20 @@ def measure(root, wheel):
     require((manifest["head"], manifest["tree"]) == (value["python_head"], value["python_tree"])
             and sha(canonical(manifest)) == value["source_manifest_sha256"], "component exact source manifest")
     put(components/"source-manifest.json", manifest); put(components/"package.whl", read(wheel, 4 << 20))
-    before_mounts = Path("/proc/self/mountinfo").read_bytes(); parent_ns = namespaces()
+    projection_checks = {"projection": mount_projection_checks(), "capture": mount_capture_checks()}
+    mount_paths = [str(root), str(out), "/usr", "/etc", "/opt", "/var/lib", "/proc"]
+    before_mounts = mount_snapshot(); parent_ns = namespaces()
+    baseline = mount_verification(before_mounts, before_mounts, mount_paths, [str(out)])
+    if not baseline["passed"]:
+        baseline.update(after=None, namespace_unchanged=False, whole_mount_census_equal=None,
+                        phase="before-child-baseline; no after snapshot or namespace child")
+        put(components/"closure.json", {"schema": "managed-python-component-closure.v1", "original_start_monotonic_ns": start,
+                                       "original_end_monotonic_ns": end, "elapsed_ns": time.monotonic_ns() - start,
+                                       "children": commands.children, "namespace_exit_returncode": None,
+                                       "group_absent": False, "owned_mounts_absent": False, "authority_absent": False,
+                                       "source_clean": False, "raw_output_total_bytes": 0,
+                                       "mount_verification": baseline, "mount_projection_checks": projection_checks})
+        raise RuntimeError("component mount baseline unknown; namespace child not started; retain evidence")
     result = commands.run(["/usr/bin/unshare", "--mount", "--pid", "--fork", "--mount-proc", "--kill-child=KILL",
                            PYTHON, "-I", "-S", "-B", str(Path(__file__).resolve()), "namespace", str(root), str(input_path), input_sha,
                            str(end), json.dumps(parent_ns, sort_keys=True)], cap=max(0.001, (end-time.monotonic_ns())/1e9))
@@ -800,14 +1000,17 @@ def measure(root, wheel):
     try: os.killpg(namespace_row["pid"], 0)
     except ProcessLookupError: group_absent = True
     else: group_absent = False
-    owned_mounts_absent = Path("/proc/self/mountinfo").read_bytes() == before_mounts
+    after_mounts = mount_snapshot()
+    mount_evidence = mount_verification(before_mounts, after_mounts, mount_paths, [str(out)])
+    owned_mounts_absent = mount_evidence["passed"]
     partial = json.loads(read(work/"namespace-result.json")) if (work/"namespace-result.json").exists() else None
     closure = {"schema": "managed-python-component-closure.v1", "original_start_monotonic_ns": start,
                "original_end_monotonic_ns": end, "elapsed_ns": time.monotonic_ns() - start,
                "children": commands.children + namespace_children, "namespace_exit_returncode": result["returncode"],
                "group_absent": group_absent, "owned_mounts_absent": owned_mounts_absent,
                "authority_absent": bool(partial and partial["authority_absent"]), "source_clean": source_clean,
-               "raw_output_total_bytes": sum(p.stat().st_size for p in (components/"raw").glob("*.json"))}
+               "raw_output_total_bytes": sum(p.stat().st_size for p in (components/"raw").glob("*.json")),
+               "mount_verification": mount_evidence, "mount_projection_checks": projection_checks}
     put(components/"closure.json", closure)
     require(result["returncode"] == 0 and partial and group_absent and owned_mounts_absent and source_clean,
             "component namespace/measurement failed; retain partial owned evidence")

@@ -129,6 +129,19 @@ file, private-prefix override, interpreter alias, native alias drift and missing
 substitute for genuine signature or installed managed-provider execution.
 The same twelve outputs and original 240-second component/300-second case limits remain in force.
 
+Component cleanup compares mount records for the exact source/output paths and the existing
+`/usr`, `/etc`, `/opt`, `/var/lib`, and `/proc` isolation targets, including their ancestors and
+descendants. An unrelated host mount disappearing does not establish an owned leak. Bounded raw
+before/after snapshots (256 KiB each) and namespace identities remain in `closure.json`; whole
+mount-census equality is reported separately from owned-mount closure. Every record is also checked
+for owned scratch references, including overlay options and filesystem-relative bind roots. A new
+bind of a scratch ancestor elsewhere refuses; the unchanged original covering mount remains valid.
+Missing, malformed, truncated, ambiguously anchored or namespace-changing observations refuse.
+The same case includes bounded pure projection/capture counterexamples; these are not native mount
+evidence. Natural child/group closure, source and authority checks remain mandatory. The existing
+4 MiB individual-output and 16 MiB total-output limits apply to the added evidence. Historical
+failed measurements stay negative; this source change does not qualify any host or installation.
+
 The same component owner checks the actual sysconfig pair and both regular copies, then requires
 wrong-literal, target-chain, unprotected-target, same-byte link-replacement and same-byte target-replacement
 refusals. Mutations occur only in its proved private `/usr` overlay. Original entries are restored,
