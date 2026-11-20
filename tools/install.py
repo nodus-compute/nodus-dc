@@ -947,6 +947,9 @@ def lock_managed_installation(prefix, state):
         if prefix != Path('/opt/nodus/managed-local/python') or state.name != 'authority':
             raise RuntimeError("managed installation state must be its host directory/authority")
         acquire(prefix.parent/'python-install.lock', True)
+        service = Path('/var/lib/nodus/managed-service')
+        if service.exists() or service.is_symlink():
+            raise RuntimeError("finite service invocation retained; installation cannot replace its pinned bytes")
         if state.parent.exists() or state.parent.is_symlink():
             acquire(state.parent/'owner.lock')
             if state.exists() or state.is_symlink():

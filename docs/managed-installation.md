@@ -177,3 +177,10 @@ receipts for an earlier wheel are not renamed to the merged package. The private
 helpers described here are not added to the production package by this source integration. Genuine signed
 installation, the managed host lifecycle and real PID1 service activation remain separate qualification
 gates; this change does not implement automatic renewal or a new service-installation mode.
+
+
+The paired Go fresh finite service retains `/var/lib/nodus/managed-service` before authority exists.
+Under the same `python-install.lock`, managed package operations refuse that marker (including a
+symlink), so a queued, failed, active or stopped one-use invocation cannot have its pinned bytes
+replaced. Ordinary offline installation stays unchanged. Install the exact managed wheel first;
+real PID1 start/normal stop and restart refusal require their separate native host acceptance.
