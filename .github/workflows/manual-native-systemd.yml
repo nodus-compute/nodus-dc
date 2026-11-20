@@ -8,8 +8,589 @@ concurrency:
   group: manual-native-service-control
   cancel-in-progress: false
 jobs:
+  managed-python-components:
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/managed-fresh-service-dev18-components-20261119'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Establish one original clock and exclusive root fixture
+        id: owned
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            RUNNER_TEMP="$RUNNER_TEMP" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_REF="$GITHUB_REF" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            GITHUB_EVENT_PATH="$GITHUB_EVENT_PATH" GITHUB_ENV="$GITHUB_ENV" GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+            ML_RUNNER_UID="$(id -u)" ML_RUNNER_GID="$(id -g)" /usr/bin/python3 -B - <<'PYINIT'
+          import hashlib,json,os,pathlib,stat,time
+          def mount_snapshot():
+              before=os.stat('/proc/self/ns/mnt')
+              with open('/proc/self/mountinfo','rb') as stream:raw=stream.read((64<<10)+1)
+              after=os.stat('/proc/self/ns/mnt');complete=len(raw)<=64<<10;retained=raw[:64<<10]
+              return retained.decode('utf-8'),{'namespace_before':[before.st_dev,before.st_ino],'namespace_after':[after.st_dev,after.st_ino],
+                  'namespace_stable':(before.st_dev,before.st_ino)==(after.st_dev,after.st_ino),'complete':complete,
+                  'retained_bytes':len(retained),'observed_at_least_bytes':len(raw),'retained_sha256':hashlib.sha256(retained).hexdigest()}
+          t0=time.monotonic();epoch=time.time()
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0
+          runner_uid=int(os.environ['ML_RUNNER_UID']);runner_gid=int(os.environ['ML_RUNNER_GID'])
+          assert 0<runner_uid<2**31 and 0<runner_gid<2**31
+          run=os.environ['GITHUB_RUN_ID'];attempt=os.environ['GITHUB_RUN_ATTEMPT']
+          assert run.isdigit() and attempt=='1'
+          assert os.environ['GITHUB_EVENT_NAME']=='workflow_dispatch'
+          assert os.environ['GITHUB_REF']=='refs/heads/codex/managed-fresh-service-dev18-components-20261119'
+          assert os.environ['GITHUB_REPOSITORY']=='nodus-compute/nodus-dc'
+          event=json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          assert event.get('inputs') in (None,{}) and event['repository']['private'] is False
+          base=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          out=base/f'managed-python-component-evidence-{run}-{attempt}';fixture=pathlib.Path('/root')/f'managed-python-component-fixture-{run}-{attempt}'
+          assert not out.exists() and not out.is_symlink() and not fixture.exists() and not fixture.is_symlink()
+          out.mkdir(mode=0o700);fixture.mkdir(mode=0o700);(fixture/'tmp').mkdir(mode=0o700)
+          component=pathlib.Path('/run/nodus-managed-components-private-python-p1')
+          assert not component.exists() and not component.is_symlink()
+          st=fixture.lstat();home=pathlib.Path.home().resolve();rows={};ancestry=[]
+          assert home==pathlib.Path('/root') and not home.is_symlink()
+          for path in [fixture/'tmp',fixture,*fixture.parents]:
+              info=path.lstat()
+              assert stat.S_ISDIR(info.st_mode) and info.st_uid==info.st_gid==0 and not info.st_mode&0o022
+              ancestry.append({'path':str(path),'device':info.st_dev,'inode':info.st_ino,'uid':info.st_uid,'gid':info.st_gid,'mode':stat.S_IMODE(info.st_mode)})
+          output=out.lstat()
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  assert count<2047,'home census bound'
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          mounts_before,mount_census_before=mount_snapshot()
+          owner={'workflow_root':str(pathlib.Path.cwd()),'run_id':run,'attempt':attempt,'fixture':str(fixture),'fixture_identity':[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)],
+                 'component_output':str(component),'mounts_before':mounts_before,'mount_census_before':mount_census_before,'home':str(home),'home_before':rows,'root_ancestry':ancestry,'owner_uid':os.geteuid(),'owner_gid':os.getegid(),
+                 'runner_uid':runner_uid,'runner_gid':runner_gid,'output_identity':[output.st_dev,output.st_ino,output.st_uid,stat.S_IMODE(output.st_mode)],'started_epoch':epoch,'started_monotonic':t0,'work_end':t0+360,'closure_end':t0+420,'job_end':t0+480}
+          (out/'ownership.json').write_text(json.dumps(owner,sort_keys=True)+'\n')
+          with open(os.environ['GITHUB_ENV'],'a') as env:env.write(f'OUT={out}\nFIXTURE={fixture}\n')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:output.write('owned=true\n')
+          PYINIT
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Bind exact root-owned product source and protected hosted input
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYSOURCE'
+          import hashlib,json,os,pathlib,platform,shlex,stat,subprocess,sys,tarfile,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());root=pathlib.Path.cwd();fixture=pathlib.Path(owner['fixture'])
+          product='a525da848d78be424e57e1c08505f7dbefdb165b';tree='d88978add9f1fe194b67f9332edf54dc4f20f78d'
+          workflow='.github/workflows/manual-native-systemd.yml'
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0 and pathlib.Path.home()==pathlib.Path('/root')
+          def canonical(v):return json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+          def git(*args,cwd=root):return subprocess.check_output(['/usr/bin/git','-c','safe.directory='+str(cwd),*args],cwd=cwd,timeout=min(15,max(.01,owner['work_end']-time.monotonic()-305)))
+          assert git('rev-parse','HEAD').decode().strip()==os.environ['GITHUB_SHA']
+          assert git('rev-parse','HEAD^').decode().strip()==product
+          assert git('rev-parse',product+'^{tree}').decode().strip()==tree
+          assert git('diff','--name-only',product,'HEAD').decode().splitlines()==[workflow]
+          before=git('status','--porcelain=v1','--untracked-files=all');(out/'source-before.txt').write_bytes(before);assert not before
+          (out/'workflow.yml').write_bytes((root/workflow).read_bytes())
+          # Real root ownership avoids changing global Git configuration or bypassing the case's Git reader.
+          source=fixture/'source';source.mkdir(mode=0o700)
+          # Local file transport clears inherited -c config before starting upload-pack.
+          git_dir=pathlib.Path(git('rev-parse','--absolute-git-dir').decode().strip())
+          assert git_dir==root/'.git' and git_dir.is_dir() and not git_dir.is_symlink()
+          upload_pack=shlex.join(['/usr/bin/git','-c','safe.directory='+str(root),'-c','safe.directory='+str(git_dir),'upload-pack'])
+          git('init',str(source));git('fetch','--depth=1','--no-tags','--upload-pack='+upload_pack,'file://'+str(root),product,cwd=source)
+          git('checkout','--detach',product,cwd=source)
+          assert git('rev-parse','HEAD',cwd=source).decode().strip()==product
+          assert not git('status','--porcelain=v1','--untracked-files=all',cwd=source)
+          rows=[]
+          for entry in git('ls-tree','-rz',product,cwd=source).decode().split('\0'):
+              if not entry:continue
+              metadata,name=entry.split('\t',1);mode,kind,obj=metadata.split()
+              assert mode in ('100644','100755') and kind=='blob' and not pathlib.PurePosixPath(name).is_absolute() and '..' not in pathlib.PurePosixPath(name).parts
+              p=source/name;s=p.lstat();b=p.read_bytes()
+              assert stat.S_ISREG(s.st_mode) and s.st_uid==s.st_gid==0 and not s.st_mode&0o022 and bool(s.st_mode&0o111)==(mode=='100755')
+              assert hashlib.sha1(b'blob '+str(len(b)).encode()+b'\0'+b).hexdigest()==obj
+              rows.append({'path':name,'mode':mode,'git_object':obj,'sha256':hashlib.sha256(b).hexdigest(),'bytes':len(b)})
+          rows.sort(key=lambda r:r['path']);assert len(rows)==214
+          manifest={'schema':'managed-python-source-manifest.v1','head':product,'tree':tree,'files':rows,'total_bytes':sum(r['bytes'] for r in rows)}
+          body=canonical(manifest);assert hashlib.sha256(body).hexdigest()=='a1f1cb2b5080b54db7a0050ab9575e35d44fa9d97567cb26d86102a2d4c5a74a'
+          (out/'source-manifest.json').write_bytes(body)
+          archive=git('archive','--format=tar',product,cwd=source)
+          assert hashlib.sha256(archive).hexdigest()=='8d011c5e9c4fbabb5834f1699accb6c14372314bef07e31aa0cfe8a8bc046f51'
+          (out/'product-source.tar').write_bytes(archive)
+          value={'schema':'managed-python-component-input.v1','platform_head':'a8d3c53818a8f8abb26cf7db9306c3bfd09922a9','python_head':product,'python_tree':tree,'source_manifest_sha256':hashlib.sha256(body).hexdigest(),'target_kind':'hosted-runner','target_identity':'github-actions:ubuntu-24.04:x86_64:managed-private-python-components-p1','expected_os_release_sha256':None,'expected_package_census_sha256':None,'output_directory':owner['component_output']}
+          input_body=canonical(value);fd=os.open(fixture/'component-input.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+          with os.fdopen(fd,'wb') as f:f.write(input_body)
+          (out/'component-input.json').write_bytes(input_body);(out/'component-input.sha256').write_text(hashlib.sha256(input_body).hexdigest()+'\n')
+          case=['/usr/bin/python3.12','-B','-m','unittest','-v','tests.test_distribution.DistributionTests.test_reproducible_build_offline_install_and_owned_uninstall']
+          # Outer PID containment prevents detached nested probe sessions surviving an outer case failure.
+          argv=['/usr/bin/unshare','--mount','--pid','--fork','--mount-proc','--propagation','private','--kill-child=KILL',*case]
+          (out/'argv.json').write_text(json.dumps(argv)+'\n');(out/'case-argv.json').write_text(json.dumps(case)+'\n')
+          (out/'native-identity.json').write_text(json.dumps({'python':sys.version,'executable':sys.executable,'kernel':platform.uname()._asdict(),'uid':os.getuid(),'euid':os.geteuid(),'gid':os.getgid(),'egid':os.getegid(),'home':str(pathlib.Path.home()),'namespace_wrapper':argv[:8],'source_owner':source.stat().st_uid},sort_keys=True)+'\n')
+          assert sys.platform=='linux' and platform.machine()=='x86_64' and pathlib.Path('/usr/bin/python3.12').is_file()
+          # One read-only source diagnostic, capped inside this original preparation window.
+          diagnostic_end=min(time.monotonic()+5,owner['work_end']-305)
+          assert diagnostic_end-time.monotonic()>4.9,'original source metadata window exhausted'
+          metadata_code=r'''
+          import json,os,resource,stat,subprocess,sys,time
+          end=float(sys.argv[1]);resource.setrlimit(resource.RLIMIT_FSIZE,(512<<10,512<<10))
+          rows=[];entries=directories=encoded=0;reason=None
+          packages={'returncode':None,'stdout':'','stderr':''}
+          try:
+              p=subprocess.run(['/usr/bin/dpkg-query','-W','-f=${binary:Package}\\t${Version}\\n','python3.12-minimal','libpython3.12-stdlib'],
+                               capture_output=True,timeout=max(.01,min(1,end-time.monotonic())),env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8'})
+              assert len(p.stdout)+len(p.stderr)<=8192
+              packages={'returncode':p.returncode,'stdout':p.stdout.decode('utf-8','replace'),'stderr':p.stderr.decode('utf-8','replace')}
+          except subprocess.TimeoutExpired:
+              packages['timeout']=True
+          class Limited(Exception):pass
+          def walk(fd,path,depth):
+              global entries,directories,encoded,reason
+              directories+=1
+              if directories>2048 or depth>64:reason='directory-or-depth-limit';raise Limited
+              with os.scandir(fd) as children:
+                  for entry in children:
+                      if time.monotonic()>=end:reason='deadline';raise Limited
+                      entries+=1
+                      if entries>8192:reason='entry-limit';raise Limited
+                      info=os.stat(entry.name,dir_fd=fd,follow_symlinks=False);name=path+'/'+entry.name
+                      if stat.S_ISLNK(info.st_mode):
+                          literal=os.readlink(entry.name,dir_fd=fd)
+                          row={'path':name[:512],'path_truncated':len(name)>512,'kind':'symlink','uid':info.st_uid,'gid':info.st_gid,
+                               'mode':stat.S_IMODE(info.st_mode),'bytes':info.st_size,'literal_link':literal[:512],'literal_truncated':len(literal)>512}
+                          size=len(json.dumps(row,ensure_ascii=True,separators=(',',':')).encode())
+                          if len(rows)>=256 or encoded+size>400<<10:reason='alias-row-or-byte-limit';raise Limited
+                          rows.append(row);encoded+=size
+                      elif stat.S_ISDIR(info.st_mode):
+                          child=os.open(entry.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+                          try:
+                              actual=os.fstat(child)
+                              if (actual.st_dev,actual.st_ino)!=(info.st_dev,info.st_ino):reason='directory-drift';raise Limited
+                              walk(child,name,depth+1)
+                          finally:os.close(child)
+          fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+          try:
+              for name in ('usr','lib','python3.12'):
+                  child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=child
+              walk(fd,'/usr/lib/python3.12',0)
+          except Limited:pass
+          except OSError as error:reason='metadata-oserror-'+type(error).__name__
+          finally:os.close(fd)
+          value={'schema':'managed-python-source-metadata.v1','source_root':'/usr/lib/python3.12','complete':reason is None,
+                 'limited_reason':reason,'entries':entries,'directories':directories,'aliases':rows,'packages':packages,
+                 'target_followed':False,'source_contents_read':False,'original_end_monotonic':end}
+          body=json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False)+'\n'
+          assert len(body.encode())<=512<<10
+          sys.stdout.write(body);sys.stdout.flush()
+          '''
+          import signal
+          diagnostic=None;natural=False;group_absent=False;forced=False
+          with (out/'source-metadata.stdout').open('xb') as stdout,(out/'source-metadata.stderr').open('xb') as stderr:
+              try:
+                  diagnostic=subprocess.Popen(['/usr/bin/python3.12','-I','-S','-B','-c',metadata_code,str(diagnostic_end-.5)],stdout=stdout,stderr=stderr,
+                      env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'},start_new_session=True)
+                  diagnostic.wait(timeout=max(.01,diagnostic_end-time.monotonic()-.5));natural=True
+              finally:
+                  if diagnostic is not None:
+                      try:os.killpg(diagnostic.pid,0);forced=True;os.killpg(diagnostic.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                      diagnostic.wait(timeout=max(.01,diagnostic_end-time.monotonic()))
+                      try:os.killpg(diagnostic.pid,0)
+                      except ProcessLookupError:group_absent=True
+                  record={'pid':None if diagnostic is None else diagnostic.pid,'returncode':None if diagnostic is None else diagnostic.returncode,
+                          'natural_exit':natural,'group_absent':group_absent,'forced_group_stop':forced,'deadline_monotonic':diagnostic_end,'finished_monotonic':time.monotonic()}
+                  (out/'source-metadata-closure.json').write_text(json.dumps(record,sort_keys=True)+'\n')
+          assert natural and diagnostic.returncode==0 and group_absent and not forced and record['finished_monotonic']<=diagnostic_end
+          assert (out/'source-metadata.stdout').stat().st_size<=512<<10 and (out/'source-metadata.stderr').stat().st_size<=512<<10
+          assert time.monotonic()<owner['work_end']-305,'original work window exhausted before invocation'
+          PYSOURCE
+      - name: Run existing component case once within original deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYWORK'
+          import json,os,pathlib,signal,subprocess,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());started=time.monotonic()
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0 and pathlib.Path.home()==pathlib.Path('/root')
+          p=None;rc=None;natural=False;group_absent=False;forced=False
+          try:
+              remaining=owner['work_end']-time.monotonic()
+              if remaining<305:raise RuntimeError('original work window exhausted')
+              argv=json.loads((out/'argv.json').read_text())
+              env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8','HOME':'/root'}
+              env.update(PYTHONDONTWRITEBYTECODE='1',PYTHONPATH=str(pathlib.Path(owner['fixture'])/'source/src'),TMPDIR=str(pathlib.Path(owner['fixture'])/'tmp'))
+              env.update(NODUS_MANAGED_COMPONENT_INPUT=str(pathlib.Path(owner['fixture'])/'component-input.json'),NODUS_MANAGED_COMPONENT_INPUT_SHA256=(out/'component-input.sha256').read_text().strip())
+              with (out/'work.stdout').open('xb') as stdout,(out/'work.stderr').open('xb') as stderr:
+                  p=subprocess.Popen(argv,cwd=pathlib.Path(owner['fixture'])/'source',stdout=stdout,stderr=stderr,env=env,start_new_session=True)
+                  (out/'process.json').write_text(json.dumps({'pid':p.pid,'pgid':p.pid,'start_epoch':time.time(),'start_monotonic':time.monotonic(),'owner_uid':os.geteuid(),'owner_gid':os.getegid()})+'\n')
+                  try:rc=p.wait(timeout=min(300,owner['work_end']-time.monotonic()-4));natural=True
+                  except subprocess.TimeoutExpired:pass
+          finally:
+              if p is not None:
+                  try:
+                      os.killpg(p.pid,0);forced=True;os.killpg(p.pid,signal.SIGTERM)
+                      until=min(time.monotonic()+2,owner['work_end']-2)
+                      while time.monotonic()<until:
+                          try:os.killpg(p.pid,0)
+                          except ProcessLookupError:break
+                          time.sleep(.05)
+                      try:os.killpg(p.pid,signal.SIGKILL)
+                      except ProcessLookupError:pass
+                  except ProcessLookupError:pass
+                  try:p.wait(timeout=max(.01,min(2,owner['work_end']-time.monotonic())))
+                  except subprocess.TimeoutExpired:pass
+                  try:os.killpg(p.pid,0)
+                  except ProcessLookupError:group_absent=True
+              (out/'process-closure.json').write_text(json.dumps({'natural_exit':natural,'returncode':rc,'group_absent':group_absent,'forced_group_stop':forced,
+                  'creating_process_reaped':p is not None and p.poll() is not None,'elapsed_seconds':time.monotonic()-started,'finished_monotonic':time.monotonic()})+'\n')
+          if not(natural and rc==0 and group_absent and not forced):raise SystemExit(1)
+          PYWORK
+      - name: Preserve fixed outputs and verify actual source and namespace closure
+        if: always() && steps.owned.outputs.owned == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYCLOSE'
+          import hashlib,json,os,pathlib,re,shutil,stat,subprocess,time
+          def mount_snapshot():
+              before=os.stat('/proc/self/ns/mnt')
+              with open('/proc/self/mountinfo','rb') as stream:raw=stream.read((64<<10)+1)
+              after=os.stat('/proc/self/ns/mnt');complete=len(raw)<=64<<10;retained=raw[:64<<10]
+              return retained.decode('utf-8'),{'namespace_before':[before.st_dev,before.st_ino],'namespace_after':[after.st_dev,after.st_ino],
+                  'namespace_stable':(before.st_dev,before.st_ino)==(after.st_dev,after.st_ino),'complete':complete,
+                  'retained_bytes':len(retained),'observed_at_least_bytes':len(raw),'retained_sha256':hashlib.sha256(retained).hexdigest()}
+          def mount_records(body, limit=256 << 10):
+              """Parse bounded kernel mountinfo without following any recorded path."""
+              import posixpath, re
+              if not isinstance(body, bytes) or not body or len(body) > limit or not body.endswith(b"\n"):
+                  raise ValueError("mount snapshot bound or completeness")
+              text = body.decode("utf-8")
+              if any((ord(c) < 32 and c != "\n") or ord(c) == 127 for c in text):
+                  raise ValueError("mount raw control character")
+              lines = text.splitlines()
+              if not lines or len(lines) > 4096:
+                  raise ValueError("mount snapshot row bound")
+              def decoded(value):
+                  if re.search(r"\\(?![0-7]{3})", value):
+                      raise ValueError("mount escape")
+                  if any(int(value, 8) > 255 for value in re.findall(r"\\([0-7]{3})", value)):
+                      raise ValueError("mount escape byte")
+                  value = re.sub(rb"\\([0-7]{3})", lambda m: bytes([int(m[1], 8)]), value.encode("utf-8")).decode("utf-8")
+                  if any(ord(c) < 32 or ord(c) == 127 for c in value):
+                      raise ValueError("mount control character")
+                  return value
+              rows = {}
+              for line in lines:
+                  fields = line.split(" ")
+                  if fields.count("-") != 1 or any(not field for field in fields):
+                      raise ValueError("mount separator")
+                  split = fields.index("-")
+                  if split < 6 or len(fields) != split + 4:
+                      raise ValueError("mount fields")
+                  if not all(re.fullmatch(r"[1-9][0-9]*", fields[i]) for i in (0, 1)) or not re.fullmatch(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)", fields[2]):
+                      raise ValueError("mount identity")
+                  values = [decoded(field) for field in fields]
+                  for value in values[3:5]:
+                      if not value.startswith("/") or value.startswith("//") or posixpath.normpath(value) != value:
+                          raise ValueError("mount path")
+                  identity = int(fields[0])
+                  if identity in rows:
+                      raise ValueError("duplicate mount identity")
+                  rows[identity] = {"record": line, "device": fields[2], "root": values[3],
+                                    "mountpoint": values[4], "filesystem": values[split+1], "super_options": values[split+3],
+                                    "references": values[3:split] + values[split+2:]}
+              return rows
+
+
+          def mount_projection(before, after, protected_paths, scratch_paths, limit=256 << 10):
+              """Compare owned mount scope; unrelated host mount lifetimes are not ours."""
+              import posixpath, re
+              result = {"passed": False, "records_equal": False, "no_owned_references": False,
+                        "anchors": [], "before_records": [], "after_records": [], "violations": [], "error": None}
+              try:
+                  def within(path, root):
+                      return path == root or path.startswith(root.rstrip("/") + "/")
+                  for paths in (protected_paths, scratch_paths):
+                      if not isinstance(paths, list) or not paths or len(paths) > 32 or any(
+                              not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or posixpath.normpath(path) != path
+                              or any(ord(c) < 32 for c in path) for path in paths):
+                          raise ValueError("mount scope")
+                  snapshots = [mount_records(body, limit) for body in (before, after)]
+                  for scratch in scratch_paths:
+                      candidates = [row for row in snapshots[0].values() if within(scratch, row["mountpoint"])]
+                      if not candidates:
+                          raise ValueError("missing scratch anchor")
+                      depth = max(len(row["mountpoint"]) for row in candidates)
+                      closest = [row for row in candidates if len(row["mountpoint"]) == depth]
+                      if len(closest) != 1:
+                          raise ValueError("ambiguous scratch anchor")
+                      anchor = closest[0]
+                      relative = posixpath.relpath(scratch, anchor["mountpoint"])
+                      result["anchors"].append({"path": scratch, "device": anchor["device"],
+                                                "mountpoint": anchor["mountpoint"], "root": anchor["root"],
+                                                "scratch_root": posixpath.normpath(posixpath.join(anchor["root"], relative))})
+                  for label, rows in zip(("before", "after"), snapshots):
+                      result[label + "_records"] = [row["record"] for _, row in sorted(rows.items()) if any(
+                          within(row["mountpoint"], path) or within(path, row["mountpoint"]) for path in protected_paths)]
+                      for identity, row in rows.items():
+                          direct = any(within(row["mountpoint"], path) for path in scratch_paths)
+                          # A bind elsewhere exposes a filesystem-relative root, not the
+                          # absolute /run path. Keep its original device/anchor binding.
+                          bound = any(row["device"] == anchor["device"] and within(row["root"], anchor["scratch_root"])
+                                      for anchor in result["anchors"])
+                          new_ancestor = label == "after" and snapshots[0].get(identity, {}).get("record") != row["record"] and any(
+                              row["device"] == anchor["device"] and within(anchor["scratch_root"], row["root"])
+                              for anchor in result["anchors"])
+                          references = [match[1] for value in row["references"]
+                                        for match in re.finditer(r"(?:^|[=,:])(/[^,:]*)", value)]
+                          if any(path.startswith("//") or posixpath.normpath(path) != path for path in references):
+                              raise ValueError("noncanonical mount reference")
+                          if row["filesystem"] == "overlay":
+                              for option in row["super_options"].split(","):
+                                  key, separator, value = option.partition("=")
+                                  if key in {"lowerdir", "upperdir", "workdir"} and (
+                                          not separator or any(not path.startswith("/") for path in value.split(":"))):
+                                      raise ValueError("ambiguous overlay reference")
+                          referenced = any(within(reference, path) for path in scratch_paths for reference in references)
+                          if direct or bound or new_ancestor or referenced:
+                              result["violations"].append({"snapshot": label, "mount_id": identity,
+                                                           "mountpoint": direct, "bound_root": bound,
+                                                           "new_ancestor_alias": new_ancestor, "option_or_path": referenced})
+                  result["records_equal"] = result["before_records"] == result["after_records"]
+                  result["no_owned_references"] = not result["violations"]
+                  result["passed"] = result["records_equal"] and result["no_owned_references"]
+              except (ValueError, UnicodeError, TypeError, KeyError) as error:
+                  result["error"] = type(error).__name__
+              return result
+
+
+          def mount_projection_checks():
+              """Bounded pure counterexamples in the existing case, not host evidence."""
+              root = b"10 1 0:1 / / rw - ext4 /dev/root rw\n"
+              run = b"11 10 0:2 / /run rw - tmpfs tmpfs rw\n"
+              user = b"12 11 0:3 / /run/user/1000 rw - tmpfs tmpfs rw\n"
+              before = root + run + user
+              scratch = "/run/nodus-managed-components-counterexample"
+              paths = ["/root/component/source", scratch, "/usr", "/etc", "/opt", "/var/lib", "/proc"]
+              def check(body):
+                  return mount_projection(before, body, paths, [scratch])["passed"]
+              cases = {"unchanged": check(before), "unrelated-removal": check(root + run),
+                       "ancestor-change": not check(root.replace(b"/ rw", b"/ ro") + run + user),
+                       "descendant-mount": not check(before + f"13 11 0:4 / {scratch}/x rw - tmpfs tmpfs rw\n".encode()),
+                       "escaped-option-reference": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=\\057run/{scratch.split('/')[-1]}/upper\n".encode()),
+                       "relative-bind-root": not check(before + f"13 10 0:2 /{scratch.split('/')[-1]}/upper /tmp/elsewhere rw - tmpfs tmpfs rw\n".encode()),
+                       "new-ancestor-root-alias": not check(before + b"13 10 0:2 / /tmp/elsewhere rw - tmpfs tmpfs rw\n"),
+                       "noncanonical-option": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=/run/other/../{scratch.split('/')[-1]}/upper\n".encode()),
+                       "double-slash-option": not check(before + f"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=/{scratch}/upper\n".encode()),
+                       "relative-overlay-option": not check(before + b"13 10 0:4 / /tmp/elsewhere rw - overlay overlay rw,upperdir=relative/upper\n"),
+                       "ambiguous-anchor": not mount_projection(before + b"13 10 0:2 / /run rw - tmpfs tmpfs rw\n",
+                                                                 before, paths, [scratch])["passed"],
+                       "malformed": not check(b"not mountinfo\n"), "truncated": not check(before[:-1]),
+                       "unknown-escape": not check(before + b"13 10 0:4 / /tmp/\\q rw - tmpfs tmpfs rw\n")}
+              if not all(cases.values()):
+                  raise ValueError("component owned mount projection counterexample")
+              return {"scope": "pure projection counterexamples, not native mount evidence", "cases": cases}
+
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text());errors=[]
+          assert os.getuid()==os.geteuid()==os.getgid()==os.getegid()==0
+          fixed=('receipt.json','python-installation.json','import-closure.json','package.whl','source-manifest.json','census.json','refusals.json','closure.json','raw/console.json','raw/serve.json','raw/status.json','raw/native.json')
+          def record(n,v):(out/n).write_text(json.dumps(v,sort_keys=True)+'\n')
+          def require(v,label):
+              if not v:errors.append(label)
+          def load(p,limit=4<<20):
+              fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+              try:
+                  st=os.fstat(fd);assert stat.S_ISREG(st.st_mode) and st.st_nlink==1 and st.st_uid==st.st_gid==0 and st.st_size<=limit
+                  b=os.read(fd,limit+1);assert len(b)==st.st_size;return b
+              finally:os.close(fd)
+          process=json.loads((out/'process.json').read_text()) if (out/'process.json').exists() else None
+          absent=False  # Missing process identity is unknown, never an absence proof.
+          if process:
+              try:os.killpg(process['pgid'],0)
+              except ProcessLookupError:absent=True
+          require(absent,'owned case group remains')
+          fixture=pathlib.Path(owner['fixture']);source=fixture/'source';component=pathlib.Path(owner['component_output'])
+          mounts_after,mount_census_after=mount_snapshot();mount_census_before=owner['mount_census_before']
+          mounts_same=mount_census_before['complete'] and mount_census_after['complete'] and mounts_after==owner['mounts_before']
+          namespace_same=mount_census_before['namespace_stable'] and mount_census_after['namespace_stable'] and mount_census_before['namespace_after']==mount_census_after['namespace_before']
+          protected=[owner['workflow_root'],str(fixture),str(component),str(out),'/usr','/etc','/opt','/var/lib','/proc']
+          scratch=[str(fixture),str(component),str(out)]
+          projection=mount_projection(owner['mounts_before'].encode('utf-8'),mounts_after.encode('utf-8'),protected,scratch,limit=64<<10)
+          controls=mount_projection_checks()
+          snapshots_known=all(meta['complete'] and meta['retained_bytes']==len(body.encode('utf-8')) and meta['observed_at_least_bytes']==meta['retained_bytes'] and meta['retained_sha256']==hashlib.sha256(body.encode('utf-8')).hexdigest() for meta,body in ((mount_census_before,owner['mounts_before']),(mount_census_after,mounts_after)))
+          owned_mounts_closed=snapshots_known and namespace_same and pathlib.Path.cwd()==pathlib.Path(owner['workflow_root']) and projection['passed']
+          def projection_digest(rows):return hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()).hexdigest()
+          # Raw snapshots retain the evidence; counts/hashes avoid duplicating full tables under the existing record cap.
+          projection_evidence={key:projection[key] for key in ('passed','records_equal','no_owned_references','anchors','error')}
+          for key in ('before_records','after_records','violations'):
+              projection_evidence[key]={'count':len(projection[key]),'sha256':projection_digest(projection[key])}
+          mount_census={'before':mount_census_before,'after':mount_census_after,'mounts_before':owner['mounts_before'],'mounts_after':mounts_after,
+              'text_equal':mounts_same,'namespace_equal':namespace_same,'snapshots_known':snapshots_known,'owned_mounts_closed':owned_mounts_closed,
+              'protected_paths':protected,'scratch_paths':scratch,'projection':projection_evidence,'projection_controls':controls,
+              'comparison':'Exact relevant records plus global owned-scratch references in the same mount namespace. Full-text equality is separately reported; incomplete or ambiguous evidence never authorizes cleanup.'}
+          assert len(json.dumps(mount_census).encode())<=256<<10
+          record('mount-census.json',mount_census)
+          require(owned_mounts_closed,'owned mount scope not closed')
+          source_ok=False
+          if (source/'.git').is_dir():
+              q=subprocess.run(['/usr/bin/git','-C',str(source),'status','--porcelain=v1','--untracked-files=all'],capture_output=True,timeout=max(.01,min(10,owner['closure_end']-time.monotonic())))
+              (out/'source-after.txt').write_bytes(q.stdout);(out/'source-after.stderr').write_bytes(q.stderr)
+              source_ok=q.returncode==0 and not q.stdout and not q.stderr
+          require(source_ok,'exact product source status absent or changed')
+          current=subprocess.run(['/usr/bin/git','-c','safe.directory='+str(pathlib.Path.cwd()),'status','--porcelain=v1','--untracked-files=all'],capture_output=True,timeout=max(.01,min(10,owner['closure_end']-time.monotonic())))
+          (out/'workflow-after.txt').write_bytes(current.stdout);require(current.returncode==0 and not current.stdout and not current.stderr,'workflow source changed')
+          exported=[];component_identity=None;component_removed=not(component.exists() or component.is_symlink());component_safe=False
+          if component.exists() or component.is_symlink():
+              cs=component.lstat();component_identity=[cs.st_dev,cs.st_ino,cs.st_uid,stat.S_IMODE(cs.st_mode)]
+              component_safe=component==pathlib.Path('/run/nodus-managed-components-private-python-p1') and stat.S_ISDIR(cs.st_mode) and cs.st_uid==cs.st_gid==0 and stat.S_IMODE(cs.st_mode)==0o700
+              require(component_safe,'component output identity')
+              # Bounded partial evidence survives a mount refusal; deletion still needs owned scope.
+              if component_safe and absent:
+                  try:
+                      for parent in (component.parent,component):
+                          ps=parent.lstat();assert stat.S_ISDIR(ps.st_mode) and ps.st_uid==ps.st_gid==0 and not ps.st_mode&0o022
+                      total=0
+                      for name in fixed:
+                          p=component/'components'/name
+                          if not p.exists() and not p.is_symlink():continue
+                          for parent in [p.parent,component/'components']:
+                              ps=parent.lstat();assert stat.S_ISDIR(ps.st_mode) and ps.st_uid==ps.st_gid==0 and not ps.st_mode&0o022
+                          b=load(p);total+=len(b);assert total<=16<<20
+                          dst=out/'components'/name;dst.parent.mkdir(parents=True,exist_ok=True,mode=0o700);dst.write_bytes(b)
+                          exported.append({'path':'components/'+name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+                      # Only finite command outputs and process records are retained on failure; observe-state and tokens are excluded.
+                      diagnostic_bytes=0;diagnostics=[]
+                      for side in ('parent','preparation','child'):
+                          directory=component/'work'/side
+                          if not directory.is_dir() or directory.is_symlink():continue
+                          for parent in (component/'work',directory):
+                              ds=parent.lstat();assert stat.S_ISDIR(ds.st_mode) and ds.st_uid==ds.st_gid==0 and not ds.st_mode&0o022
+                          names=sorted(directory.iterdir());assert len(names)<=258
+                          for p in names:
+                              if p.name!='children.json' and not re.fullmatch(r'command-(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])\.(?:out|err)',p.name):continue
+                              b=load(p);diagnostic_bytes+=len(b);assert diagnostic_bytes<=16<<20
+                              name=side+'-'+p.name;dst=out/'diagnostics'/name;dst.parent.mkdir(exist_ok=True,mode=0o700);dst.write_bytes(b)
+                              diagnostics.append({'path':'diagnostics/'+name,'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})
+                      record('partial-export.json',{'components':exported,'diagnostics':diagnostics,'token_or_worktree_exported':False})
+                  except (AssertionError,OSError,ValueError) as exc:
+                      errors.append("bounded export refused: "+type(exc).__name__)
+                  now=component.lstat();assert [now.st_dev,now.st_ino,now.st_uid,stat.S_IMODE(now.st_mode)]==component_identity
+                  if owned_mounts_closed:
+                      assert shutil.rmtree.avoids_symlink_attacks
+                      shutil.rmtree(component);component_removed=not component.exists() and not component.is_symlink()
+          require(component_removed,'component scratch remains')
+          rows={};home=pathlib.Path(owner['home']);census_ok=True
+          with os.scandir(home) as entries:
+              for count,entry in enumerate(entries):
+                  if count>=2047:census_ok=False;break
+                  if entry.name.startswith(('.nodus-partition-','.nodus-api-')):
+                      s=entry.stat(follow_symlinks=False);rows[entry.name]=[s.st_dev,s.st_ino,s.st_uid,s.st_mode]
+          record('home-after.json',{'complete':census_ok,'rows':rows});require(census_ok and rows==owner['home_before'],'home prefix identity drift')
+          expected=pathlib.Path('/root')/f"managed-python-component-fixture-{owner['run_id']}-{owner['attempt']}"
+          st=fixture.lstat();identity=[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)]
+          fixture_ok=fixture==expected and fixture==pathlib.Path(os.environ['FIXTURE']) and identity==owner['fixture_identity'] and stat.S_ISDIR(st.st_mode)
+          require(fixture_ok,'fixture inode ownership')
+          removed=False
+          if fixture_ok and absent and owned_mounts_closed:
+              assert shutil.rmtree.avoids_symlink_attacks
+              shutil.rmtree(fixture);removed=not fixture.exists() and not fixture.is_symlink()
+          require(removed,'fixture not removed')
+          record('fixture-closure.json',{'group_absent':absent,'host_mounts_unchanged':mounts_same,'owned_mounts_closed':owned_mounts_closed,'fixture_identity':identity,'fixture_removed':removed,'component_identity':component_identity,'component_output_removed':component_removed,'home_matches_before':census_ok and rows==owner['home_before'],'errors':list(errors)})
+          raw=(out/'work.stderr').read_bytes() if (out/'work.stderr').exists() else b'';require(len(raw)<=4<<20,'case log bound');log=raw.decode('utf-8',errors='strict')
+          cases=['tests.test_distribution.DistributionTests.test_reproducible_build_offline_install_and_owned_uninstall']
+          require(len(re.findall(r'^(test_\w+) \(([^)]+)\)',log,re.M))==1,'one exact case result')
+          for case in cases:
+              cls,method=case.rsplit('.',1);pattern=r'^'+re.escape(method)+r' \('+re.escape(cls)+r'(?:\.'+re.escape(method)+r')?\).* \.\.\. ok$'
+              require(len(re.findall(pattern,log,re.M))==1,'exact case result: '+case)
+          require(len(re.findall(r'^Ran 1 test in [0-9.]+s$',log,re.M))==1 and log.rstrip().endswith('\nOK'),'unittest summary')
+          require(not re.search(r'^(?:FAIL|ERROR|FAILED|OK \(|UNEXPECTED SUCCESS)|\.\.\. (?:skipped|expected failure|FAIL|ERROR|unexpected success)',log,re.M),'negative or skipped case')
+          pc=json.loads((out/'process-closure.json').read_text()) if (out/'process-closure.json').exists() else {}
+          require(pc.get('natural_exit') is True and pc.get('returncode')==0 and pc.get('group_absent') is True and pc.get('forced_group_stop') is False and pc.get('creating_process_reaped') is True,'natural process closure')
+          require(pc.get('finished_monotonic',float('inf'))<=owner['work_end'],'original work deadline')
+          require(sorted(r['path'] for r in exported)==sorted('components/'+n for n in fixed),'exact twelve components')
+          if (out/'components/receipt.json').is_file():
+              receipt=json.loads((out/'components/receipt.json').read_bytes());require(receipt.get('outcome')=='PASS' and receipt.get('schema')=='managed-python-components.v2','component measured PASS')
+              require(receipt.get('entry_signature_verified') is False and receipt.get('host_lifecycle_qualified') is False and receipt.get('production_ready') is False,'component-only scope')
+              require(receipt.get('python_head')=='a525da848d78be424e57e1c08505f7dbefdb165b' and receipt.get('platform_head')=='a8d3c53818a8f8abb26cf7db9306c3bfd09922a9','component source provenance')
+              require(receipt.get('target_tuple',{}).get('kind')=='hosted-runner','hosted tuple scope')
+              for key in ('wheel','python_installation','import_closure','census','refusals','process_closure'):
+                  r=receipt.get(key,{});p=out/r.get('path','invalid');require(r.get('path') in ['components/'+n for n in fixed] and p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==r.get('sha256'),'component '+key+' join')
+              c=json.loads((out/'components/closure.json').read_bytes());require(all(c.get(k) is True for k in ('group_absent','owned_mounts_absent','authority_absent','source_clean')) and c.get('namespace_exit_returncode')==0,'component lifecycle closure')
+          else:require(False,'component receipt absent')
+          require(time.monotonic()<owner['closure_end'],'original closure deadline')
+          record('qualification.json',{'schema':'managed-python-hosted-native-result.v1','product_head':'a525da848d78be424e57e1c08505f7dbefdb165b','workflow_head':os.environ['GITHUB_SHA'],'run_id':owner['run_id'],'run_attempt':owner['attempt'],'selected_cases':cases,'passed':not errors,'errors':errors,'entry_signature_verified':False,'host_lifecycle_qualified':False,'production_ready':False,'scope':'Actual hosted tuple only; not A100 target equality, managed provider, signature or host lifecycle proof'})
+          if errors:raise SystemExit('; '.join(errors))
+          PYCLOSE
+      - name: Hand back only bounded fixed evidence for upload
+        if: always() && steps.owned.outputs.owned == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            OUT="$OUT" FIXTURE="$FIXTURE" RUNNER_TEMP="$RUNNER_TEMP" GITHUB_SHA="$GITHUB_SHA" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" /usr/bin/python3 -B - <<'PYHANDBACK'
+          import hashlib,json,os,pathlib,re,stat,time
+          out=pathlib.Path(os.environ['OUT']);owner=json.loads((out/'ownership.json').read_text())
+          assert os.geteuid()==os.getegid()==0 and time.monotonic()<owner['closure_end']
+          expected=pathlib.Path(os.environ['RUNNER_TEMP']).resolve()/f"managed-python-component-evidence-{owner['run_id']}-{owner['attempt']}"
+          assert out==expected and owner['run_id']==os.environ['GITHUB_RUN_ID'] and owner['attempt']==os.environ['GITHUB_RUN_ATTEMPT']
+          flat={'ownership.json','workflow.yml','source-before.txt','source-after.txt','source-after.stderr','workflow-after.txt','product-source.tar','source-manifest.json','component-input.json','component-input.sha256','argv.json','case-argv.json','native-identity.json','source-metadata.stdout','source-metadata.stderr','source-metadata-closure.json','work.stdout','work.stderr','process.json','process-closure.json','partial-export.json','mount-census.json','home-after.json','fixture-closure.json','qualification.json'}
+          fixed={'receipt.json','python-installation.json','import-closure.json','package.whl','source-manifest.json','census.json','refusals.json','closure.json','raw/console.json','raw/serve.json','raw/status.json','raw/native.json'}
+          fd=os.open(out,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);dirs={'':fd};rows=[];total=0
+          try:
+              st=os.fstat(fd);identity=[st.st_dev,st.st_ino,st.st_uid,stat.S_IMODE(st.st_mode)];assert identity==owner['output_identity'] and st.st_gid==0
+              for name in ('components','components/raw','diagnostics'):
+                  parent,_,leaf=name.rpartition('/')
+                  if parent not in dirs or leaf not in os.listdir(dirs[parent]):continue
+                  item=os.open(leaf,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=dirs[parent]);info=os.fstat(item)
+                  assert info.st_uid==info.st_gid==0 and not info.st_mode&0o022;dirs[name]=item
+              for directory,item in dirs.items():
+                  names=sorted(os.listdir(item));assert len(names)<=258
+                  for name in names:
+                      rel=directory+'/'+name if directory else name
+                      if rel in dirs:continue
+                      assert (directory=='' and name in flat) or (directory.startswith('components') and rel.removeprefix('components/') in fixed) or (directory=='diagnostics' and re.fullmatch(r'(?:parent|preparation|child)-(?:children\.json|command-(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])\.(?:out|err))',name))
+                      f=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=item)
+                      try:
+                          info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==info.st_gid==0 and info.st_size<=8<<20
+                          total+=info.st_size;assert total<=40<<20
+                          rows.append({'name':rel,'bytes':info.st_size,'device':info.st_dev,'inode':info.st_ino})
+                      finally:os.close(f)
+              for row in rows:
+                  parent,_,leaf=row['name'].rpartition('/');f=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=dirs[parent])
+                  try:
+                      info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_nlink==1 and info.st_uid==info.st_gid==0 and (info.st_dev,info.st_ino,info.st_size)==(row['device'],row['inode'],row['bytes'])
+                      os.fchmod(f,0o600);os.fchown(f,owner['runner_uid'],owner['runner_gid'])
+                  finally:os.close(f)
+              for name,item in reversed(list(dirs.items())):
+                  os.fchmod(item,0o700);os.fchown(item,owner['runner_uid'],owner['runner_gid'])
+              for row in rows:
+                  parent,_,leaf=row['name'].rpartition('/');final=os.stat(leaf,dir_fd=dirs[parent],follow_symlinks=False)
+                  assert (final.st_dev,final.st_ino,final.st_size,final.st_uid,final.st_gid,stat.S_IMODE(final.st_mode))==(row['device'],row['inode'],row['bytes'],owner['runner_uid'],owner['runner_gid'],0o600)
+              def output_file(name):
+                  item=os.open(name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd);os.fchown(item,owner['runner_uid'],owner['runner_gid']);return os.fdopen(item,'w')
+              with output_file('handback.json') as stream:json.dump({'passed':True,'source_uid':0,'runner_uid':owner['runner_uid'],'runner_gid':owner['runner_gid'],'files':rows,'bytes':total,'directory_identity':identity,'recursive_chown':False,'fixed_directory_allowlist':list(dirs)},stream,sort_keys=True);stream.write('\n')
+              with output_file('SHA256SUMS') as sums:
+                  for name in sorted([r['name'] for r in rows]+['handback.json']):sums.write(hashlib.sha256((out/name).read_bytes()).hexdigest()+'  '+name+'\n')
+          finally:
+              for item in reversed(list(dirs.values())):os.close(item)
+          PYHANDBACK
+      - name: Retain bounded positive or negative evidence
+        if: always() && steps.owned.outputs.owned == 'true'
+        timeout-minutes: 1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-python-components-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.OUT }}/
+          if-no-files-found: error
+          retention-days: 7
   service-control:
-    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false
+    if: github.repository == 'nodus-compute/nodus-dc' && github.event.repository.private == false && github.ref != 'refs/heads/codex/managed-fresh-service-dev18-components-20261119'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
